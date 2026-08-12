@@ -2,7 +2,7 @@
 
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
-import { Badge } from "@/components/ui/Badge";
+import { StatusPill } from "@/components/ui/StatusPill";
 import type { ComplianceResult } from "@/lib/types";
 
 export function ComplianceStep({
@@ -20,17 +20,16 @@ export function ComplianceStep({
   regenerating: boolean;
   continuing: boolean;
 }) {
+  const blockers = result.violations.filter((v) => v.severity === "blocker");
+  const warnings = result.violations.filter((v) => v.severity === "warning");
+
   return (
-    <Card glow className="animate-fade-up">
+    <Card glow>
       <CardHeader
-        title="Stage 7 — Compliance Audit"
+        title="Compliance Audit"
         subtitle="Independent Haiku pass, separate from the script writer."
         icon={<IconShield />}
-        right={
-          <Badge tone={result.passed ? "success" : "danger"}>
-            {result.passed ? "Passed" : "Blocked"}
-          </Badge>
-        }
+        right={<StatusPill status={result.passed ? "pass" : "review"}>{result.passed ? "Passed" : "Blocked"}</StatusPill>}
       />
       <CardBody className="space-y-4">
         <div
@@ -43,22 +42,19 @@ export function ComplianceStep({
           {result.notes}
         </div>
 
-        {result.violations.length > 0 && (
-          <div className="space-y-2">
-            {result.violations.map((v, i) => (
-              <div
-                key={i}
-                className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3"
-              >
-                <div className="mb-1 flex items-center gap-2">
-                  <Badge tone={v.severity === "blocker" ? "danger" : "warning"}>{v.severity}</Badge>
-                  <span className="font-mono text-[12.5px] text-[var(--foreground)]">
-                    &quot;{v.phrase}&quot;
-                  </span>
-                </div>
-                <p className="text-[13px] text-[var(--muted)]">{v.reason}</p>
-              </div>
-            ))}
+        {result.violations.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 rounded-xl border border-[var(--success)]/25 bg-[var(--success)]/5 px-6 py-10 text-center">
+            <StatusPill status="pass" className="text-[13px] px-4 py-1.5">
+              All clear
+            </StatusPill>
+            <p className="text-[13px] text-[var(--muted)]">No claims flagged — this script is ready for assets.</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {blockers.length > 0 && (
+              <ViolationGroup status="review" title="Needs Review" violations={blockers} />
+            )}
+            {warnings.length > 0 && <ViolationGroup status="warning" title="Warnings" violations={warnings} />}
           </div>
         )}
 
@@ -79,6 +75,30 @@ export function ComplianceStep({
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+function ViolationGroup({
+  status,
+  title,
+  violations,
+}: {
+  status: "review" | "warning";
+  title: string;
+  violations: ComplianceResult["violations"];
+}) {
+  return (
+    <div className="space-y-2">
+      <StatusPill status={status}>
+        {title} · {violations.length}
+      </StatusPill>
+      {violations.map((v, i) => (
+        <div key={i} className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
+          <p className="mb-1 font-mono text-[12.5px] text-[var(--foreground)]">&quot;{v.phrase}&quot;</p>
+          <p className="text-[13px] text-[var(--muted)]">{v.reason}</p>
+        </div>
+      ))}
+    </div>
   );
 }
 

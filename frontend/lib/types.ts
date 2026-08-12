@@ -17,19 +17,47 @@ export type StructuredProduct = {
   usp: string;
   tone: string;
   key_benefits: string[];
+  industry: string;
+  pain_points: string[];
+  marketing_angle: string;
+  key_emotions: string[];
+  keywords: string[];
   missing_fields: string[];
   confidence: number;
+};
+
+export type StorySituation = {
+  id: string;
+  title: string;
+  description: string;
+  emotion: string;
+  persona: string;
+  marketing_angle: string;
+  category: string;
+  difficulty: string;
+  estimated_length: string;
+  virality_score: number;
 };
 
 export type ScriptLine = {
   text: string;
   visual_tags: string[];
+  scene_label?: string;
+  visual_direction?: string;
+  camera_angle?: string;
+  emotion?: string;
+  lighting?: string;
+  transition_note?: string;
 };
+
+export type RewriteDirective = "improve" | "make_viral" | "make_emotional" | "increase_conversion" | "rewrite";
 
 export type GeneratedScript = {
   hook: ScriptLine;
   body: ScriptLine[];
   cta: ScriptLine;
+  situation?: StorySituation;
+  bgm_suggestion?: string;
 };
 
 export type ComplianceViolation = {
@@ -92,17 +120,22 @@ export type FlatLine = {
   role: "hook" | "body" | "cta";
   text: string;
   visual_tags: string[];
+  scene_label?: string;
+  visual_direction?: string;
+  camera_angle?: string;
+  emotion?: string;
+  lighting?: string;
+  transition_note?: string;
 };
 
 export function flattenScript(script: GeneratedScript): FlatLine[] {
   return [
-    { id: "hook", role: "hook", text: script.hook.text, visual_tags: script.hook.visual_tags },
+    { id: "hook", role: "hook", ...script.hook },
     ...script.body.map((line, i) => ({
       id: `body_${i}`,
       role: "body" as const,
-      text: line.text,
-      visual_tags: line.visual_tags,
+      ...line,
     })),
-    { id: "cta", role: "cta", text: script.cta.text, visual_tags: script.cta.visual_tags },
+    { id: "cta", role: "cta", ...script.cta },
   ];
 }

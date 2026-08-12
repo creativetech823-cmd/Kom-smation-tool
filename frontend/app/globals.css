@@ -4,6 +4,7 @@
   --background: #08090c;
   --surface: #0f1117;
   --surface-2: #151822;
+  --surface-3: #1a1e2b;
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --foreground: #f2f3f7;
@@ -16,10 +17,17 @@
   --warning: #ffb547;
 }
 
+@property --pct {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-surface: var(--surface);
   --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
   --color-border: var(--border);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
@@ -81,7 +89,11 @@ body {
 }
 
 .animate-fade-up {
-  animation: fade-up 0.35s ease both;
+  /* backwards, not both: the entrance look is identical (no animation-delay is used
+     here), but "both" would permanently pin opacity:1 after the animation finishes,
+     silently overriding any opacity utility (e.g. opacity-50) applied to the same
+     element afterward. */
+  animation: fade-up 0.35s ease backwards;
 }
 
 @keyframes shimmer {
@@ -102,4 +114,20 @@ body {
   );
   background-size: 800px 100%;
   animation: shimmer 1.6s infinite linear;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 1.8s ease-in-out infinite;
 }

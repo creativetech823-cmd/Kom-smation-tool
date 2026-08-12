@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { motionFileUrl } from "@/lib/api";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -7,6 +8,9 @@ import { Badge } from "@/components/ui/Badge";
 import type { FlatLine, MotionGenerationResult, SelectedAsset } from "@/lib/types";
 
 const ROLE_LABEL: Record<string, string> = { hook: "Hook", body: "Body", cta: "CTA" };
+
+const gridVariants = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } };
+const tileVariants = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: { duration: 0.3 } } };
 
 export function AssetsStep({
   lines,
@@ -34,30 +38,37 @@ export function AssetsStep({
   const allReady = lines.every((l) => assets[l.id] && !loadingIds.has(l.id));
 
   return (
-    <Card glow className="animate-fade-up">
+    <Card glow>
       <CardHeader
-        title="Stage 8 — Asset Sourcing"
+        title="Asset Sourcing"
         subtitle="Pexels + Pixabay search, auto-broadened, ranked by Claude Vision."
         icon={<IconImage />}
       />
       <CardBody>
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+        <motion.div
+          variants={gridVariants}
+          initial="hidden"
+          animate="show"
+          className="grid grid-cols-2 gap-4 sm:grid-cols-3"
+        >
           {lines.map((line) => {
             const asset = assets[line.id];
             const isLoading = loadingIds.has(line.id);
-            const motion = motions[line.id];
+            const clip = motions[line.id];
             const isAnimating = loadingMotionIds.has(line.id);
             return (
-              <div
+              <motion.div
                 key={line.id}
-                className="group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]"
+                variants={tileVariants}
+                whileHover={{ y: -4 }}
+                className="group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] transition-shadow hover:shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]"
               >
                 <div className="relative aspect-[9/16] w-full overflow-hidden bg-black/40">
                   {isLoading ? (
                     <div className="animate-shimmer h-full w-full" />
-                  ) : motion ? (
+                  ) : clip ? (
                     <video
-                      src={motionFileUrl(motion.video_path)}
+                      src={motionFileUrl(clip.video_path)}
                       autoPlay
                       loop
                       muted
@@ -80,7 +91,7 @@ export function AssetsStep({
                     <Badge tone={line.role === "hook" ? "accent" : line.role === "cta" ? "success" : "neutral"}>
                       {ROLE_LABEL[line.role]}
                     </Badge>
-                    {motion && <Badge tone="accent">Motion</Badge>}
+                    {clip && <Badge tone="accent">Motion</Badge>}
                   </div>
 
                   <button
@@ -104,7 +115,7 @@ export function AssetsStep({
                       ) : (
                         <IconSparkle />
                       )}
-                      {isAnimating ? "Animating…" : motion ? "Re-animate" : "Animate"}
+                      {isAnimating ? "Animating…" : clip ? "Re-animate" : "Animate"}
                     </button>
                   )}
                 </div>
@@ -116,10 +127,10 @@ export function AssetsStep({
                     </p>
                   )}
                 </div>
-              </div>
+              </motion.div>
             );
           })}
-        </div>
+        </motion.div>
 
         <div className="flex justify-between pt-5">
           <Button variant="ghost" onClick={onBack}>

@@ -5,7 +5,9 @@ import type {
   ProductInput,
   RenderLine,
   RenderResult,
+  RewriteDirective,
   SelectedAsset,
+  StorySituation,
   StructuredProduct,
   VoiceoverResult,
 } from "./types";
@@ -40,14 +42,30 @@ export function structureProduct(input: ProductInput) {
   return post<StructuredProduct>("/pipeline/structure", input);
 }
 
+export function generateStorySituations(payload: {
+  structured_product: StructuredProduct;
+  product_category: string;
+  count?: number;
+  exclude_titles?: string[];
+}) {
+  return post<{ situations: StorySituation[] }>("/pipeline/story-situations", payload).then(
+    (r) => r.situations
+  );
+}
+
 export function generateScript(payload: {
   structured_product: StructuredProduct;
+  selected_situation: StorySituation;
   product_category: string;
   platform?: string;
   similar_past_winners?: string[];
   max_line_chars?: number;
 }) {
   return post<GeneratedScript>("/pipeline/generate-script", payload);
+}
+
+export function rewriteLine(payload: { text: string; directive: RewriteDirective; max_chars?: number }) {
+  return post<{ text: string }>("/pipeline/rewrite-line", payload);
 }
 
 export function auditCompliance(payload: {

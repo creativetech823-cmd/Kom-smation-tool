@@ -23,9 +23,9 @@ export function RenderStep({
   onBack: () => void;
 }) {
   return (
-    <Card glow className="animate-fade-up">
+    <Card glow>
       <CardHeader
-        title="Stage 9-10 — Render & Review"
+        title="Render & Review"
         subtitle="Final render from the Remotion mold, then human approval."
         icon={<IconClapper />}
         right={approved && <Badge tone="success">Approved</Badge>}

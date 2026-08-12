@@ -10,9 +10,13 @@ from app.models.product import (
     ProductInput,
     RenderInput,
     RenderResult,
+    RewriteLineInput,
+    RewriteLineResult,
     ScriptGenerationInput,
     SelectedAsset,
     SourceType,
+    StorySituationsInput,
+    StorySituationsResult,
     StructuredProduct,
     VoiceoverInput,
     VoiceoverResult,
@@ -22,7 +26,9 @@ from app.services.claude_service import structure_product
 from app.services.compliance_service import audit_script
 from app.services.motion_service import generate_motion_clip
 from app.services.render_service import render_video
+from app.services.rewrite_service import rewrite_line
 from app.services.script_service import generate_script
+from app.services.story_situation_service import generate_situations
 from app.services.tts_service import synthesize_voiceover
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
@@ -64,13 +70,28 @@ def structure(payload: ProductInput) -> StructuredProduct:
     """Stage 1 + Stage 3 — validate input, then structure it via Claude."""
     _validate_input(payload)
     raw_text = _resolve_raw_text(payload)
-    return structure_product(payload, raw_text=raw_text)
+    try:
+        return structure_product(payload, raw_text=raw_text)
+    except ValueError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/story-situations", response_model=StorySituationsResult)
+def story_situations(payload: StorySituationsInput) -> StorySituationsResult:
+    """Stage 3.5 — structured product -> diverse story-situation options for the user to pick from."""
+    return generate_situations(payload)
 
 
 @router.post("/generate-script", response_model=GeneratedScript)
 def generate(payload: ScriptGenerationInput) -> GeneratedScript:
     """Stage 6 — structured product -> hook/body/CTA + visual search tags."""
     return generate_script(payload)
+
+
+@router.post("/rewrite-line", response_model=RewriteLineResult)
+def rewrite_line_endpoint(payload: RewriteLineInput) -> RewriteLineResult:
+    """AI quick-action — rewrite one script line's text per a directive."""
+    return rewrite_line(payload)
 
 
 @router.post("/compliance-audit", response_model=ComplianceResult)

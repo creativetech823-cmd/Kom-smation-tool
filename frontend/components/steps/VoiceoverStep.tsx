@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -7,6 +8,10 @@ import { audioFileUrl } from "@/lib/api";
 import type { FlatLine, VoiceoverResult } from "@/lib/types";
 
 const ROLE_LABEL: Record<string, string> = { hook: "Hook", body: "Body", cta: "CTA" };
+const ROLE_ACCENT: Record<string, string> = { hook: "var(--accent)", body: "var(--border-strong)", cta: "var(--accent-2)" };
+
+const listVariants = { hidden: {}, show: { transition: { staggerChildren: 0.05 } } };
+const rowVariants = { hidden: { opacity: 0, y: 6 }, show: { opacity: 1, y: 0, transition: { duration: 0.25 } } };
 
 export function VoiceoverStep({
   lines,
@@ -28,20 +33,22 @@ export function VoiceoverStep({
   const allReady = lines.every((l) => voiceovers[l.id] && !loadingIds.has(l.id));
 
   return (
-    <Card glow className="animate-fade-up">
+    <Card glow>
       <CardHeader
-        title="Stage 9 — Hindi Voiceover"
+        title="Hindi Voiceover"
         subtitle="Each line translated to spoken Hindi and synthesized (gTTS)."
         icon={<IconMic />}
       />
       <CardBody>
-        <div className="space-y-2.5">
+        <motion.div variants={listVariants} initial="hidden" animate="show" className="space-y-2.5">
           {lines.map((line) => {
             const vo = voiceovers[line.id];
             const isLoading = loadingIds.has(line.id);
             return (
-              <div
+              <motion.div
                 key={line.id}
+                variants={rowVariants}
+                style={{ borderLeftColor: ROLE_ACCENT[line.role], borderLeftWidth: 3 }}
                 className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3.5"
               >
                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -77,10 +84,10 @@ export function VoiceoverStep({
                     />
                   </div>
                 ) : null}
-              </div>
+              </motion.div>
             );
           })}
-        </div>
+        </motion.div>
 
         <div className="flex justify-between pt-5">
           <Button variant="ghost" onClick={onBack}>
