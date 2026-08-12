@@ -9,6 +9,8 @@ app = FastAPI(title="AI Content Factory Engine")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
+    # Covers ngrok's free-tier tunnel domains, so a tunneled frontend can call this API.
+    allow_origin_regex=r"https://.*\.ngrok-free\.app|https://.*\.ngrok\.(io|app)",
     allow_methods=["*"],
     allow_headers=["*"],
 )
