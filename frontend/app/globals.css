@@ -1,17 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: #08090c;
-  --surface: #0f1117;
-  --surface-2: #151822;
-  --surface-3: #1a1e2b;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --foreground: #f2f3f7;
-  --muted: #8b8fa3;
-  --accent: #7c5cff;
-  --accent-2: #22d3c9;
-  --accent-soft: rgba(124, 92, 255, 0.14);
+  --background: #05050a;
+  --surface: #0d0e18;
+  --surface-2: #12131f;
+  --surface-3: #181a2b;
+  --border: rgba(178, 150, 255, 0.1);
+  --border-strong: rgba(178, 150, 255, 0.2);
+  --foreground: #f3f2fb;
+  --muted: #938fb0;
+  --accent: #8b5cf6;
+  --accent-2: #22e8d8;
+  --accent-soft: rgba(139, 92, 246, 0.16);
+  --indigo: #4f46e5;
+  --magenta: #e879f9;
   --danger: #ff5d7a;
   --success: #2fd889;
   --warning: #ffb547;
@@ -33,6 +35,8 @@
   --color-muted: var(--muted);
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
+  --color-indigo: var(--indigo);
+  --color-magenta: var(--magenta);
   --color-danger: var(--danger);
   --color-success: var(--success);
   --color-warning: var(--warning);
@@ -49,9 +53,11 @@ html {
 }
 
 body {
-  background: radial-gradient(1200px 600px at 15% -10%, rgba(124, 92, 255, 0.16), transparent 60%),
-    radial-gradient(1000px 500px at 90% 0%, rgba(34, 211, 201, 0.10), transparent 55%),
+  background: radial-gradient(1200px 600px at 15% -10%, rgba(139, 92, 246, 0.18), transparent 60%),
+    radial-gradient(1000px 500px at 90% 0%, rgba(34, 232, 216, 0.11), transparent 55%),
+    radial-gradient(900px 700px at 50% 110%, rgba(232, 121, 249, 0.09), transparent 60%),
     var(--background);
+  background-attachment: fixed;
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   min-height: 100vh;
@@ -130,4 +136,56 @@ body {
 
 .animate-pulse-dot {
   animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+/* Premium workspace utilities — additive, layered on top of the existing
+   var(--foo) theme mechanism, no component restructuring required. */
+
+.glass-card {
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--border);
+}
+
+.glow-border {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 0 24px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.hover-glow {
+  transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
+}
+
+.hover-glow:hover {
+  border-color: color-mix(in srgb, var(--accent-2) 45%, transparent);
+  box-shadow: 0 0 24px -8px color-mix(in srgb, var(--accent-2) 60%, transparent);
+  transform: translateY(-1px);
+}
+
+.gradient-text {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(2%, -3%) scale(1.05);
+  }
+}
+
+.ambient-blob {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(90px);
+  opacity: 0.35;
+  pointer-events: none;
+  animation: drift 18s ease-in-out infinite;
 }

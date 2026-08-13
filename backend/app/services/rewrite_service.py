@@ -47,6 +47,9 @@ def rewrite_line(payload: RewriteLineInput) -> RewriteLineResult:
         max_tokens=256,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_message(payload)}],
+        # Extended thinking is on by default and its tokens count against
+        # max_tokens — disabled so tiny-budget calls don't get starved.
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     text_block = next(b for b in response.content if b.type == "text")

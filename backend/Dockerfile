@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --- App code ---
 COPY . .
 
-RUN mkdir -p renders audio motion
+RUN mkdir -p renders audio motion reference_uploads
 
 # Render injects $PORT at runtime; the app must bind to it, not a hardcoded port.
 CMD uvicorn app.main:app --host 0.0.0.0 --port $PORT

@@ -7,6 +7,7 @@ import { ToastHost, type ToastState, type ToastTone } from "@/components/ui/Toas
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
 import { ProductWorkspaceStep } from "@/components/steps/ProductWorkspaceStep";
+import type { ActivityEntry } from "@/components/steps/AiUnderstandingPanel";
 import { StorySituationStep } from "@/components/steps/StorySituationStep";
 import { ScriptStep } from "@/components/steps/ScriptStep";
 import { ComplianceStep } from "@/components/steps/ComplianceStep";
@@ -14,6 +15,7 @@ import { AssetsStep } from "@/components/steps/AssetsStep";
 import { VoiceoverStep } from "@/components/steps/VoiceoverStep";
 import { RenderStep } from "@/components/steps/RenderStep";
 import {
+  addReferenceUrl,
   ApiError,
   audioFileUrl,
   auditCompliance,
@@ -22,11 +24,13 @@ import {
   generateStorySituations,
   generateVoiceover,
   motionFileUrl,
+  regenerateScriptSection,
   renderFileUrl,
   renderVideo,
   rewriteLine,
   sourceAsset,
   structureProduct,
+  uploadReferenceMaterial,
 } from "@/lib/api";
 import {
   flattenScript,
@@ -34,8 +38,12 @@ import {
   type GeneratedScript,
   type MotionGenerationResult,
   type ProductInput,
+  type ReferenceKind,
+  type ReferenceMaterial,
   type RenderResult,
   type RewriteDirective,
+  type ScriptLanguage,
+  type ScriptRegenerateScope,
   type SelectedAsset,
   type StorySituation,
   type StructuredProduct,
@@ -63,9 +71,46 @@ type Draft = {
   structured: StructuredProduct | null;
   situations: StorySituation[];
   selectedSituation: StorySituation | null;
+  selectedAngle: string | null;
+  scriptLanguage: ScriptLanguage;
+  targetDuration: string;
   script: GeneratedScript | null;
   compliance: ComplianceResult | null;
+  referenceMaterials: ReferenceMaterial[];
+  sourceUrlRawText: string | undefined;
 };
+
+function guessReferenceKindFromFilename(filename: string): ReferenceKind {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  const map: Record<string, ReferenceKind> = {
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".doc": "doc",
+    ".pptx": "pptx",
+    ".ppt": "ppt",
+    ".txt": "txt",
+    ".csv": "csv",
+    ".xlsx": "xlsx",
+    ".zip": "zip",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".png": "image",
+    ".gif": "image",
+    ".webp": "image",
+    ".mp4": "video",
+    ".mov": "video",
+    ".webm": "video",
+    ".avi": "video",
+    ".mkv": "video",
+    ".mp3": "audio",
+    ".wav": "audio",
+    ".m4a": "audio",
+    ".aac": "audio",
+    ".ogg": "audio",
+    ".flac": "audio",
+  };
+  return map[ext] ?? "txt";
+}
 
 function updateScriptLineText(s: GeneratedScript, lineId: string, text: string): GeneratedScript {
   if (lineId === "hook") return { ...s, hook: { ...s.hook, text } };
@@ -85,8 +130,15 @@ export default function Home() {
   const [productInput, setProductInput] = useState<ProductInput | null>(null);
   const [category, setCategory] = useState("");
   const [structured, setStructured] = useState<StructuredProduct | null>(null);
+  const [referenceMaterials, setReferenceMaterials] = useState<ReferenceMaterial[]>([]);
+  const [uploadingMaterialIds, setUploadingMaterialIds] = useState<Set<string>>(new Set());
+  const [sourceUrlRawText, setSourceUrlRawText] = useState<string | undefined>(undefined);
+  const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [situations, setSituations] = useState<StorySituation[]>([]);
   const [selectedSituation, setSelectedSituation] = useState<StorySituation | null>(null);
+  const [selectedAngle, setSelectedAngle] = useState<string | null>(null);
+  const [scriptLanguage, setScriptLanguage] = useState<ScriptLanguage>("english");
+  const [targetDuration, setTargetDuration] = useState("");
   const [script, setScript] = useState<GeneratedScript | null>(null);
   const [compliance, setCompliance] = useState<ComplianceResult | null>(null);
   const [assets, setAssets] = useState<Record<string, SelectedAsset | undefined>>({});
@@ -103,7 +155,9 @@ export default function Home() {
   const [improvingDescription, setImprovingDescription] = useState(false);
   const [situationsLoading, setSituationsLoading] = useState(false);
   const [situationsGenMoreLoading, setSituationsGenMoreLoading] = useState(false);
-  const [situationSelectingId, setSituationSelectingId] = useState<string | null>(null);
+  const [situationSelectingKey, setSituationSelectingKey] = useState<{ situationId: string; angle: string } | null>(
+    null
+  );
   const [scriptRegenLoading, setScriptRegenLoading] = useState(false);
   const [rewriting, setRewriting] = useState<Record<string, RewriteDirective | undefined>>({});
   const [complianceLoading, setComplianceLoading] = useState(false);
@@ -135,6 +189,95 @@ export default function Home() {
     setFurthest((f) => Math.max(f, i));
   }
 
+  const pushActivity = useCallback((label: string, tone: "info" | "success" | "error" = "info") => {
+    setActivityLog((prev) => [{ id: crypto.randomUUID(), label, tone, ts: Date.now() }, ...prev].slice(0, 8));
+  }, []);
+
+  async function uploadOneReferenceFile(file: File) {
+    const tempId = `temp-${crypto.randomUUID()}`;
+    const placeholder: ReferenceMaterial = {
+      id: tempId,
+      kind: guessReferenceKindFromFilename(file.name),
+      filename: file.name,
+      analysis: "failed",
+      extracted_text: "",
+      truncated: false,
+      note: "",
+    };
+    setReferenceMaterials((prev) => [...prev, placeholder]);
+    setUploadingMaterialIds((prev) => new Set(prev).add(tempId));
+    pushActivity(`Reading ${file.name}...`);
+    try {
+      const result = await uploadReferenceMaterial(file);
+      setReferenceMaterials((prev) => prev.map((m) => (m.id === tempId ? { ...result, id: tempId } : m)));
+      pushActivity(
+        result.analysis === "analyzed" ? `Understood ${file.name} ✓` : `${file.name} attached — ${result.note || result.analysis}`,
+        result.analysis === "analyzed" ? "success" : "info"
+      );
+    } catch (e) {
+      const message = e instanceof ApiError ? e.message : "Upload failed.";
+      setReferenceMaterials((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...m, analysis: "failed", note: message } : m))
+      );
+      pushActivity(`Couldn't read ${file.name}`, "error");
+    } finally {
+      setUploadingMaterialIds((prev) => {
+        const next = new Set(prev);
+        next.delete(tempId);
+        return next;
+      });
+    }
+  }
+
+  async function handleAddReferenceFiles(files: FileList | File[]) {
+    const fileArray = Array.from(files);
+    // Batch concurrent uploads so a big drop doesn't overload the backend instance.
+    for (let i = 0; i < fileArray.length; i += 3) {
+      const batch = fileArray.slice(i, i + 3);
+      await Promise.all(batch.map(uploadOneReferenceFile));
+    }
+  }
+
+  async function handleAddReferenceUrl(url: string) {
+    const tempId = `temp-${crypto.randomUUID()}`;
+    const placeholder: ReferenceMaterial = {
+      id: tempId,
+      kind: "website",
+      source_url: url,
+      analysis: "failed",
+      extracted_text: "",
+      truncated: false,
+      note: "",
+    };
+    setReferenceMaterials((prev) => [...prev, placeholder]);
+    setUploadingMaterialIds((prev) => new Set(prev).add(tempId));
+    pushActivity(`Fetching ${url}...`);
+    try {
+      const result = await addReferenceUrl({ url });
+      setReferenceMaterials((prev) => prev.map((m) => (m.id === tempId ? { ...result, id: tempId } : m)));
+      pushActivity(
+        result.analysis === "analyzed" ? `Understood ${url} ✓` : `Couldn't read ${url}`,
+        result.analysis === "analyzed" ? "success" : "error"
+      );
+    } catch (e) {
+      const message = e instanceof ApiError ? e.message : "Couldn't fetch that link.";
+      setReferenceMaterials((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...m, analysis: "failed", note: message } : m))
+      );
+      pushActivity(`Couldn't fetch ${url}`, "error");
+    } finally {
+      setUploadingMaterialIds((prev) => {
+        const next = new Set(prev);
+        next.delete(tempId);
+        return next;
+      });
+    }
+  }
+
+  function handleRemoveReferenceMaterial(id: string) {
+    setReferenceMaterials((prev) => prev.filter((m) => m.id !== id));
+  }
+
   function handleSaveDraft() {
     const draft: Draft = {
       savedAt: new Date().toISOString(),
@@ -145,8 +288,13 @@ export default function Home() {
       structured,
       situations,
       selectedSituation,
+      selectedAngle,
+      scriptLanguage,
+      targetDuration,
       script,
       compliance,
+      referenceMaterials,
+      sourceUrlRawText,
     };
     window.localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
     setDraftAvailable(true);
@@ -165,8 +313,13 @@ export default function Home() {
       setStructured(draft.structured);
       setSituations(draft.situations);
       setSelectedSituation(draft.selectedSituation);
+      setSelectedAngle(draft.selectedAngle ?? null);
+      setScriptLanguage(draft.scriptLanguage ?? "english");
+      setTargetDuration(draft.targetDuration ?? "");
       setScript(draft.script);
       setCompliance(draft.compliance);
+      setReferenceMaterials(draft.referenceMaterials ?? []);
+      setSourceUrlRawText(draft.sourceUrlRawText);
       showToast("Draft restored — Assets/Voiceover/Render will need re-running", "success");
     } catch {
       showToast("Couldn't restore that draft.", "danger");
@@ -238,7 +391,7 @@ export default function Home() {
   }
 
   const runScriptGeneration = useCallback(
-    async (situation: StorySituation, setLoading: (v: boolean) => void) => {
+    async (situation: StorySituation, angle: string, setLoading: (v: boolean) => void) => {
       if (!structured) return;
       setLoading(true);
       setGlobalError(null);
@@ -247,9 +400,13 @@ export default function Home() {
           structured_product: structured,
           selected_situation: situation,
           product_category: category,
+          creative_angle: angle,
+          script_language: scriptLanguage,
+          target_duration: targetDuration,
         });
         setScript(result);
         setSelectedSituation(situation);
+        setSelectedAngle(angle);
         // Any previous assets/voiceovers/render are stale once the script changes.
         setAssets({});
         setVoiceovers({});
@@ -261,19 +418,51 @@ export default function Home() {
         setLoading(false);
       }
     },
-    [structured, category]
+    [structured, category, scriptLanguage, targetDuration]
   );
 
-  async function handleSelectSituation(situation: StorySituation) {
-    setSituationSelectingId(situation.id);
-    await runScriptGeneration(situation, () => {});
-    setSituationSelectingId(null);
+  async function handleSelectAngle(situation: StorySituation, angle: string) {
+    setSituationSelectingKey({ situationId: situation.id, angle });
+    await runScriptGeneration(situation, angle, () => {});
+    setSituationSelectingKey(null);
     goTo(2);
   }
 
   async function handleRegenerateScript() {
-    if (!selectedSituation) return;
-    await runScriptGeneration(selectedSituation, setScriptRegenLoading);
+    if (!selectedSituation || !selectedAngle) return;
+    await runScriptGeneration(selectedSituation, selectedAngle, setScriptRegenLoading);
+  }
+
+  async function handleRegenerateScope(scope: ScriptRegenerateScope) {
+    if (!structured || !selectedSituation || !script) return;
+    if (scope === "full") {
+      await handleRegenerateScript();
+      return;
+    }
+    setScriptRegenLoading(true);
+    setGlobalError(null);
+    try {
+      const result = await regenerateScriptSection({
+        structured_product: structured,
+        selected_situation: selectedSituation,
+        product_category: category,
+        creative_angle: selectedAngle ?? "",
+        script_language: scriptLanguage,
+        target_duration: targetDuration,
+        current_script: script,
+        scope,
+      });
+      setScript(result);
+      // Any previous assets/voiceovers/render are stale once the script changes.
+      setAssets({});
+      setVoiceovers({});
+      setRenderResult(null);
+      setApproved(false);
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't regenerate that part of the script.", "danger");
+    } finally {
+      setScriptRegenLoading(false);
+    }
   }
 
   async function handleRewriteScriptLine(lineId: string, directive: RewriteDirective) {
@@ -314,8 +503,8 @@ export default function Home() {
   }
 
   async function handleRegenerateFromCompliance() {
-    if (!selectedSituation) return;
-    await runScriptGeneration(selectedSituation, setScriptRegenLoading);
+    if (!selectedSituation || !selectedAngle) return;
+    await runScriptGeneration(selectedSituation, selectedAngle, setScriptRegenLoading);
     goTo(2);
   }
 
@@ -485,6 +674,15 @@ export default function Home() {
                     improvingDescription={improvingDescription}
                     onContinue={handleGenerateSituations}
                     continueLoading={situationsLoading}
+                    referenceMaterials={referenceMaterials}
+                    uploadingMaterialIds={uploadingMaterialIds}
+                    onAddReferenceFiles={handleAddReferenceFiles}
+                    onAddReferenceUrl={handleAddReferenceUrl}
+                    onRemoveReferenceMaterial={handleRemoveReferenceMaterial}
+                    sourceUrlRawText={sourceUrlRawText}
+                    onSourceUrlRawTextChange={setSourceUrlRawText}
+                    activityLog={activityLog}
+                    onActivity={pushActivity}
                   />
                 )}
 
@@ -493,10 +691,14 @@ export default function Home() {
                     situations={situations}
                     loading={situationsLoading}
                     generatingMore={situationsGenMoreLoading}
-                    selectingId={situationSelectingId}
-                    onSelect={handleSelectSituation}
+                    selectingKey={situationSelectingKey}
+                    onSelectAngle={handleSelectAngle}
                     onGenerateMore={handleGenerateMoreSituations}
                     onBack={() => goTo(0)}
+                    scriptLanguage={scriptLanguage}
+                    onScriptLanguageChange={setScriptLanguage}
+                    targetDuration={targetDuration}
+                    onTargetDurationChange={setTargetDuration}
                   />
                 )}
 
@@ -504,7 +706,12 @@ export default function Home() {
                   <ScriptStep
                     script={script}
                     situation={selectedSituation}
-                    onRegenerate={handleRegenerateScript}
+                    creativeAngle={selectedAngle ?? ""}
+                    scriptLanguage={scriptLanguage}
+                    onScriptLanguageChange={setScriptLanguage}
+                    targetDuration={targetDuration}
+                    onTargetDurationChange={setTargetDuration}
+                    onRegenerateScope={handleRegenerateScope}
                     onContinue={handleRunCompliance}
                     onBack={() => goTo(1)}
                     regenerating={scriptRegenLoading}

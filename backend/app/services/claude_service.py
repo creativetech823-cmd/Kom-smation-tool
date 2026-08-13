@@ -71,6 +71,9 @@ def structure_product(payload: ProductInput, raw_text: str = "") -> StructuredPr
         max_tokens=2048,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_message(payload, raw_text)}],
+        # Extended thinking is on by default and its tokens count against
+        # max_tokens — disabled so JSON generation gets the full budget.
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     try:

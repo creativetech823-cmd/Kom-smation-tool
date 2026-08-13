@@ -1,65 +1,264 @@
 import json
+import logging
+import re
 
 from anthropic import Anthropic
+from pydantic import ValidationError
 
 from app.config import settings
-from app.models.product import GeneratedScript, ScriptGenerationInput
+from app.models.product import (
+    GeneratedScript,
+    ScriptGenerationInput,
+    ScriptLanguage,
+    ScriptRegenerateScope,
+    ScriptSectionRegenerateInput,
+)
+from app.services import script_length
 from app.services.claude_utils import extract_json_text
 from app.services.compliance_rules import rules_for_category
 
+logger = logging.getLogger("script_service")
 _client = Anthropic(api_key=settings.anthropic_api_key)
 
-_SYSTEM_PROMPT = """You are a short-form video ad director for a content factory pipeline. You do NOT
-invent the creative — you are given ONE specific, already-chosen story situation (a persona, a
-conflict, an emotional arc) and your job is to write the complete cinematic script that brings that
-exact situation to life. Stay faithful to the given persona, emotion, and marketing angle throughout.
+_MAX_TOKENS = 16000
 
-Structure: a Hook that opens directly on the situation's conflict/tension, then 2-5 sequential Scenes
-(the "body") that escalate and resolve it, then a CTA that lands the situation's marketing angle.
-Choose the number of scenes to fit the given estimated length (roughly one scene per 8-12 seconds).
+_STRUCTURE_BLOCK = """STRUCTURE — build the script across these beats, in order, tagging every body
+block with the matching "section" value:
+1. Hook ("hook" field, section "hook") — a very strong attention-grabbing open: a question, a
+   shocking fact, a fear, a POV moment, a snippet of conversation, curiosity, or a contradiction.
+2. Problem (section "problem") — the user's pain, in their own words/frame. Do not mention the
+   product yet.
+3. Science / Psychology / Logic (section "science") — explain WHY the problem happens, in an
+   educational, credible way appropriate to the product's category (health, fitness, finance,
+   beauty, lifestyle, tech, education, etc).
+4. Story / Emotional Build-up (section "story") — continue naturally from the science into the
+   human story. If the creative angle is storytelling, expand the story; if it's a doctor/expert
+   angle, expand their explanation; if it's testimonial, tell the whole journey; if it's a
+   conversation, write it as dialogue; if it's a POV format (e.g. Meta Glasses), keep first-person
+   POV throughout this and every later beat.
+5. Product Introduction (section "product_intro") — introduce the product naturally, never like an
+   ad read.
+6. Ingredients / Features (section "ingredients") — why each ingredient/feature matters and what
+   problem it addresses, written conversationally, not like reading a label.
+7. Benefits (section "benefits") — immediate, long-term, emotional, and lifestyle benefits.
+8. Objection Handling (section "objection_handling") — answer the doubts a real viewer would have
+   ("will this become another addiction?", "is it safe?", "does it actually work?", "how is this
+   different?") naturally, in-voice, not as a Q&A list.
+9. CTA ("cta" field, section "cta") — a strong close: not "buy now" but a transformation-framed
+   call (e.g. "Start your recovery today", "Choose better, starting now").
 
-For every single line (hook, each scene, and the CTA) produce:
-- "text": the spoken/on-screen line, under the given character limit (for on-screen subtitle fit)
-- "visual_tags": concrete, literal visual search tags — phrases that would actually return relevant
-  results on a stock photo/video site like Pexels or Pixabay. Abstract or poetic phrasing is useless;
-  tags must describe a literal, photographable scene or object (e.g. "green cardamom pods closeup",
-  "worried father looking at phone", not "a wave of realization"). 1-3 tags per line.
+Not every situation needs all nine beats to be equally long, and a very short target duration may
+compress or merge some — use judgment — but for anything 30s or longer, every beat above should be
+represented with real substance, not skipped.
+
+FORMAT — cinematic blocks, not paragraphs: each beat is one or more short, punchy, individually
+timed script blocks (a sentence or two each), the way a real shooting script reads, never a wall of
+text in one block."""
+
+_FIELDS_BLOCK = """For every single block (hook, each body block, and the CTA) produce ALL of these
+fields:
+- "text": the spoken/voiceover line, under the given character limit (for on-screen subtitle fit).
+  Write in whatever language/voice is specified below — this is the one field that changes with it.
+  Wrap 2-5 genuinely key words per full script (the product name at first mention, ingredient names
+  with doses, standout numbers/stats) in **double asterisks** for bold emphasis — sparingly, not
+  every line, only where a reader's eye should actually land.
+- "on_screen_text": a short on-screen caption/text-overlay for this block — usually a compressed,
+  punchier version of "text" (a few words to one short phrase), not just a copy of the full line.
+- "visual_tags": concrete, literal visual search tags, ALWAYS IN ENGLISH regardless of the script's
+  spoken language (these feed an English-language stock photo/video search, e.g. Pexels/Pixabay) —
+  phrases that would actually return relevant results. Abstract or poetic phrasing is useless; tags
+  must describe a literal, photographable scene or object (e.g. "green cardamom pods closeup",
+  "worried father looking at phone", not "a wave of realization"). 1-3 tags per block.
 - "scene_label": "Hook", "Scene 1", "Scene 2", ... or "CTA"
-- "visual_direction": a director's note on blocking/action/framing for this line — richer prose than
-  visual_tags, describing what happens on screen (e.g. "Father sits at the kitchen table, phone face
-  down, staring at it for a long beat before picking it up"). Keep visual_tags and visual_direction
+- "section": one of hook, problem, science, story, product_intro, ingredients, benefits,
+  objection_handling, cta — whichever beat this block belongs to.
+- "visual_direction": a director's note on blocking/action/framing for this block — richer prose
+  than visual_tags, describing what happens on screen (e.g. "Father sits at the kitchen table,
+  phone face down, staring at it for a long beat before picking it up"), but kept to one tight
+  sentence (under ~25 words) — depth of detail, not length. Keep visual_tags and visual_direction
   distinct: visual_tags are literal stock-search phrases, visual_direction is cinematic direction.
-- "camera_angle": a concrete shot type (e.g. "close-up", "over-the-shoulder", "wide establishing shot")
-- "emotion": the emotional beat of this specific line
+- "camera_angle": a concrete shot type (e.g. "close-up", "over-the-shoulder", "wide establishing
+  shot")
+- "emotion": the emotional beat of this specific block
+- "duration_seconds": a realistic on-screen duration for this block, as a number (typically 1.5-5).
+- "b_roll": 0-2 short literal b-roll shot suggestions (English, like visual_tags) that could cut
+  away to during this block.
+- "sfx": one short sound-effect suggestion for this block if genuinely useful (e.g. "soft phone
+  notification chime"), or an empty string if none needed.
+- "ai_image_prompt": one concise, ready-to-use text-to-image generation prompt (under ~25 words)
+  that would produce this block's key visual.
+- "ai_video_prompt": one concise, ready-to-use text-to-video/motion generation prompt (under ~25
+  words) describing the motion/action for this block.
 
-Also produce one top-level "bgm_suggestion": a short direction for background music (mood/genre/tempo)
-that fits the situation's emotional arc across the whole ad.
+Also produce one top-level "bgm_suggestion": a short direction for background music (mood/genre/
+tempo) that fits the situation's emotional arc across the whole ad."""
 
-You MUST NOT make claims outside the approved category rules given to you — you are the first of two
-guardrail passes, so be conservative. If ingredient/USP data is missing, write generically rather than
-inventing specifics.
+_JSON_SAFETY_BLOCK = """JSON SAFETY (strictly enforced): return ONLY a single valid JSON object, no
+prose before or after, no markdown code fences. Every string value must have its double quotes
+escaped as \\" and its line breaks escaped as \\n — never emit a raw, unescaped newline or double
+quote inside a string value. Do not truncate — if you are running out of room, shorten remaining
+blocks rather than cutting the response off mid-JSON."""
 
-Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
-{
-  "hook": {"text": string, "visual_tags": [string], "scene_label": string, "visual_direction": string, "camera_angle": string, "emotion": string},
-  "body": [{"text": string, "visual_tags": [string], "scene_label": string, "visual_direction": string, "camera_angle": string, "emotion": string}],
-  "cta": {"text": string, "visual_tags": [string], "scene_label": string, "visual_direction": string, "camera_angle": string, "emotion": string},
+_SCRIPT_JSON_SHAPE = """{
+  "hook": {"text": string, "on_screen_text": string, "visual_tags": [string], "scene_label": string, "section": string, "visual_direction": string, "camera_angle": string, "emotion": string, "duration_seconds": number, "b_roll": [string], "sfx": string, "ai_image_prompt": string, "ai_video_prompt": string},
+  "body": [ ...same shape as hook... ],
+  "cta": { ...same shape as hook... },
   "bgm_suggestion": string
+}"""
+
+_SYSTEM_PROMPT = (
+    "You are a senior short-form video ad copywriter/director for a content factory pipeline, "
+    "writing scripts as rich and complete as a professional D2C ad agency's shooting scripts — not "
+    "a rough outline. You do NOT invent the creative — you are given ONE specific, already-chosen "
+    "story situation (a persona, a conflict, an emotional arc) and your job is to write the "
+    "complete, long-form cinematic script that brings that exact situation to life. Stay faithful "
+    "to the given persona, emotion, and marketing angle throughout.\n\n"
+    + _STRUCTURE_BLOCK
+    + "\n\n"
+    + _FIELDS_BLOCK
+    + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are the "
+    "first of two guardrail passes, so be conservative. If ingredient/USP data is missing, write "
+    "generically rather than inventing specifics.\n\n"
+    + _JSON_SAFETY_BLOCK
+    + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
+    + _SCRIPT_JSON_SHAPE
+)
+
+_REGEN_SYSTEM_PROMPT_PREFIX = """You are a senior short-form video ad copywriter/director for a
+content factory pipeline. You are given a COMPLETE existing ad script as JSON, already broken into
+a hook, body blocks, and a CTA, each tagged with a "section". Your job is to regenerate ONLY the
+requested part below — every other block's every field must be copied back EXACTLY unchanged (same
+text, same tags, same everything) — do not paraphrase, tidy up, or otherwise touch untouched
+blocks. The rewritten part(s) must stay continuous with the surrounding, unchanged blocks (same
+persona, same story so far, same product facts)."""
+
+_SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
+    ScriptRegenerateScope.full: "TASK: regenerate the ENTIRE script from scratch — every block.",
+    ScriptRegenerateScope.hook: (
+        'TASK: regenerate ONLY the "hook" block — a fresh angle/wording for the opening. Leave '
+        "every body block and the cta completely unchanged."
+    ),
+    ScriptRegenerateScope.cta: (
+        'TASK: regenerate ONLY the "cta" block. Leave the hook and every body block completely '
+        "unchanged."
+    ),
+    ScriptRegenerateScope.science: (
+        'TASK: regenerate ONLY the body block(s) whose "section" is "science" (the '
+        'why-this-happens explanation). If none are tagged "science", identify the block(s) that '
+        "function as the explanatory/educational beat and rewrite those instead. Leave the hook, "
+        "cta, and every other body block completely unchanged."
+    ),
+    ScriptRegenerateScope.product_explanation: (
+        'TASK: regenerate ONLY the body block(s) whose "section" is "product_intro" or '
+        '"ingredients". If none are tagged that way, identify the block(s) that introduce the '
+        "product/ingredients and rewrite those instead. Leave the hook, cta, and every other body "
+        "block completely unchanged."
+    ),
+    ScriptRegenerateScope.emotional_tone: (
+        'TASK: rewrite the "text" and "on_screen_text" of EVERY block (hook, every body block, '
+        "cta) to hit a noticeably stronger emotional register — lean harder into the feeling "
+        "underneath the story — while keeping the exact same scene count, structure, section tags, "
+        "camera_angle, and visual_direction as the original. Do not add or remove blocks."
+    ),
+    ScriptRegenerateScope.length: (
+        "TASK: regenerate the ENTIRE script, but make it noticeably longer and richer than the "
+        "original — hit the full target word/block count below, expanding every beat with real "
+        "substance."
+    ),
 }
+
+
+def _regen_system_prompt(scope: ScriptRegenerateScope) -> str:
+    return (
+        _REGEN_SYSTEM_PROMPT_PREFIX
+        + "\n\n"
+        + _SCOPE_GUIDANCE[scope]
+        + "\n\n"
+        + _FIELDS_BLOCK
+        + "\n\n"
+        + _JSON_SAFETY_BLOCK
+        + "\n\nReturn the COMPLETE script (all blocks, changed and unchanged) as ONE valid JSON "
+        "object, matching this exact shape:\n"
+        + _SCRIPT_JSON_SHAPE
+    )
+
+
+def _angle_block(creative_angle: str) -> str:
+    if not creative_angle:
+        return ""
+    return (
+        f"\nCREATIVE ANGLE — EXECUTION STYLE (mandatory): \"{creative_angle}\"\n"
+        f"This is not a tone tweak — it must fundamentally reshape HOW this story is told: the scene "
+        f"structure, camera work, pacing, and dialogue style all need to concretely express this execution "
+        f"style, while the underlying story situation (persona, conflict, emotional arc) stays the same. "
+        f"Use your own knowledge of this format/style to interpret it concretely:\n"
+        f"- If it names a filming format (e.g. \"Meta Glasses POV\", \"CCTV Footage\", \"Documentary\", "
+        f"\"UGC\"), every camera_angle and visual_direction must literally reflect that format's real "
+        f"visual grammar (POV = first-person, no cuts to a face unless a mirror/reflection; CCTV = fixed "
+        f"wide angle, timestamp-style framing; documentary = handheld/interview cutaways, etc.).\n"
+        f"- If it names a role (e.g. \"Doctor Testimonial\", \"Customer Testimonial\", \"Interview\"), "
+        f"structure the script as that role speaking directly to camera, not third-person narration.\n"
+        f"- If it references a known creator, brand, or production style (e.g. \"like an Apple commercial\", "
+        f"\"like a Netflix documentary\", \"like [a named YouTuber]\"), emulate that style's real pacing, "
+        f"line rhythm, and visual sensibility as best you can from what you know of it.\n"
+        f"- Adjust the number and length of scenes if this execution style genuinely calls for a different "
+        f"pace than a standard cut (e.g. a single unbroken POV take vs. a fast-cut viral-trend montage).\n"
+    )
+
+
+_VOICE_STRUCTURE_GUIDE = """
+Write like a native Hindi-speaking D2C copywriter, not a translator — the way real ad scripts for
+brands like this actually sound. Structurally (regardless of script):
+- Open the hook as a relatable rhetorical question or observation the audience has genuinely had.
+- Break thoughts into short, punchy beats (roughly one idea per line) rather than long sentences —
+  natural spoken pauses, not paragraphs. This creates rhythm when read aloud.
+- It's fine (often good) to use a "problem reframe" beat — restating what the problem ISN'T before
+  landing what it actually IS — when it genuinely fits, not as a forced formula every time.
+- When introducing ingredients or specifics, use the pattern: name the ingredient/spec, its
+  dose/detail if known, then the one-line benefit.
+- Land the CTA/closing on a short, rhythmic brand line — often 2-3 short parallel phrases — rather
+  than a generic "buy now."
 """
 
+_LANGUAGE_BLOCKS: dict[ScriptLanguage, str] = {
+    ScriptLanguage.english: "",
+    ScriptLanguage.hindi: (
+        "\nSCRIPT LANGUAGE (mandatory, strictly enforced): Write every \"text\" field ENTIRELY in "
+        "Devanagari script (हिंदी) — every word, not just some. Do NOT write in Roman/Latin letters at "
+        "all, even for common code-switched words — transliterate them into Devanagari too (e.g. write "
+        "\"स्ट्रेस\" not \"stress\", \"रूटीन\" not \"routine\"). The only exception is the product/brand "
+        "name itself, which may stay in Roman script if that's how it's branded. This must read like "
+        "natural conversational spoken Hindi a voiceover artist would say, not a stiff formal "
+        "translation. Example of the register (not the content) — a line should look like this shape: "
+        "\"क्या आपको भी लगता है कि यह सिर्फ एक ट्रेंड है?\" and an ingredient beat like "
+        "\"**अश्वगंधा — 250 mg**, जो तनाव को नियंत्रित करने में मदद करता है।\"\n" + _VOICE_STRUCTURE_GUIDE
+    ),
+    ScriptLanguage.hinglish: (
+        "\nSCRIPT LANGUAGE (mandatory): Write every \"text\" field in natural spoken Hinglish — Hindi "
+        "sentence structure and vocabulary in ROMAN (Latin) script, code-switching to English for words "
+        "that Indian audiences naturally say in English (e.g. \"stress\", \"routine\", \"habit\", "
+        "\"cycle\", \"support\"). This is NOT English text with a few Hindi words sprinkled in — the "
+        "sentence structure itself must be Hindi. Example of the register (not the content): \"Kabhi "
+        "socha hai ki yeh sirf ek trend hai?\" and an ingredient beat like \"**Ashwagandha — 250 mg**, "
+        "jo stress ko manage karne mein support karta hai.\"\n" + _VOICE_STRUCTURE_GUIDE
+    ),
+}
 
-def _build_user_message(payload: ScriptGenerationInput) -> str:
+
+def _language_block(language: ScriptLanguage) -> str:
+    return _LANGUAGE_BLOCKS.get(language, "")
+
+
+def _context_block(payload, target_duration: str) -> str:
+    """Situation/product/rules/angle/language/length context shared by both a
+    fresh generation and a targeted regeneration."""
     p = payload.structured_product
     s = payload.selected_situation
     rules = rules_for_category(payload.product_category)
     rules_block = "\n".join(f"- {r}" for r in rules)
 
-    winners_block = (
-        "\n".join(f"- {w}" for w in payload.similar_past_winners)
-        if payload.similar_past_winners
-        else "(none available yet)"
-    )
+    winners = getattr(payload, "similar_past_winners", None)
+    winners_block = "\n".join(f"- {w}" for w in winners) if winners else "(none available yet)"
 
     return (
         f"Chosen story situation (the creative brief — bring THIS to life):\n"
@@ -69,7 +268,9 @@ def _build_user_message(payload: ScriptGenerationInput) -> str:
         f"Persona: {s.persona}\n"
         f"Marketing angle: {s.marketing_angle}\n"
         f"Category: {s.category}\n"
-        f"Estimated length: {s.estimated_length}\n\n"
+        f"{_angle_block(payload.creative_angle)}"
+        f"{_language_block(payload.script_language)}\n"
+        f"{script_length.length_directive(target_duration)}"
         f"Platform: {payload.platform}\n"
         f"Max characters per line: {payload.max_line_chars}\n\n"
         f"Product: {p.product_name}\n"
@@ -84,15 +285,153 @@ def _build_user_message(payload: ScriptGenerationInput) -> str:
     )
 
 
-def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
-    """Stage 6 — chosen story situation -> full cinematic script + visual search tags."""
-
+def _call_claude(system: str, user_message: str, max_tokens: int) -> str:
     response = _client.messages.create(
         model=settings.claude_structuring_model,
-        max_tokens=2560,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(payload)}],
+        max_tokens=max_tokens,
+        system=system,
+        messages=[{"role": "user", "content": user_message}],
+        # Extended thinking is on by default for this model and its tokens count
+        # against max_tokens — if thinking eats the whole budget, no text block
+        # (or a truncated one) comes back at all. This is JSON generation, not a
+        # reasoning task, so thinking is disabled to guarantee the full budget
+        # goes to the actual script text.
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    return extract_json_text(response.content)
+
+
+def _parse_script_json(raw_text: str) -> dict:
+    try:
+        return json.loads(raw_text)
+    except json.JSONDecodeError:
+        cleaned = re.sub(r",\s*([}\]])", r"\1", raw_text)
+        return json.loads(cleaned)
+
+
+_REPAIR_SYSTEM_PROMPT = """You are a strict JSON repair tool. You will be given a piece of text
+that was supposed to be a single valid JSON object but failed to parse, plus the parser error. Fix
+it and return ONLY the corrected, complete, valid JSON object — no prose, no markdown fences, no
+explanation. Preserve all the original content and structure as closely as possible; only fix
+syntax problems (unescaped quotes/newlines, trailing commas, truncation, etc.). If the JSON was cut
+off mid-object, complete it sensibly rather than leaving it truncated."""
+
+
+def _repair_json(broken_text: str, error_message: str, max_tokens: int) -> dict:
+    user_message = f"Parser error: {error_message}\n\nBroken JSON:\n{broken_text}"
+    raw = _call_claude(_REPAIR_SYSTEM_PROMPT, user_message, max_tokens)
+    return _parse_script_json(raw)
+
+
+def _generate_with_recovery(system: str, user_message: str, max_tokens: int, target_duration: str) -> dict:
+    """Attempt 1 -> silent retry (attempt 2) -> repair pass -> only then raise.
+    The caller (and therefore the user) only ever sees an error if all three
+    recovery stages fail."""
+    data: dict | None = None
+    last_raw = ""
+    last_error: Exception | None = None
+
+    for attempt in (1, 2):
+        try:
+            last_raw = _call_claude(system, user_message, max_tokens)
+            candidate = _parse_script_json(last_raw)
+            GeneratedScript(**candidate)
+            data = candidate
+            break
+        except (json.JSONDecodeError, ValidationError, TypeError) as e:
+            last_error = e
+            logger.warning("Script generation attempt %d produced invalid JSON: %s", attempt, e)
+
+    if data is None:
+        try:
+            data = _repair_json(last_raw, str(last_error), max_tokens)
+            GeneratedScript(**data)
+        except Exception as e:
+            logger.warning("Script JSON repair pass also failed: %s", e)
+            raise ValueError(
+                "Claude returned malformed JSON while writing the script, even after an automatic "
+                "retry and repair pass. Please try again in a moment."
+            ) from e
+
+    if script_length.count_words(data) < script_length.target_word_minimum(target_duration) * 0.6:
+        try:
+            expanded_raw = _call_claude(
+                system,
+                user_message
+                + "\n\nIMPORTANT: your previous attempt was far too short for the requested "
+                "duration — expand significantly and cover the full 9-part structure with real "
+                "substance in each beat, not one throwaway line per beat.",
+                max_tokens,
+            )
+            expanded_data = _parse_script_json(expanded_raw)
+            GeneratedScript(**expanded_data)
+            data = expanded_data
+        except Exception as e:
+            logger.warning("Length-expansion regeneration failed, keeping shorter script: %s", e)
+
+    return data
+
+
+def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
+    """Stage 6 — chosen story situation (+ optional creative execution angle)
+    -> full cinematic script + visual search tags, sized to the target duration."""
+
+    target_duration = script_length.resolve_target_duration(
+        payload.selected_situation.estimated_length, payload.target_duration
+    )
+    user_message = _context_block(payload, target_duration)
+    data = _generate_with_recovery(_SYSTEM_PROMPT, user_message, _MAX_TOKENS, target_duration)
+
+    return GeneratedScript(
+        **data,
+        situation=payload.selected_situation,
+        creative_angle=payload.creative_angle,
+        script_language=payload.script_language,
+        target_duration=target_duration,
     )
 
-    data = json.loads(extract_json_text(response.content))
-    return GeneratedScript(**data, situation=payload.selected_situation)
+
+def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> GeneratedScript:
+    """Targeted regeneration — rewrite only the requested part of an
+    already-generated script, leaving every other block untouched."""
+
+    target_duration = script_length.resolve_target_duration(
+        payload.selected_situation.estimated_length, payload.target_duration
+    )
+
+    if payload.scope == ScriptRegenerateScope.full:
+        return generate_script(
+            ScriptGenerationInput(
+                structured_product=payload.structured_product,
+                selected_situation=payload.selected_situation,
+                product_category=payload.product_category,
+                platform=payload.platform,
+                max_line_chars=payload.max_line_chars,
+                creative_angle=payload.creative_angle,
+                script_language=payload.script_language,
+                target_duration=target_duration,
+            )
+        )
+
+    length_target = (
+        script_length.bump_bucket(target_duration)
+        if payload.scope == ScriptRegenerateScope.length
+        else target_duration
+    )
+    context = _context_block(payload, length_target)
+    current_script_json = payload.current_script.model_dump_json(exclude={"situation"})
+    user_message = (
+        f"{context}\n\n"
+        f"Current script (JSON) — copy every untouched block back exactly as-is, only rewrite what "
+        f"the TASK above asks for:\n{current_script_json}"
+    )
+    system = _regen_system_prompt(payload.scope)
+    data = _generate_with_recovery(system, user_message, _MAX_TOKENS, length_target)
+
+    return GeneratedScript(
+        **data,
+        situation=payload.selected_situation,
+        creative_angle=payload.creative_angle,
+        script_language=payload.script_language,
+        target_duration=length_target,
+    )

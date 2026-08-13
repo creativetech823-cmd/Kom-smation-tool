@@ -1,15 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { motion } from "framer-motion";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Input, Textarea } from "@/components/ui/Field";
-import type { ProductInput, SourceType } from "@/lib/types";
+import { ErrorCard } from "@/components/ui/ErrorCard";
+import { StagedProgress, type ProgressStage } from "@/components/ui/StagedProgress";
+import { KnowledgeSourcesChecklist } from "@/components/ui/KnowledgeSourcesChecklist";
+import { ReferenceMaterialsPanel } from "@/components/steps/ReferenceMaterialsPanel";
+import { ApiError, autofillProduct, fetchUrlContent } from "@/lib/api";
+import type { ProductInput, ReferenceMaterial, SourceType } from "@/lib/types";
 
 const SOURCE_OPTIONS: { value: SourceType; label: string; hint: string; icon: React.ReactNode }[] = [
   { value: "description", label: "Description", hint: "Paste or type product details", icon: <IconDoc /> },
-  { value: "url", label: "Website URL", hint: "Not wired up yet (Stage 2)", icon: <IconGlobe /> },
+  { value: "url", label: "Website URL", hint: "AI reads and understands the page", icon: <IconGlobe /> },
   { value: "none", label: "Manual only", hint: "No source — enter ingredients + USP", icon: <IconEdit /> },
+];
+
+const URL_STAGES: ProgressStage[] = [
+  { id: "fetch", label: "Fetching website..." },
+  { id: "extract", label: "Extracting content..." },
+  { id: "understand", label: "Understanding product..." },
 ];
 
 const DESCRIPTION_MAX = 5000;
@@ -20,12 +32,28 @@ export function InputStep({
   error,
   onImproveDescription,
   improvingDescription,
+  referenceMaterials,
+  uploadingMaterialIds,
+  onAddReferenceFiles,
+  onAddReferenceUrl,
+  onRemoveReferenceMaterial,
+  sourceUrlRawText,
+  onSourceUrlRawTextChange,
+  onActivity,
 }: {
   onSubmit: (input: ProductInput, category: string) => void;
   loading: boolean;
   error: string | null;
   onImproveDescription?: (text: string) => Promise<string>;
   improvingDescription?: boolean;
+  referenceMaterials: ReferenceMaterial[];
+  uploadingMaterialIds: Set<string>;
+  onAddReferenceFiles: (files: FileList | File[]) => void;
+  onAddReferenceUrl: (url: string) => void;
+  onRemoveReferenceMaterial: (id: string) => void;
+  sourceUrlRawText: string | undefined;
+  onSourceUrlRawTextChange: (text: string | undefined) => void;
+  onActivity: (label: string, tone?: "info" | "success" | "error") => void;
 }) {
   const [productName, setProductName] = useState("");
   const [targetAudience, setTargetAudience] = useState("");
@@ -36,6 +64,60 @@ export function InputStep({
   const [manualIngredients, setManualIngredients] = useState("");
   const [manualUsp, setManualUsp] = useState("");
 
+  const [urlStatus, setUrlStatus] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [urlStageIndex, setUrlStageIndex] = useState(0);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [urlSummary, setUrlSummary] = useState<string | null>(null);
+  const analyzedUrlRef = useRef<string | null>(null);
+
+  async function runUrlAnalysis(url: string) {
+    if (analyzedUrlRef.current === url && urlStatus === "done") return;
+    analyzedUrlRef.current = url;
+    setUrlStatus("loading");
+    setUrlStageIndex(0);
+    setUrlError(null);
+    onActivity(`Fetching ${url}...`);
+    try {
+      const fetched = await fetchUrlContent({ url });
+      onSourceUrlRawTextChange(fetched.raw_text);
+      setUrlStageIndex(1);
+      onActivity("Extracting content...");
+      setUrlStageIndex(2);
+      onActivity("Understanding product...");
+      const suggestion = await autofillProduct({ raw_text: fetched.raw_text, source_url: url });
+      if (suggestion.product_name) setProductName(suggestion.product_name);
+      if (suggestion.target_audience) setTargetAudience(suggestion.target_audience);
+      if (suggestion.product_category) setCategory(suggestion.product_category);
+      if (suggestion.source_description) setSourceDescription(suggestion.source_description);
+      setUrlSummary(suggestion.source_description || fetched.title || "Website analyzed.");
+      setUrlStageIndex(3);
+      setUrlStatus("done");
+      onActivity("Understood product ✓", "success");
+    } catch (e) {
+      analyzedUrlRef.current = null;
+      setUrlStatus("error");
+      setUrlError(e instanceof ApiError ? e.message : "Couldn't analyze that website.");
+      onActivity("Website analysis failed", "error");
+    }
+  }
+
+  useEffect(() => {
+    if (sourceType !== "url") return;
+    const trimmed = sourceUrl.trim();
+    if (!/^https?:\/\/.+/i.test(trimmed)) return;
+    if (analyzedUrlRef.current === trimmed) return;
+    if (urlStatus === "loading") return;
+    const t = setTimeout(() => runUrlAnalysis(trimmed), 900);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceUrl, sourceType]);
+
+  function handleAddFiles(files: FileList | File[]) {
+    onAddReferenceFiles(files);
+  }
+
+  const hasAnalyzedReference = referenceMaterials.some((m) => m.analysis === "analyzed");
+
   const canSubmit =
     productName.trim() &&
     targetAudience.trim() &&
@@ -44,7 +126,7 @@ export function InputStep({
       ? sourceDescription.trim()
       : sourceType === "url"
       ? sourceUrl.trim()
-      : manualIngredients.trim() && manualUsp.trim());
+      : (manualIngredients.trim() && manualUsp.trim()) || hasAnalyzedReference);
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -56,8 +138,10 @@ export function InputStep({
         source_type: sourceType,
         source_description: sourceType === "description" ? sourceDescription : undefined,
         source_url: sourceType === "url" ? sourceUrl : undefined,
+        source_url_raw_text: sourceType === "url" ? sourceUrlRawText : undefined,
         manual_ingredients: sourceType === "none" ? manualIngredients : undefined,
         manual_usp: sourceType === "none" ? manualUsp : undefined,
+        reference_materials: referenceMaterials,
       },
       category
     );
@@ -115,22 +199,34 @@ export function InputStep({
           <div>
             <FieldLabel icon={<IconGlobe />}>Source</FieldLabel>
             <div className="grid grid-cols-3 gap-2">
-              {SOURCE_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setSourceType(opt.value)}
-                  className={`rounded-xl border px-3 py-2.5 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                    sourceType === opt.value
-                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)]"
-                      : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--muted)] hover:text-[var(--foreground)]"
-                  }`}
-                >
-                  <div className="mb-1 flex h-4 w-4 items-center justify-center">{opt.icon}</div>
-                  <div className="font-medium">{opt.label}</div>
-                  <div className="mt-0.5 text-[11px] opacity-80">{opt.hint}</div>
-                </button>
-              ))}
+              {SOURCE_OPTIONS.map((opt) => {
+                const selected = sourceType === opt.value;
+                return (
+                  <motion.button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSourceType(opt.value)}
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    className={`relative rounded-xl border px-3 py-2.5 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                      selected
+                        ? "glow-border bg-[var(--accent-soft)] text-[var(--accent)]"
+                        : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {selected && (
+                      <span className="absolute right-2 top-2 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-white">
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                          <path d="M5 12l5 5L20 7" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    )}
+                    <div className="mb-1 flex h-4 w-4 items-center justify-center">{opt.icon}</div>
+                    <div className="font-medium">{opt.label}</div>
+                    <div className="mt-0.5 text-[11px] opacity-80">{opt.hint}</div>
+                  </motion.button>
+                );
+              })}
             </div>
           </div>
 
@@ -171,17 +267,44 @@ export function InputStep({
           )}
 
           {sourceType === "url" && (
-            <div>
+            <div className="space-y-2.5">
               <FieldLabel icon={<IconGlobe />}>Website URL</FieldLabel>
               <Input
                 value={sourceUrl}
-                onChange={(e) => setSourceUrl(e.target.value)}
+                onChange={(e) => {
+                  setSourceUrl(e.target.value);
+                  if (urlStatus !== "idle") {
+                    setUrlStatus("idle");
+                    onSourceUrlRawTextChange(undefined);
+                    setUrlSummary(null);
+                  }
+                }}
                 placeholder="https://example.com/product"
                 autoComplete="off"
               />
-              <p className="mt-1 text-[12px] text-[var(--warning)]">
-                Stage 2 (Jina Reader scraping) isn&apos;t wired up yet — this will fail on submit.
+              <p className="text-[11px] text-[var(--muted)]">
+                Paste a link — the AI fetches and reads the page automatically.
               </p>
+
+              {urlStatus === "loading" && (
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-4 py-4">
+                  <StagedProgress stages={URL_STAGES} currentIndex={urlStageIndex} />
+                </div>
+              )}
+
+              {urlStatus === "error" && urlError && (
+                <ErrorCard message={urlError} onRetry={() => runUrlAnalysis(sourceUrl.trim())} />
+              )}
+
+              {urlStatus === "done" && urlSummary && (
+                <div className="rounded-xl border border-[var(--success)]/25 bg-[var(--success)]/[0.06] px-4 py-3">
+                  <p className="mb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--success)]">
+                    <span>✓</span> Auto-filled from website
+                  </p>
+                  <p className="text-[12px] leading-snug text-[var(--foreground)]">{urlSummary}</p>
+                  <p className="mt-1 text-[11px] text-[var(--muted)]">Edit any field above if needed.</p>
+                </div>
+              )}
             </div>
           )}
 
@@ -207,14 +330,37 @@ export function InputStep({
                   autoComplete="off"
                 />
               </div>
+              {hasAnalyzedReference && !manualIngredients.trim() && !manualUsp.trim() && (
+                <p className="col-span-2 text-[12px] text-[var(--muted)]">
+                  No ingredients/USP entered — that&apos;s fine, your reference materials below are analyzed
+                  ones will be used instead.
+                </p>
+              )}
             </div>
           )}
+
+          <div className="border-t border-[var(--border)] pt-4">
+            <ReferenceMaterialsPanel
+              materials={referenceMaterials}
+              uploadingIds={uploadingMaterialIds}
+              onAddFiles={handleAddFiles}
+              onAddUrl={onAddReferenceUrl}
+              onRemove={onRemoveReferenceMaterial}
+            />
+          </div>
+
+          <KnowledgeSourcesChecklist
+            hasDescription={sourceType === "description" && sourceDescription.trim().length > 0}
+            urlState={sourceType === "url" ? (urlStatus === "done" ? "active" : urlStatus === "loading" ? "pending" : "absent") : "absent"}
+            referenceMaterials={referenceMaterials}
+          />
 
           <div className="flex items-start gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3 text-[12px] text-[var(--muted)]">
             <span className="mt-0.5">💡</span>
             <p>
               <span className="font-medium text-[var(--foreground)]">Tip:</span> the more detail you
-              provide, the more accurate the AI&apos;s understanding of your product will be.
+              provide — description, website, or reference files — the more accurate the AI&apos;s
+              understanding of your product will be.
             </p>
           </div>
 

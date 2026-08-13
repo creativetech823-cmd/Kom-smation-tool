@@ -5,6 +5,7 @@ import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { audioFileUrl } from "@/lib/api";
+import { renderBold } from "@/lib/renderBold";
 import type { FlatLine, VoiceoverResult } from "@/lib/types";
 
 const ROLE_LABEL: Record<string, string> = { hook: "Hook", body: "Body", cta: "CTA" };
@@ -70,7 +71,7 @@ export function VoiceoverStep({
                   </button>
                 </div>
 
-                <p className="text-[13px] text-[var(--muted)]">{line.text}</p>
+                <p className="text-[13px] text-[var(--muted)]">{renderBold(line.text)}</p>
 
                 {isLoading ? (
                   <div className="animate-shimmer mt-2.5 h-10 w-full rounded-lg" />

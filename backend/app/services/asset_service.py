@@ -73,6 +73,9 @@ def broaden_tag(tag: str) -> str:
         max_tokens=64,
         system=_BROADEN_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": tag}],
+        # Extended thinking is on by default and its tokens count against
+        # max_tokens — disabled so tiny-budget calls don't get starved.
+        extra_body={"thinking": {"type": "disabled"}},
     )
     text_block = next(b for b in response.content if b.type == "text")
     return text_block.text.strip().strip('"')
@@ -125,6 +128,9 @@ def rank_with_vision(target_description: str, candidates: list[AssetCandidate]) 
             max_tokens=256,
             system=_VISION_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": content}],
+            # Extended thinking is on by default and its tokens count against
+            # max_tokens — disabled so tiny-budget calls don't get starved.
+            extra_body={"thinking": {"type": "disabled"}},
         )
         data = json.loads(extract_json_text(response.content))
         return data["best_index"], data.get("reasoning", "")

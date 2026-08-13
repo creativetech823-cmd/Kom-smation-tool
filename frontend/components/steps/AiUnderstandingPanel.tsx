@@ -13,16 +13,50 @@ const LOADING_STEPS = [
   { id: "confidence", label: "Scoring confidence" },
 ];
 
+export type ActivityEntry = { id: string; label: string; tone: "info" | "success" | "error"; ts: number };
+
+function ActivityFeed({ entries }: { entries: ActivityEntry[] }) {
+  if (entries.length === 0) return null;
+  return (
+    <div className="mb-3 space-y-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-3">
+      <p className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[var(--accent-2)] animate-pulse-dot" />
+        AI Activity
+      </p>
+      <div className="space-y-1">
+        {entries.slice(0, 5).map((entry, i) => (
+          <p
+            key={entry.id}
+            className={`text-[12px] leading-snug ${
+              i === 0
+                ? entry.tone === "error"
+                  ? "text-[var(--danger)]"
+                  : entry.tone === "success"
+                  ? "text-[var(--success)]"
+                  : "text-[var(--foreground)]"
+                : "text-[var(--muted)]"
+            }`}
+          >
+            {entry.label}
+          </p>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function AiUnderstandingPanel({
   data,
   loading,
   onContinue,
   continueLoading,
+  activityLog = [],
 }: {
   data: StructuredProduct | null;
   loading: boolean;
   onContinue: () => void;
   continueLoading: boolean;
+  activityLog?: ActivityEntry[];
 }) {
   const state: "placeholder" | "loading" | "populated" = loading ? "loading" : data ? "populated" : "placeholder";
 
@@ -40,6 +74,8 @@ export function AiUnderstandingPanel({
         }
       />
       <CardBody className="space-y-3">
+        <ActivityFeed entries={activityLog} />
+
         {state === "placeholder" && (
           <div className="flex flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)]/40 px-6 py-14 text-center">
             <span className="text-[22px]">✨</span>

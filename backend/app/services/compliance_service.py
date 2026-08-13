@@ -52,6 +52,9 @@ def audit_script(payload: ComplianceCheckInput) -> ComplianceResult:
         max_tokens=1024,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_message(payload)}],
+        # Extended thinking is on by default and its tokens count against
+        # max_tokens — disabled so JSON generation gets the full budget.
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
     data = json.loads(extract_json_text(response.content))

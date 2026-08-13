@@ -7,10 +7,14 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Input } from "@/components/ui/Field";
 import { AiWorkingChecklist } from "@/components/ui/AiWorkingChecklist";
+import { LanguageSelector } from "@/components/ui/LanguageSelector";
+import { DurationSelector } from "@/components/ui/DurationSelector";
+import { angleAccent, angleEmoji } from "@/lib/creativeAngles";
 import { cn } from "@/lib/utils";
-import type { StorySituation } from "@/lib/types";
+import type { ScriptLanguage, StorySituation } from "@/lib/types";
 
 type ViralityBucket = "" | "8+" | "6-8" | "<6";
+type SelectingKey = { situationId: string; angle: string } | null;
 
 const LOADING_STEPS = [
   { id: "profile", label: "Reading product profile" },
@@ -20,6 +24,8 @@ const LOADING_STEPS = [
 ];
 
 const CATEGORY_ACCENTS = ["var(--accent)", "var(--accent-2)", "var(--success)", "var(--warning)"];
+const VISIBLE_ANGLE_CAP = 5;
+const CUSTOM_ANGLE_MAX = 300;
 
 function categoryAccent(category: string): string {
   let hash = 0;
@@ -59,23 +65,32 @@ export function StorySituationStep({
   situations,
   loading,
   generatingMore,
-  selectingId,
-  onSelect,
+  selectingKey,
+  onSelectAngle,
   onGenerateMore,
   onBack,
+  scriptLanguage,
+  onScriptLanguageChange,
+  targetDuration,
+  onTargetDurationChange,
 }: {
   situations: StorySituation[];
   loading: boolean;
   generatingMore: boolean;
-  selectingId: string | null;
-  onSelect: (situation: StorySituation) => void;
+  selectingKey: SelectingKey;
+  onSelectAngle: (situation: StorySituation, angle: string) => void;
   onGenerateMore: () => void;
   onBack: () => void;
+  scriptLanguage: ScriptLanguage;
+  onScriptLanguageChange: (language: ScriptLanguage) => void;
+  targetDuration: string;
+  onTargetDurationChange: (duration: string) => void;
 }) {
   const [search, setSearch] = useState("");
   const [emotion, setEmotion] = useState("");
   const [persona, setPersona] = useState("");
-  const [angle, setAngle] = useState("");
+  const [marketingAngle, setMarketingAngle] = useState("");
+  const [creativeAngle, setCreativeAngle] = useState("");
   const [category, setCategory] = useState("");
   const [difficulty, setDifficulty] = useState("");
   const [length, setLength] = useState("");
@@ -86,7 +101,8 @@ export function StorySituationStep({
     return {
       emotion: uniq(situations.map((s) => s.emotion)),
       persona: uniq(situations.map((s) => s.persona)),
-      angle: uniq(situations.map((s) => s.marketing_angle)),
+      marketingAngle: uniq(situations.map((s) => s.marketing_angle)),
+      creativeAngle: uniq(situations.flatMap((s) => s.recommended_angles)),
       category: uniq(situations.map((s) => s.category)),
       difficulty: uniq(situations.map((s) => s.difficulty)),
       length: uniq(situations.map((s) => s.estimated_length)),
@@ -97,7 +113,8 @@ export function StorySituationStep({
     search.trim() !== "" ||
     emotion !== "" ||
     persona !== "" ||
-    angle !== "" ||
+    marketingAngle !== "" ||
+    creativeAngle !== "" ||
     category !== "" ||
     difficulty !== "" ||
     length !== "" ||
@@ -108,54 +125,81 @@ export function StorySituationStep({
     return situations.filter((s) => {
       if (
         q &&
-        !`${s.title} ${s.description} ${s.emotion} ${s.persona} ${s.marketing_angle} ${s.category}`
+        !`${s.title} ${s.description} ${s.emotion} ${s.persona} ${s.marketing_angle} ${s.category} ${s.recommended_angles.join(
+          " "
+        )}`
           .toLowerCase()
           .includes(q)
       )
         return false;
       if (emotion && s.emotion !== emotion) return false;
       if (persona && s.persona !== persona) return false;
-      if (angle && s.marketing_angle !== angle) return false;
+      if (marketingAngle && s.marketing_angle !== marketingAngle) return false;
+      if (creativeAngle && !s.recommended_angles.includes(creativeAngle)) return false;
       if (category && s.category !== category) return false;
       if (difficulty && s.difficulty !== difficulty) return false;
       if (length && s.estimated_length !== length) return false;
       if (!matchesBucket(s.virality_score, virality)) return false;
       return true;
     });
-  }, [situations, search, emotion, persona, angle, category, difficulty, length, virality]);
+  }, [situations, search, emotion, persona, marketingAngle, creativeAngle, category, difficulty, length, virality]);
 
   function clearFilters() {
     setSearch("");
     setEmotion("");
     setPersona("");
-    setAngle("");
+    setMarketingAngle("");
+    setCreativeAngle("");
     setCategory("");
     setDifficulty("");
     setLength("");
     setVirality("");
   }
 
-  const anySelecting = selectingId !== null;
+  const anySelecting = selectingKey !== null;
 
   return (
     <Card glow>
       <CardHeader
         title="Choose Your Story"
-        subtitle="AI-generated marketing angles. Pick one to generate the full cinematic script."
+        subtitle="Pick a story situation, then pick how it's told — the same story can become dozens of different scripts."
         icon={<IconCompass />}
       />
       <CardBody className="space-y-5">
+        {!loading && situations.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
+            <p className="text-[12px] font-medium text-[var(--muted)]">
+              Script language + duration — applies when you pick an angle below
+            </p>
+            <div className="flex items-center gap-2">
+              <LanguageSelector value={scriptLanguage} onChange={onScriptLanguageChange} disabled={anySelecting} />
+              <DurationSelector value={targetDuration} onChange={onTargetDurationChange} disabled={anySelecting} />
+            </div>
+          </div>
+        )}
+
         {!loading && situations.length > 0 && (
           <div className="flex flex-wrap items-center gap-2">
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search doctor, mother, gym, fear..."
+              placeholder="Search doctor, mother, gym, fear, UGC, meta..."
               className="!w-auto min-w-[200px] flex-1 !py-1.5 !text-[13px]"
             />
             <FilterSelect label="Emotion" value={emotion} onChange={setEmotion} options={options.emotion} />
             <FilterSelect label="Persona" value={persona} onChange={setPersona} options={options.persona} />
-            <FilterSelect label="Angle" value={angle} onChange={setAngle} options={options.angle} />
+            <FilterSelect
+              label="Creative Angle"
+              value={creativeAngle}
+              onChange={setCreativeAngle}
+              options={options.creativeAngle}
+            />
+            <FilterSelect
+              label="Marketing Angle"
+              value={marketingAngle}
+              onChange={setMarketingAngle}
+              options={options.marketingAngle}
+            />
             <FilterSelect label="Category" value={category} onChange={setCategory} options={options.category} />
             <FilterSelect
               label="Difficulty"
@@ -199,73 +243,18 @@ export function StorySituationStep({
               >
                 <AnimatePresence>
                   {filtered.map((s) => {
-                    const isSelecting = selectingId === s.id;
-                    const isDisabled = anySelecting && !isSelecting;
+                    const isCardActive = selectingKey?.situationId === s.id;
+                    const activeAngle = isCardActive ? selectingKey!.angle : null;
+                    const isDisabled = anySelecting && !isCardActive;
                     return (
-                      <motion.div
+                      <SituationCard
                         key={s.id}
-                        layout
-                        variants={cardVariants}
-                        exit="exit"
-                        role="button"
-                        tabIndex={0}
-                        onClick={() => !anySelecting && onSelect(s)}
-                        onKeyDown={(e) => {
-                          if ((e.key === "Enter" || e.key === " ") && !anySelecting) {
-                            e.preventDefault();
-                            onSelect(s);
-                          }
-                        }}
-                        className={cn(
-                          "relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 p-4 backdrop-blur-xl transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
-                          isSelecting
-                            ? "border-[var(--accent)] bg-[var(--accent-soft)]"
-                            : "cursor-pointer hover:border-[var(--accent)]/50 hover:bg-white/[0.02]",
-                          isDisabled && "pointer-events-none opacity-50"
-                        )}
-                      >
-                        <span
-                          className="absolute inset-x-0 top-0 h-[3px]"
-                          style={{ background: categoryAccent(s.category) }}
-                        />
-
-                        <div className="mb-2.5 flex items-center justify-between gap-2">
-                          <Badge tone="accent">{s.category}</Badge>
-                          <Badge tone={viralityTone(s.virality_score)}>
-                            ⚡ {s.virality_score.toFixed(1)}/10
-                          </Badge>
-                        </div>
-
-                        <h3 className="text-[15px] font-semibold leading-snug text-[var(--foreground)]">
-                          {s.title}
-                        </h3>
-                        <p className="mt-1 line-clamp-3 text-[13px] leading-snug text-[var(--muted)]">
-                          {s.description}
-                        </p>
-
-                        <div className="mt-3 flex flex-wrap gap-1.5">
-                          <Chip>🎭 {s.emotion}</Chip>
-                          <Chip>👤 {s.persona}</Chip>
-                          <Chip>🎯 {s.marketing_angle}</Chip>
-                        </div>
-
-                        <div className="mt-3.5 flex items-center justify-between">
-                          <div className="flex gap-1.5">
-                            <Badge tone="neutral">{cap(s.difficulty)}</Badge>
-                            <Badge tone="neutral">{s.estimated_length}</Badge>
-                          </div>
-                          <span className="text-[12px] font-medium text-[var(--accent-2)]">Select →</span>
-                        </div>
-
-                        {isSelecting && (
-                          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-2xl bg-[var(--surface)]/90 px-4 text-center backdrop-blur-sm">
-                            <span className="h-5 w-5 animate-spin rounded-full border-2 border-white/30 border-t-[var(--accent)]" />
-                            <p className="text-[12px] text-[var(--foreground)]">
-                              Directing your script for &ldquo;{s.title}&rdquo;...
-                            </p>
-                          </div>
-                        )}
-                      </motion.div>
+                        situation={s}
+                        isCardActive={isCardActive}
+                        isDisabled={isDisabled}
+                        activeAngle={activeAngle}
+                        onSelectAngle={onSelectAngle}
+                      />
                     );
                   })}
                 </AnimatePresence>
@@ -292,6 +281,145 @@ export function StorySituationStep({
         </div>
       </CardBody>
     </Card>
+  );
+}
+
+function SituationCard({
+  situation,
+  isCardActive,
+  isDisabled,
+  activeAngle,
+  onSelectAngle,
+}: {
+  situation: StorySituation;
+  isCardActive: boolean;
+  isDisabled: boolean;
+  activeAngle: string | null;
+  onSelectAngle: (situation: StorySituation, angle: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [customOpen, setCustomOpen] = useState(false);
+  const [customText, setCustomText] = useState("");
+
+  const angles = situation.recommended_angles;
+  const visibleAngles = expanded ? angles : angles.slice(0, VISIBLE_ANGLE_CAP);
+  const hiddenCount = angles.length - visibleAngles.length;
+  const isCustomActive = isCardActive && activeAngle !== null && !angles.includes(activeAngle);
+
+  function handleCustomSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!customText.trim() || isDisabled) return;
+    onSelectAngle(situation, customText.trim());
+  }
+
+  return (
+    <motion.div
+      layout
+      variants={cardVariants}
+      exit="exit"
+      className={cn(
+        "relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 p-4 backdrop-blur-xl transition-colors",
+        isCardActive ? "border-[var(--accent)] bg-[var(--accent-soft)]" : "hover:border-[var(--accent)]/40",
+        isDisabled && "pointer-events-none opacity-50"
+      )}
+    >
+      <span className="absolute inset-x-0 top-0 h-[3px]" style={{ background: categoryAccent(situation.category) }} />
+
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <Badge tone="accent">{situation.category}</Badge>
+        <Badge tone={viralityTone(situation.virality_score)}>⚡ {situation.virality_score.toFixed(1)}/10</Badge>
+      </div>
+
+      <h3 className="text-[15px] font-semibold leading-snug text-[var(--foreground)]">{situation.title}</h3>
+      <p className="mt-1 line-clamp-3 text-[13px] leading-snug text-[var(--muted)]">{situation.description}</p>
+
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        <Chip>🎭 {situation.emotion}</Chip>
+        <Chip>👤 {situation.persona}</Chip>
+        <Chip>🎯 {situation.marketing_angle}</Chip>
+      </div>
+
+      <div className="mt-3 flex gap-1.5">
+        <Badge tone="neutral">{cap(situation.difficulty)}</Badge>
+        <Badge tone="neutral">{situation.estimated_length}</Badge>
+      </div>
+
+      <div className="mt-3.5 border-t border-[var(--border)] pt-3">
+        <p className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+          <span>⭐</span> AI Recommended Angles
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          {visibleAngles.map((angle) => {
+            const chipActive = activeAngle === angle;
+            const accent = angleAccent(angle);
+            return (
+              <button
+                key={angle}
+                type="button"
+                disabled={isDisabled}
+                onClick={() => onSelectAngle(situation, angle)}
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed",
+                  chipActive ? "scale-105 border-transparent text-white" : "border-[var(--border-strong)] bg-white/[0.03] hover:border-current"
+                )}
+                style={chipActive ? { background: accent } : { color: accent }}
+              >
+                {chipActive ? (
+                  <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                ) : (
+                  <span>{angleEmoji(angle)}</span>
+                )}
+                {angle}
+              </button>
+            );
+          })}
+          {hiddenCount > 0 && !expanded && (
+            <button
+              type="button"
+              onClick={() => setExpanded(true)}
+              className="rounded-full border border-dashed border-[var(--border-strong)] px-2.5 py-1 text-[11px] text-[var(--muted)] hover:text-[var(--foreground)]"
+            >
+              +{hiddenCount} more
+            </button>
+          )}
+          {!customOpen && (
+            <button
+              type="button"
+              disabled={isDisabled}
+              onClick={() => setCustomOpen(true)}
+              className="inline-flex items-center gap-1 rounded-full border border-dashed border-[var(--accent)]/40 px-2.5 py-1 text-[11px] font-medium text-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ➕ Custom Angle
+            </button>
+          )}
+        </div>
+
+        {customOpen && (
+          <form onSubmit={handleCustomSubmit} className="mt-2 flex gap-1.5">
+            <input
+              autoFocus
+              value={customText}
+              onChange={(e) => setCustomText(e.target.value)}
+              maxLength={CUSTOM_ANGLE_MAX}
+              placeholder='e.g. "Generate like a Netflix documentary"'
+              disabled={isDisabled}
+              className="h-8 flex-1 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 text-[12px] text-[var(--foreground)] outline-none focus:border-[var(--accent)] disabled:opacity-60"
+            />
+            <button
+              type="submit"
+              disabled={!customText.trim() || isDisabled}
+              className="flex h-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-3 text-[12px] font-medium text-white disabled:opacity-40"
+            >
+              {isCustomActive ? (
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+              ) : (
+                "Generate"
+              )}
+            </button>
+          </form>
+        )}
+      </div>
+    </motion.div>
   );
 }
 

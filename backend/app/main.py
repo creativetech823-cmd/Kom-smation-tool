@@ -8,7 +8,7 @@ app = FastAPI(title="AI Content Factory Engine")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000",],
     # Covers ngrok tunnel domains and Vercel preview/production deployments.
     allow_origin_regex=r"https://.*\.ngrok-free\.(app|dev)|https://.*\.ngrok\.(io|app)|https://.*\.vercel\.app",
     allow_methods=["*"],
@@ -19,6 +19,7 @@ app.include_router(pipeline.router)
 app.mount("/renders", StaticFiles(directory="renders"), name="renders")
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 app.mount("/motion", StaticFiles(directory="motion"), name="motion")
+app.mount("/reference-uploads", StaticFiles(directory="reference_uploads"), name="reference_uploads")
 
 
 @app.get("/health")

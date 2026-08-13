@@ -5,6 +5,7 @@ import { motionFileUrl } from "@/lib/api";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { renderBold } from "@/lib/renderBold";
 import type { FlatLine, MotionGenerationResult, SelectedAsset } from "@/lib/types";
 
 const ROLE_LABEL: Record<string, string> = { hook: "Hook", body: "Body", cta: "CTA" };
@@ -78,7 +79,7 @@ export function AssetsStep({
                   ) : asset?.candidate ? (
                     <img
                       src={asset.candidate.thumbnail_url}
-                      alt={line.text}
+                      alt={line.text.replace(/\*\*/g, "")}
                       className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                     />
                   ) : (
@@ -120,7 +121,7 @@ export function AssetsStep({
                   )}
                 </div>
                 <div className="p-2.5">
-                  <p className="line-clamp-2 text-[12px] text-[var(--muted)]">{line.text}</p>
+                  <p className="line-clamp-2 text-[12px] text-[var(--muted)]">{renderBold(line.text)}</p>
                   {asset?.broadened && (
                     <p className="mt-1 text-[10.5px] text-[var(--warning)]">
                       broadened → {asset.tag_used}

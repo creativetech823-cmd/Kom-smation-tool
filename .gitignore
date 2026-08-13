@@ -17,6 +17,7 @@ remotion/.props-*.json
 backend/renders/
 backend/audio/
 backend/motion/
+backend/reference_uploads/
 
 # Logs
 logs

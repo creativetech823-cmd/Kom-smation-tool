@@ -1,13 +1,121 @@
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class SourceType(str, Enum):
     url = "url"
     description = "description"
     none = "none"
+
+
+class ScriptLanguage(str, Enum):
+    english = "english"
+    hindi = "hindi"
+    hinglish = "hinglish"
+
+
+class ScriptSection(str, Enum):
+    """Which beat of the 9-part ad structure a script line belongs to."""
+
+    hook = "hook"
+    problem = "problem"
+    science = "science"
+    story = "story"
+    product_intro = "product_intro"
+    ingredients = "ingredients"
+    benefits = "benefits"
+    objection_handling = "objection_handling"
+    cta = "cta"
+
+
+class ScriptRegenerateScope(str, Enum):
+    """Which part of an already-generated script a regeneration request targets."""
+
+    full = "full"
+    hook = "hook"
+    cta = "cta"
+    science = "science"
+    product_explanation = "product_explanation"
+    emotional_tone = "emotional_tone"
+    length = "length"
+
+
+class ReferenceKind(str, Enum):
+    """What a reference material is, for card icon/label + extraction dispatch."""
+
+    pdf = "pdf"
+    docx = "docx"
+    pptx = "pptx"
+    doc = "doc"
+    ppt = "ppt"
+    txt = "txt"
+    csv = "csv"
+    xlsx = "xlsx"
+    zip = "zip"
+    image = "image"
+    video = "video"
+    audio = "audio"
+    website = "website"
+    google_drive = "google_drive"
+    youtube = "youtube"
+    dropbox = "dropbox"
+    notion = "notion"
+
+
+class ReferenceAnalysis(str, Enum):
+    """Whether a reference material's content actually made it into the AI's context."""
+
+    analyzed = "analyzed"
+    coming_soon = "coming_soon"  # video/audio — stored + previewable, not analyzed yet
+    not_supported = "not_supported"  # legacy .doc/.ppt — no extractor available
+    failed = "failed"
+
+
+class ReferenceMaterial(BaseModel):
+    """One uploaded file or pasted link attached as supporting context for Stage 3."""
+
+    id: str
+    kind: ReferenceKind
+    filename: Optional[str] = None
+    source_url: Optional[str] = None
+    stored_path: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    analysis: ReferenceAnalysis
+    extracted_text: str = ""
+    truncated: bool = False
+    note: str = ""
+
+
+class FetchUrlInput(BaseModel):
+    url: str = Field(..., min_length=1)
+
+
+class FetchUrlResult(BaseModel):
+    raw_text: str
+    title: str = ""
+    char_count: int = 0
+    truncated: bool = False
+
+
+class AutoFillInput(BaseModel):
+    raw_text: str = Field(..., min_length=1)
+    source_url: Optional[str] = None
+
+
+class AutoFillSuggestion(BaseModel):
+    """A first-draft, editable product profile guessed from raw scraped/extracted text."""
+
+    product_name: str = ""
+    target_audience: str = ""
+    source_description: str = ""
+    product_category: str = ""
+    brand: str = ""
+    keywords: list[str] = Field(default_factory=list)
+    key_benefits: list[str] = Field(default_factory=list)
+    confidence: float = Field(ge=0.0, le=1.0, default=0.0)
 
 
 class ProductInput(BaseModel):
@@ -22,6 +130,11 @@ class ProductInput(BaseModel):
     # Manual fallback fields, required only when source_type == none
     manual_ingredients: Optional[str] = None
     manual_usp: Optional[str] = None
+
+    # Reference Materials (Step 1 upgrade) — client-cached URL fetch avoids
+    # re-hitting Jina Reader at submit time, plus any attached reference files/links.
+    source_url_raw_text: Optional[str] = None
+    reference_materials: list[ReferenceMaterial] = Field(default_factory=list)
 
 
 class StructuredProduct(BaseModel):
@@ -60,6 +173,9 @@ class StorySituation(BaseModel):
     difficulty: str  # "easy" | "medium" | "hard" — production complexity
     estimated_length: str  # e.g. "15s" | "30s" | "60s"
     virality_score: float = Field(ge=0.0, le=10.0)
+    # Creative Angle (execution style) — the HOW, distinct from marketing_angle
+    # (the WHY/strategy). Labels drawn from creative_angles.CREATIVE_ANGLES.
+    recommended_angles: list[str] = Field(default_factory=list)
 
 
 class StorySituationsInput(BaseModel):
@@ -88,17 +204,41 @@ class ScriptGenerationInput(BaseModel):
     platform: str = "instagram_reel"
     similar_past_winners: list[str] = Field(default_factory=list)
     max_line_chars: int = 90
+    # Creative Angle (execution style) — a catalog label (e.g. "Meta Glasses
+    # POV") or arbitrary custom instruction (e.g. "generate like a Netflix
+    # documentary"). Empty = no specific execution style requested.
+    creative_angle: str = Field("", max_length=300)
+    # Spoken/on-screen script language — visual_tags always stay in English
+    # (stock-footage search) regardless of this.
+    script_language: ScriptLanguage = ScriptLanguage.english
+    # Target video duration bucket (e.g. "30s", "60s"). Empty = derive from
+    # selected_situation.estimated_length.
+    target_duration: str = ""
 
 
 class ScriptLine(BaseModel):
     text: str
+    on_screen_text: str = ""
     visual_tags: list[str] = Field(default_factory=list)
     scene_label: Optional[str] = None
+    section: Optional[ScriptSection] = None
     visual_direction: Optional[str] = None
     camera_angle: Optional[str] = None
     emotion: Optional[str] = None
     lighting: Optional[str] = None
     transition_note: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    b_roll: list[str] = Field(default_factory=list)
+    sfx: Optional[str] = None
+    ai_image_prompt: str = ""
+    ai_video_prompt: str = ""
+
+    @field_validator("section", mode="before")
+    @classmethod
+    def _blank_section_to_none(cls, v: object) -> object:
+        """Claude occasionally emits "" instead of omitting the field — treat
+        that the same as not tagging a section rather than a validation error."""
+        return v or None
 
 
 class GeneratedScript(BaseModel):
@@ -109,11 +249,30 @@ class GeneratedScript(BaseModel):
     cta: ScriptLine
     situation: Optional[StorySituation] = None
     bgm_suggestion: str = ""
+    creative_angle: str = ""
+    script_language: ScriptLanguage = ScriptLanguage.english
+    target_duration: str = ""
 
     @property
     def full_text(self) -> str:
         lines = [self.hook.text, *[line.text for line in self.body], self.cta.text]
         return "\n".join(lines)
+
+
+class ScriptSectionRegenerateInput(BaseModel):
+    """Targeted regeneration — take an already-generated script and rewrite
+    only the requested part, leaving everything else untouched."""
+
+    structured_product: StructuredProduct
+    selected_situation: StorySituation
+    product_category: str = Field(..., min_length=1)
+    platform: str = "instagram_reel"
+    max_line_chars: int = 90
+    creative_angle: str = Field("", max_length=300)
+    script_language: ScriptLanguage = ScriptLanguage.english
+    target_duration: str = ""
+    current_script: GeneratedScript
+    scope: ScriptRegenerateScope = ScriptRegenerateScope.full
 
 
 class AssetSourcingInput(BaseModel):

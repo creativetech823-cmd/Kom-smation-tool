@@ -14,9 +14,9 @@ export function Card({
     <div
       className={cn(
         "relative rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 backdrop-blur-xl",
-        "shadow-[0_1px_0_rgba(255,255,255,0.04)_inset,0_20px_60px_-30px_rgba(0,0,0,0.8)]",
+        "shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_20px_60px_-30px_rgba(0,0,0,0.85)]",
         glow &&
-          "before:absolute before:inset-0 before:-z-10 before:rounded-2xl before:bg-gradient-to-br before:from-[var(--accent)]/20 before:to-[var(--accent-2)]/10 before:blur-2xl",
+          "before:absolute before:inset-0 before:-z-10 before:rounded-2xl before:bg-gradient-to-br before:from-[var(--accent)]/25 before:via-[var(--accent-2)]/10 before:to-[var(--magenta)]/15 before:blur-2xl",
         className
       )}
     >

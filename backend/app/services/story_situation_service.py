@@ -6,6 +6,7 @@ from anthropic import Anthropic
 from app.config import settings
 from app.models.product import StorySituation, StorySituationsInput, StorySituationsResult
 from app.services.claude_utils import extract_json_text
+from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
 
 _client = Anthropic(api_key=settings.anthropic_api_key)
 
@@ -41,10 +42,22 @@ For each situation produce:
 If a list of already-shown titles is provided, none of your new situations may repeat those titles or
 be near-duplicates of their premise — treat them as creatively off-limits.
 
+For every situation, also pick "recommended_angles": 5-8 CREATIVE ANGLES (execution styles — HOW the
+story is filmed/told, not the marketing_angle, which is WHY it sells) that genuinely fit THIS
+situation's persona, conflict, and production complexity. Choose only from this vocabulary, copying
+labels exactly as written — do not invent new ones or reword them:
+
+{angle_catalog}
+
+Pick angles that are actually distinct fits for this specific situation, not a generic default set —
+e.g. a father-son story genuinely suits "Father-Son", "Emotional Conversation", or "Meta Glasses POV"
+(a father's first-person view), while a factory-workers-quit-together story suits "Social Experiment /
+Challenge" or "Documentary" far more than "Doctor Testimonial".
+
 Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
-{
+{{
   "situations": [
-    {
+    {{
       "title": string,
       "description": string,
       "emotion": string,
@@ -53,11 +66,12 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
       "category": string,
       "difficulty": string,
       "estimated_length": string,
-      "virality_score": number
-    }
+      "virality_score": number,
+      "recommended_angles": [string]
+    }}
   ]
-}
-"""
+}}
+""".format(angle_catalog=catalog_prompt_block())
 
 
 def _build_user_message(payload: StorySituationsInput) -> str:
@@ -84,13 +98,24 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
 
     response = _client.messages.create(
         model=settings.claude_structuring_model,
-        max_tokens=4096,
+        max_tokens=8192,
         system=_SYSTEM_PROMPT,
         messages=[{"role": "user", "content": _build_user_message(payload)}],
+        # Extended thinking is on by default and its tokens count against
+        # max_tokens — disabled so JSON generation gets the full budget.
+        extra_body={"thinking": {"type": "disabled"}},
     )
 
-    data = json.loads(extract_json_text(response.content))
-    situations = [
-        StorySituation(id=uuid.uuid4().hex[:12], **item) for item in data.get("situations", [])
-    ]
+    try:
+        data = json.loads(extract_json_text(response.content))
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            "Claude returned malformed JSON while generating story ideas — the response may have "
+            "been truncated. Try again, or ask for fewer situations."
+        ) from e
+
+    situations = []
+    for item in data.get("situations", []):
+        item = {**item, "recommended_angles": valid_angle_labels(item.get("recommended_angles", []))}
+        situations.append(StorySituation(id=uuid.uuid4().hex[:12], **item))
     return StorySituationsResult(situations=situations)
