@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Stepper, type Step } from "@/components/ui/Stepper";
+import { Button } from "@/components/ui/Button";
 import { ToastHost, type ToastState, type ToastTone } from "@/components/ui/Toast";
 import { Sidebar } from "@/components/shell/Sidebar";
 import { TopBar } from "@/components/shell/TopBar";
@@ -10,6 +11,7 @@ import { ProductWorkspaceStep } from "@/components/steps/ProductWorkspaceStep";
 import type { ActivityEntry } from "@/components/steps/AiUnderstandingPanel";
 import { StorySituationStep } from "@/components/steps/StorySituationStep";
 import { ScriptStep } from "@/components/steps/ScriptStep";
+import { VisualConceptsSection } from "@/components/steps/VisualConceptsSection";
 import { ComplianceStep } from "@/components/steps/ComplianceStep";
 import { AssetsStep } from "@/components/steps/AssetsStep";
 import { VoiceoverStep } from "@/components/steps/VoiceoverStep";
@@ -19,19 +21,27 @@ import {
   ApiError,
   audioFileUrl,
   auditCompliance,
+  downloadVisualConcept,
+  generateAlternatives,
   generateMotion,
   generateScript,
   generateStorySituations,
+  generateVisualConcepts,
   generateVoiceover,
+  getScriptSuggestions,
   motionFileUrl,
   regenerateScriptSection,
+  regenerateVisualConcept,
   renderFileUrl,
   renderVideo,
   rewriteLine,
+  scoreVisualConcept,
   sourceAsset,
   structureProduct,
   uploadReferenceMaterial,
 } from "@/lib/api";
+import type { ScriptVersion } from "@/components/ui/VersionHistoryPanel";
+import type { RegenerateOptions } from "@/components/steps/ScriptStep";
 import {
   flattenScript,
   type ComplianceResult,
@@ -43,10 +53,15 @@ import {
   type RenderResult,
   type RewriteDirective,
   type ScriptLanguage,
+  type ScriptLine,
   type ScriptRegenerateScope,
+  type ScriptSuggestion,
   type SelectedAsset,
   type StorySituation,
   type StructuredProduct,
+  type VisualConcept,
+  type VisualConceptStyleParams,
+  type VisualVariationStyle,
   type VoiceoverResult,
 } from "@/lib/types";
 
@@ -112,16 +127,38 @@ function guessReferenceKindFromFilename(filename: string): ReferenceKind {
   return map[ext] ?? "txt";
 }
 
-function updateScriptLineText(s: GeneratedScript, lineId: string, text: string): GeneratedScript {
-  if (lineId === "hook") return { ...s, hook: { ...s.hook, text } };
-  if (lineId === "cta") return { ...s, cta: { ...s.cta, text } };
+function updateScriptLine(s: GeneratedScript, lineId: string, patch: Partial<ScriptLine>): GeneratedScript {
+  if (lineId === "hook") return { ...s, hook: { ...s.hook, ...patch } };
+  if (lineId === "cta") return { ...s, cta: { ...s.cta, ...patch } };
   const match = lineId.match(/^body_(\d+)$/);
   if (match) {
     const idx = Number(match[1]);
-    return { ...s, body: s.body.map((line, i) => (i === idx ? { ...line, text } : line)) };
+    return { ...s, body: s.body.map((line, i) => (i === idx ? { ...line, ...patch } : line)) };
   }
   return s;
 }
+
+function changedLineIds(before: GeneratedScript, after: GeneratedScript): string[] {
+  const beforeLines = flattenScript(before);
+  const afterLines = flattenScript(after);
+  const ids: string[] = [];
+  for (const line of afterLines) {
+    const match = beforeLines.find((l) => l.id === line.id);
+    if (!match || match.text !== line.text) ids.push(line.id);
+  }
+  return ids;
+}
+
+const REGEN_SCOPE_LABEL: Record<ScriptRegenerateScope, string> = {
+  full: "Full rewrite",
+  hook: "Hook",
+  cta: "CTA",
+  science: "Science section",
+  story: "Story section",
+  product_explanation: "Product explanation",
+  emotional_tone: "Emotional tone",
+  length: "Made longer",
+};
 
 export default function Home() {
   const [stepIndex, setStepIndex] = useState(0);
@@ -138,8 +175,14 @@ export default function Home() {
   const [selectedSituation, setSelectedSituation] = useState<StorySituation | null>(null);
   const [selectedAngle, setSelectedAngle] = useState<string | null>(null);
   const [scriptLanguage, setScriptLanguage] = useState<ScriptLanguage>("english");
-  const [targetDuration, setTargetDuration] = useState("");
+  const [targetDuration, setTargetDuration] = useState("30s");
   const [script, setScript] = useState<GeneratedScript | null>(null);
+  const [visualConcepts, setVisualConcepts] = useState<VisualConcept[]>([]);
+  const [visualConceptsLoading, setVisualConceptsLoading] = useState(false);
+  const [visualConceptsError, setVisualConceptsError] = useState<string | null>(null);
+  const [visualConceptScoring, setVisualConceptScoring] = useState<Record<string, boolean>>({});
+  const [visualConceptRegenLoading, setVisualConceptRegenLoading] = useState<Record<string, boolean>>({});
+  const [visualConceptDownloading, setVisualConceptDownloading] = useState<Record<string, boolean>>({});
   const [compliance, setCompliance] = useState<ComplianceResult | null>(null);
   const [assets, setAssets] = useState<Record<string, SelectedAsset | undefined>>({});
   const [loadingAssetIds, setLoadingAssetIds] = useState<Set<string>>(new Set());
@@ -159,7 +202,11 @@ export default function Home() {
     null
   );
   const [scriptRegenLoading, setScriptRegenLoading] = useState(false);
-  const [rewriting, setRewriting] = useState<Record<string, RewriteDirective | undefined>>({});
+  const [lineLoading, setLineLoading] = useState<Record<string, boolean>>({});
+  const [scriptHistory, setScriptHistory] = useState<ScriptVersion[]>([]);
+  const [scriptHistoryIndex, setScriptHistoryIndex] = useState(-1);
+  const historyIndexRef = useRef(-1);
+  const [recentlyChangedLineIds, setRecentlyChangedLineIds] = useState<Set<string>>(new Set());
   const [complianceLoading, setComplianceLoading] = useState(false);
   const [assetsContinueLoading, setAssetsContinueLoading] = useState(false);
   const [voiceoverContinueLoading, setVoiceoverContinueLoading] = useState(false);
@@ -192,6 +239,37 @@ export default function Home() {
   const pushActivity = useCallback((label: string, tone: "info" | "success" | "error" = "info") => {
     setActivityLog((prev) => [{ id: crypto.randomUUID(), label, tone, ts: Date.now() }, ...prev].slice(0, 8));
   }, []);
+
+  function resetScriptHistory(next: GeneratedScript, label: string) {
+    historyIndexRef.current = 0;
+    setScriptHistory([{ script: next, label, ts: Date.now() }]);
+    setScriptHistoryIndex(0);
+    setRecentlyChangedLineIds(new Set());
+    setLineLoading({});
+  }
+
+  function pushScriptHistory(next: GeneratedScript, label: string) {
+    setScriptHistory((prev) => {
+      const truncated = prev.slice(0, historyIndexRef.current + 1);
+      const combined = [...truncated, { script: next, label, ts: Date.now() }];
+      const capped = combined.length > 30 ? combined.slice(combined.length - 30) : combined;
+      historyIndexRef.current = capped.length - 1;
+      setScriptHistoryIndex(capped.length - 1);
+      return capped;
+    });
+  }
+
+  function markLinesChanged(ids: string[]) {
+    if (ids.length === 0) return;
+    setRecentlyChangedLineIds((prev) => new Set([...prev, ...ids]));
+    setTimeout(() => {
+      setRecentlyChangedLineIds((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        return next;
+      });
+    }, 4000);
+  }
 
   async function uploadOneReferenceFile(file: File) {
     const tempId = `temp-${crypto.randomUUID()}`;
@@ -390,6 +468,50 @@ export default function Home() {
     }
   }
 
+  async function handleGenerateVisualConcepts(
+    structuredProduct: StructuredProduct,
+    generatedScript: GeneratedScript,
+    situation: StorySituation,
+    angle: string
+  ) {
+    setVisualConcepts([]);
+    setVisualConceptsError(null);
+    setVisualConceptsLoading(true);
+    try {
+      const concepts = await generateVisualConcepts({
+        structured_product: structuredProduct,
+        script: generatedScript,
+        situation,
+        creative_angle: angle,
+        product_category: category,
+      });
+      setVisualConcepts(concepts);
+      // Score each concept in the background — cards show a skeleton until each resolves.
+      concepts.forEach((concept) => {
+        setVisualConceptScoring((prev) => ({ ...prev, [concept.id]: true }));
+        scoreVisualConcept({ concept })
+          .then((scores) => {
+            setVisualConcepts((prev) => prev.map((c) => (c.id === concept.id ? { ...c, scores } : c)));
+          })
+          .catch(() => {})
+          .finally(() => {
+            setVisualConceptScoring((prev) => ({ ...prev, [concept.id]: false }));
+          });
+      });
+    } catch (e) {
+      const message = e instanceof ApiError ? e.message : "Couldn't generate visual concepts.";
+      setVisualConceptsError(message);
+      showToast(message, "danger");
+    } finally {
+      setVisualConceptsLoading(false);
+    }
+  }
+
+  function handleRetryVisualConcepts() {
+    if (!structured || !script || !selectedSituation) return;
+    void handleGenerateVisualConcepts(structured, script, selectedSituation, selectedAngle ?? "");
+  }
+
   const runScriptGeneration = useCallback(
     async (situation: StorySituation, angle: string, setLoading: (v: boolean) => void) => {
       if (!structured) return;
@@ -407,11 +529,13 @@ export default function Home() {
         setScript(result);
         setSelectedSituation(situation);
         setSelectedAngle(angle);
+        resetScriptHistory(result, "Generated");
         // Any previous assets/voiceovers/render are stale once the script changes.
         setAssets({});
         setVoiceovers({});
         setRenderResult(null);
         setApproved(false);
+        void handleGenerateVisualConcepts(structured, result, situation, angle);
       } catch (e) {
         setGlobalError(e instanceof ApiError ? e.message : "Script generation failed.");
       } finally {
@@ -433,14 +557,15 @@ export default function Home() {
     await runScriptGeneration(selectedSituation, selectedAngle, setScriptRegenLoading);
   }
 
-  async function handleRegenerateScope(scope: ScriptRegenerateScope) {
+  async function handleRegenerateScope(scope: ScriptRegenerateScope, options?: RegenerateOptions) {
     if (!structured || !selectedSituation || !script) return;
-    if (scope === "full") {
+    if (scope === "full" && !options?.customInstruction && !options?.targetWordCount) {
       await handleRegenerateScript();
       return;
     }
     setScriptRegenLoading(true);
     setGlobalError(null);
+    const before = script;
     try {
       const result = await regenerateScriptSection({
         structured_product: structured,
@@ -451,8 +576,15 @@ export default function Home() {
         target_duration: targetDuration,
         current_script: script,
         scope,
+        custom_instruction: options?.customInstruction,
+        target_word_count: options?.targetWordCount,
       });
       setScript(result);
+      const label = options?.targetWordCount
+        ? `Length adjust — ~${options.targetWordCount}w`
+        : `AI: ${REGEN_SCOPE_LABEL[scope] ?? scope}`;
+      pushScriptHistory(result, label);
+      markLinesChanged(changedLineIds(before, result));
       // Any previous assets/voiceovers/render are stale once the script changes.
       setAssets({});
       setVoiceovers({});
@@ -465,19 +597,238 @@ export default function Home() {
     }
   }
 
-  async function handleRewriteScriptLine(lineId: string, directive: RewriteDirective) {
+  function handleEditLine(lineId: string, text: string) {
+    if (!script) return;
+    const next = updateScriptLine(script, lineId, { text });
+    setScript(next);
+    pushScriptHistory(next, "Manual edit");
+  }
+
+  function handleEditWholeScript(texts: string[]) {
+    if (!script) return;
+    const ids = flattenScript(script).map((l) => l.id);
+    let next = script;
+    ids.forEach((id, i) => {
+      if (texts[i] !== undefined) next = updateScriptLine(next, id, { text: texts[i] });
+    });
+    setScript(next);
+    pushScriptHistory(next, "Manual edit — whole script");
+  }
+
+  function handleEditLineField(lineId: string, field: string, value: string | string[]) {
+    if (!script) return;
+    const next = updateScriptLine(script, lineId, { [field]: value } as Partial<ScriptLine>);
+    setScript(next);
+    pushScriptHistory(next, `Manual edit — ${field.replace(/_/g, " ")}`);
+  }
+
+  async function handleApplyDirectiveToLine(lineId: string, directive: RewriteDirective) {
     if (!script) return;
     const line = flattenScript(script).find((l) => l.id === lineId);
     if (!line) return;
-    setRewriting((prev) => ({ ...prev, [lineId]: directive }));
+    setLineLoading((prev) => ({ ...prev, [lineId]: true }));
     try {
       const result = await rewriteLine({ text: line.text, directive });
-      setScript((prev) => (prev ? updateScriptLineText(prev, lineId, result.text) : prev));
+      const next = updateScriptLine(script, lineId, { text: result.text });
+      setScript(next);
+      pushScriptHistory(next, `AI: ${directive.replace(/_/g, " ")}`);
+      markLinesChanged([lineId]);
     } catch (e) {
       showToast(e instanceof ApiError ? e.message : "Rewrite failed for that line.", "danger");
     } finally {
-      setRewriting((prev) => ({ ...prev, [lineId]: undefined }));
+      setLineLoading((prev) => ({ ...prev, [lineId]: false }));
     }
+  }
+
+  async function handleGenerateAlternativesForLine(lineId: string): Promise<string[]> {
+    if (!script) return [];
+    const line = flattenScript(script).find((l) => l.id === lineId);
+    if (!line) return [];
+    try {
+      const result = await generateAlternatives({ text: line.text, directive: "rewrite" });
+      return result.alternatives;
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't generate alternatives.", "danger");
+      return [];
+    }
+  }
+
+  function handleSelectAlternativeForLine(lineId: string, text: string) {
+    if (!script) return;
+    const next = updateScriptLine(script, lineId, { text });
+    setScript(next);
+    pushScriptHistory(next, "AI: Selected alternative");
+    markLinesChanged([lineId]);
+  }
+
+  async function handleTranslateLine(lineId: string, language: ScriptLanguage) {
+    if (!script) return;
+    const line = flattenScript(script).find((l) => l.id === lineId);
+    if (!line) return;
+    setLineLoading((prev) => ({ ...prev, [lineId]: true }));
+    try {
+      const result = await rewriteLine({ text: line.text, directive: "translate", target_language: language });
+      const next = updateScriptLine(script, lineId, { text: result.text });
+      setScript(next);
+      pushScriptHistory(next, `AI: Translated to ${language}`);
+      markLinesChanged([lineId]);
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Translation failed.", "danger");
+    } finally {
+      setLineLoading((prev) => ({ ...prev, [lineId]: false }));
+    }
+  }
+
+  async function handleFetchScriptSuggestions(): Promise<ScriptSuggestion[]> {
+    if (!script) return [];
+    try {
+      const result = await getScriptSuggestions({ script, target_duration: targetDuration || script.target_duration });
+      return result.suggestions;
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't get suggestions.", "danger");
+      return [];
+    }
+  }
+
+  function handleApplySuggestion(s: ScriptSuggestion) {
+    if (!s.suggested_scope) return;
+    void handleRegenerateScope(s.suggested_scope, { customInstruction: s.message });
+  }
+
+  function handleUndoScript() {
+    const i = historyIndexRef.current;
+    if (i <= 0) return;
+    const newIndex = i - 1;
+    historyIndexRef.current = newIndex;
+    setScriptHistoryIndex(newIndex);
+    setScript(scriptHistory[newIndex].script);
+  }
+
+  function handleRedoScript() {
+    const i = historyIndexRef.current;
+    if (i >= scriptHistory.length - 1) return;
+    const newIndex = i + 1;
+    historyIndexRef.current = newIndex;
+    setScriptHistoryIndex(newIndex);
+    setScript(scriptHistory[newIndex].script);
+  }
+
+  function handleRestoreScriptVersion(index: number) {
+    historyIndexRef.current = index;
+    setScriptHistoryIndex(index);
+    setScript(scriptHistory[index].script);
+  }
+
+  async function handleRegenerateVisualConcept(id: string, variationStyle?: VisualVariationStyle) {
+    if (!structured || !script || !selectedSituation) return;
+    const concept = visualConcepts.find((c) => c.id === id);
+    if (!concept) return;
+    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const result = await regenerateVisualConcept({
+        structured_product: structured,
+        script,
+        situation: selectedSituation,
+        creative_angle: selectedAngle ?? "",
+        concept,
+        variation_style: variationStyle,
+      });
+      setVisualConcepts((prev) => prev.map((c) => (c.id === id ? result : c)));
+      setVisualConceptScoring((prev) => ({ ...prev, [id]: true }));
+      scoreVisualConcept({ concept: result })
+        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, scores } : c))))
+        .catch(() => {})
+        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [id]: false })));
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't regenerate that image.", "danger");
+    } finally {
+      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleGenerateVisualVariation(id: string, variationStyle: VisualVariationStyle) {
+    if (!structured || !script || !selectedSituation) return;
+    const concept = visualConcepts.find((c) => c.id === id);
+    if (!concept) return;
+    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const result = await regenerateVisualConcept({
+        structured_product: structured,
+        script,
+        situation: selectedSituation,
+        creative_angle: selectedAngle ?? "",
+        concept,
+        variation_style: variationStyle,
+        as_new_variation: true,
+      });
+      setVisualConcepts((prev) => [...prev, result]);
+      setVisualConceptScoring((prev) => ({ ...prev, [result.id]: true }));
+      scoreVisualConcept({ concept: result })
+        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === result.id ? { ...c, scores } : c))))
+        .catch(() => {})
+        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [result.id]: false })));
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't generate a variation.", "danger");
+    } finally {
+      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleEditVisualConceptPrompt(
+    id: string,
+    patch: { prompt: string; style_params: VisualConceptStyleParams }
+  ) {
+    if (!structured || !script || !selectedSituation) return;
+    const concept = visualConcepts.find((c) => c.id === id);
+    if (!concept) return;
+    const editedConcept: VisualConcept = { ...concept, prompt: patch.prompt, style_params: patch.style_params };
+    setVisualConcepts((prev) => prev.map((c) => (c.id === id ? editedConcept : c)));
+    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const result = await regenerateVisualConcept({
+        structured_product: structured,
+        script,
+        situation: selectedSituation,
+        creative_angle: selectedAngle ?? "",
+        concept: editedConcept,
+        is_manual_edit: true,
+      });
+      setVisualConcepts((prev) => prev.map((c) => (c.id === id ? result : c)));
+      setVisualConceptScoring((prev) => ({ ...prev, [id]: true }));
+      scoreVisualConcept({ concept: result })
+        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, scores } : c))))
+        .catch(() => {})
+        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [id]: false })));
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't regenerate with those changes.", "danger");
+    } finally {
+      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleDownloadVisualConcept(id: string, format: "png" | "jpeg" | "webp") {
+    const concept = visualConcepts.find((c) => c.id === id);
+    if (!concept) return;
+    setVisualConceptDownloading((prev) => ({ ...prev, [id]: true }));
+    try {
+      const blob = await downloadVisualConcept({ concept, format });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${concept.scene_title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-4k.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Download failed.", "danger");
+    } finally {
+      setVisualConceptDownloading((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  function handleToggleFavoriteVisualConcept(id: string) {
+    setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, favorite: !c.favorite } : c)));
   }
 
   async function handleRunCompliance() {
@@ -703,22 +1054,60 @@ export default function Home() {
                 )}
 
                 {stepIndex === 2 && script && selectedSituation && (
-                  <ScriptStep
-                    script={script}
-                    situation={selectedSituation}
-                    creativeAngle={selectedAngle ?? ""}
-                    scriptLanguage={scriptLanguage}
-                    onScriptLanguageChange={setScriptLanguage}
-                    targetDuration={targetDuration}
-                    onTargetDurationChange={setTargetDuration}
-                    onRegenerateScope={handleRegenerateScope}
-                    onContinue={handleRunCompliance}
-                    onBack={() => goTo(1)}
-                    regenerating={scriptRegenLoading}
-                    continuing={complianceLoading}
-                    onRewriteLine={handleRewriteScriptLine}
-                    rewriting={rewriting}
-                  />
+                  <div className="space-y-6">
+                    <ScriptStep
+                      script={script}
+                      situation={selectedSituation}
+                      creativeAngle={selectedAngle ?? ""}
+                      scriptLanguage={scriptLanguage}
+                      onScriptLanguageChange={setScriptLanguage}
+                      targetDuration={targetDuration}
+                      onTargetDurationChange={setTargetDuration}
+                      onRegenerateScope={handleRegenerateScope}
+                      onBack={() => goTo(1)}
+                      regenerating={scriptRegenLoading}
+                      onEditLine={handleEditLine}
+                      onEditLineField={handleEditLineField}
+                      onEditWholeScript={handleEditWholeScript}
+                      onApplyDirective={handleApplyDirectiveToLine}
+                      onGenerateAlternatives={handleGenerateAlternativesForLine}
+                      onSelectAlternative={handleSelectAlternativeForLine}
+                      onTranslateLine={handleTranslateLine}
+                      lineLoading={lineLoading}
+                      recentlyChangedLineIds={recentlyChangedLineIds}
+                      onFetchSuggestions={handleFetchScriptSuggestions}
+                      onApplySuggestion={handleApplySuggestion}
+                      history={scriptHistory}
+                      historyIndex={scriptHistoryIndex}
+                      onUndo={handleUndoScript}
+                      onRedo={handleRedoScript}
+                      onRestoreVersion={handleRestoreScriptVersion}
+                    />
+
+                    <VisualConceptsSection
+                      concepts={visualConcepts}
+                      loading={visualConceptsLoading}
+                      error={visualConceptsError}
+                      scoring={visualConceptScoring}
+                      regenerating={visualConceptRegenLoading}
+                      downloading={visualConceptDownloading}
+                      onRegenerate={handleRegenerateVisualConcept}
+                      onGenerateVariation={handleGenerateVisualVariation}
+                      onEditPrompt={handleEditVisualConceptPrompt}
+                      onDownload={handleDownloadVisualConcept}
+                      onToggleFavorite={handleToggleFavoriteVisualConcept}
+                      onRetry={handleRetryVisualConcepts}
+                    />
+
+                    <div className="flex justify-between pt-2">
+                      <Button variant="ghost" onClick={() => goTo(1)}>
+                        ← Back
+                      </Button>
+                      <Button onClick={handleRunCompliance} loading={complianceLoading}>
+                        Run compliance audit →
+                      </Button>
+                    </div>
+                  </div>
                 )}
 
                 {stepIndex === 3 && compliance && (

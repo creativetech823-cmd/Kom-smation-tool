@@ -19,6 +19,10 @@ class Settings(BaseSettings):
     hf_motion_model: str = "Wan-AI/Wan2.1-I2V-14B-480P"
     hf_motion_provider: str = "wavespeed"
 
+    gemini_api_key: str = ""
+    gemini_image_model: str = "gemini-2.5-flash-image"
+    visuals_output_dir: str = "./visuals"
+
     max_reference_upload_mb: int = 30
     jina_reader_timeout_seconds: int = 25
 

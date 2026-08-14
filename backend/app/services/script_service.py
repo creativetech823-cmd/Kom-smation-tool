@@ -22,38 +22,65 @@ _client = Anthropic(api_key=settings.anthropic_api_key)
 
 _MAX_TOKENS = 16000
 
-_STRUCTURE_BLOCK = """STRUCTURE — build the script across these beats, in order, tagging every body
-block with the matching "section" value:
-1. Hook ("hook" field, section "hook") — a very strong attention-grabbing open: a question, a
-   shocking fact, a fear, a POV moment, a snippet of conversation, curiosity, or a contradiction.
-2. Problem (section "problem") — the user's pain, in their own words/frame. Do not mention the
-   product yet.
-3. Science / Psychology / Logic (section "science") — explain WHY the problem happens, in an
-   educational, credible way appropriate to the product's category (health, fitness, finance,
-   beauty, lifestyle, tech, education, etc).
-4. Story / Emotional Build-up (section "story") — continue naturally from the science into the
-   human story. If the creative angle is storytelling, expand the story; if it's a doctor/expert
-   angle, expand their explanation; if it's testimonial, tell the whole journey; if it's a
-   conversation, write it as dialogue; if it's a POV format (e.g. Meta Glasses), keep first-person
-   POV throughout this and every later beat.
-5. Product Introduction (section "product_intro") — introduce the product naturally, never like an
-   ad read.
-6. Ingredients / Features (section "ingredients") — why each ingredient/feature matters and what
-   problem it addresses, written conversationally, not like reading a label.
-7. Benefits (section "benefits") — immediate, long-term, emotional, and lifestyle benefits.
-8. Objection Handling (section "objection_handling") — answer the doubts a real viewer would have
-   ("will this become another addiction?", "is it safe?", "does it actually work?", "how is this
-   different?") naturally, in-voice, not as a Q&A list.
-9. CTA ("cta" field, section "cta") — a strong close: not "buy now" but a transformation-framed
-   call (e.g. "Start your recovery today", "Choose better, starting now").
+_SECTION_PROSE: dict[str, str] = {
+    "hook": (
+        'Hook ("hook" field, section "hook") — a very strong attention-grabbing open: a question, '
+        "a shocking fact, a fear, a POV moment, a snippet of conversation, curiosity, or a "
+        "contradiction."
+    ),
+    "problem": (
+        'Problem (section "problem") — the user\'s pain, in their own words/frame. Do not mention '
+        "the product yet."
+    ),
+    "science": (
+        'Science / Psychology / Logic (section "science") — explain WHY the problem happens, '
+        "briefly and credibly, in a way appropriate to the product's category (health, fitness, "
+        "finance, beauty, lifestyle, tech, education, etc)."
+    ),
+    "story": (
+        'Story / Emotional Build-up (section "story") — continue naturally into the human story. '
+        "If the creative angle is storytelling, expand the story; if it's a doctor/expert angle, "
+        "expand their explanation; if it's testimonial, tell the journey; if it's a conversation, "
+        "write it as dialogue; if it's a POV format (e.g. Meta Glasses), keep first-person POV "
+        "throughout this and every later beat."
+    ),
+    "product_intro": (
+        'Product Introduction (section "product_intro") — introduce the product naturally, never '
+        "like an ad read."
+    ),
+    "ingredients": (
+        'Ingredients / Features (section "ingredients") — why each ingredient/feature matters, '
+        "written conversationally, not like reading a label."
+    ),
+    "benefits": (
+        'Benefits (section "benefits") — the clearest, most compelling benefit(s): immediate, '
+        "emotional, or lifestyle, whichever lands hardest given the space available."
+    ),
+    "objection_handling": (
+        'Objection Handling (section "objection_handling") — answer the single biggest doubt a '
+        'real viewer would have ("is it safe?", "does it actually work?", "how is this different?") '
+        "naturally, in-voice, not as a Q&A list."
+    ),
+    "cta": (
+        'CTA ("cta" field, section "cta") — a strong close: not "buy now" but a transformation-'
+        'framed call (e.g. "Start your recovery today", "Choose better, starting now").'
+    ),
+}
 
-Not every situation needs all nine beats to be equally long, and a very short target duration may
-compress or merge some — use judgment — but for anything 30s or longer, every beat above should be
-represented with real substance, not skipped.
 
-FORMAT — cinematic blocks, not paragraphs: each beat is one or more short, punchy, individually
-timed script blocks (a sentence or two each), the way a real shooting script reads, never a wall of
-text in one block."""
+def _structure_block(bucket: str) -> str:
+    included = script_length.included_sections(bucket)
+    numbered = "\n".join(f"{i}. {_SECTION_PROSE[section]}" for i, section in enumerate(included, start=1))
+    return (
+        "STRUCTURE — build the script across these beats, in order, tagging every body block with "
+        "the matching \"section\" value. This duration is too short for the full nine-part "
+        "structure, so ONLY these beats are used below — do not add any other section, and do not "
+        "pad with extra blocks to fill space:\n"
+        f"{numbered}\n\n"
+        "FORMAT — cinematic blocks, not paragraphs: each beat is one or more short, punchy, "
+        "individually timed script blocks (a sentence or two each), the way a real shooting script "
+        "reads, never a wall of text in one block."
+    )
 
 _FIELDS_BLOCK = """For every single block (hook, each body block, and the CTA) produce ALL of these
 fields:
@@ -106,23 +133,25 @@ _SCRIPT_JSON_SHAPE = """{
   "bgm_suggestion": string
 }"""
 
-_SYSTEM_PROMPT = (
-    "You are a senior short-form video ad copywriter/director for a content factory pipeline, "
-    "writing scripts as rich and complete as a professional D2C ad agency's shooting scripts — not "
-    "a rough outline. You do NOT invent the creative — you are given ONE specific, already-chosen "
-    "story situation (a persona, a conflict, an emotional arc) and your job is to write the "
-    "complete, long-form cinematic script that brings that exact situation to life. Stay faithful "
-    "to the given persona, emotion, and marketing angle throughout.\n\n"
-    + _STRUCTURE_BLOCK
-    + "\n\n"
-    + _FIELDS_BLOCK
-    + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are the "
-    "first of two guardrail passes, so be conservative. If ingredient/USP data is missing, write "
-    "generically rather than inventing specifics.\n\n"
-    + _JSON_SAFETY_BLOCK
-    + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
-    + _SCRIPT_JSON_SHAPE
-)
+def _system_prompt(bucket: str) -> str:
+    return (
+        "You are a senior short-form video ad copywriter/director for a content factory pipeline, "
+        "writing scripts as sharp and professional as a real D2C ad agency's shooting scripts, "
+        "sized EXACTLY to fit the target duration below — never longer. You do NOT invent the "
+        "creative — you are given ONE specific, already-chosen story situation (a persona, a "
+        "conflict, an emotional arc) and your job is to write the complete cinematic script that "
+        "brings that exact situation to life, at the correct length for its runtime. Stay faithful "
+        "to the given persona, emotion, and marketing angle throughout.\n\n"
+        + _structure_block(bucket)
+        + "\n\n"
+        + _FIELDS_BLOCK
+        + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
+        "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
+        "write generically rather than inventing specifics.\n\n"
+        + _JSON_SAFETY_BLOCK
+        + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
+        + _SCRIPT_JSON_SHAPE
+    )
 
 _REGEN_SYSTEM_PROMPT_PREFIX = """You are a senior short-form video ad copywriter/director for a
 content factory pipeline. You are given a COMPLETE existing ad script as JSON, already broken into
@@ -132,8 +161,21 @@ text, same tags, same everything) — do not paraphrase, tidy up, or otherwise t
 blocks. The rewritten part(s) must stay continuous with the surrounding, unchanged blocks (same
 persona, same story so far, same product facts)."""
 
+_FULL_REWRITE_PREFIX = """You are a senior short-form video ad copywriter/director for a content
+factory pipeline. You are given the CURRENT version of an ad script as JSON (a hook, body blocks,
+and a CTA, each tagged with a "section") and asked to rewrite it to meet a new requirement below
+(a new length target and/or a specific creative instruction). Use the current script as your
+reference for the story, persona, product facts, hook idea, and creative angle — keep all of that
+the same — but you may freely rewrite, shorten, expand, split, or merge blocks as needed to
+actually hit the new requirement. This is a full rewrite pass building on what's already there, not
+an unrelated fresh script and not a copy-unless-asked pass."""
+
 _SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
-    ScriptRegenerateScope.full: "TASK: regenerate the ENTIRE script from scratch — every block.",
+    ScriptRegenerateScope.full: (
+        "TASK: rewrite the ENTIRE script to meet the length target and/or instruction below, while "
+        "keeping the same story, hook idea, persona, product facts, and creative angle as the "
+        "current script — build on it, don't discard it."
+    ),
     ScriptRegenerateScope.hook: (
         'TASK: regenerate ONLY the "hook" block — a fresh angle/wording for the opening. Leave '
         "every body block and the cta completely unchanged."
@@ -148,6 +190,12 @@ _SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
         "function as the explanatory/educational beat and rewrite those instead. Leave the hook, "
         "cta, and every other body block completely unchanged."
     ),
+    ScriptRegenerateScope.story: (
+        'TASK: regenerate ONLY the body block(s) whose "section" is "story" (the narrative/'
+        'emotional throughline). If none are tagged "story", identify the block(s) that carry the '
+        "story/emotional build-up and expand or rewrite those instead. Leave the hook, cta, and "
+        "every other body block completely unchanged."
+    ),
     ScriptRegenerateScope.product_explanation: (
         'TASK: regenerate ONLY the body block(s) whose "section" is "product_intro" or '
         '"ingredients". If none are tagged that way, identify the block(s) that introduce the '
@@ -161,18 +209,23 @@ _SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
         "camera_angle, and visual_direction as the original. Do not add or remove blocks."
     ),
     ScriptRegenerateScope.length: (
-        "TASK: regenerate the ENTIRE script, but make it noticeably longer and richer than the "
-        "original — hit the full target word/block count below, expanding every beat with real "
-        "substance."
+        "TASK: rewrite the ENTIRE script to be noticeably longer and richer than the current "
+        "version — expand every beat with real substance, hit the new target word/block count "
+        "below — while keeping the same story, hook, persona, product facts, and creative angle."
     ),
 }
 
 
-def _regen_system_prompt(scope: ScriptRegenerateScope) -> str:
+def _regen_system_prompt(scope: ScriptRegenerateScope, custom_instruction: str = "") -> str:
+    task = _SCOPE_GUIDANCE[scope]
+    if custom_instruction:
+        task += f"\nADDITIONAL INSTRUCTION: {custom_instruction}"
+    is_full_rewrite = scope in (ScriptRegenerateScope.full, ScriptRegenerateScope.length)
+    prefix = _FULL_REWRITE_PREFIX if is_full_rewrite else _REGEN_SYSTEM_PROMPT_PREFIX
     return (
-        _REGEN_SYSTEM_PROMPT_PREFIX
+        prefix
         + "\n\n"
-        + _SCOPE_GUIDANCE[scope]
+        + task
         + "\n\n"
         + _FIELDS_BLOCK
         + "\n\n"
@@ -249,7 +302,7 @@ def _language_block(language: ScriptLanguage) -> str:
     return _LANGUAGE_BLOCKS.get(language, "")
 
 
-def _context_block(payload, target_duration: str) -> str:
+def _context_block(payload, target_duration: str, target_word_count: int | None = None) -> str:
     """Situation/product/rules/angle/language/length context shared by both a
     fresh generation and a targeted regeneration."""
     p = payload.structured_product
@@ -259,6 +312,19 @@ def _context_block(payload, target_duration: str) -> str:
 
     winners = getattr(payload, "similar_past_winners", None)
     winners_block = "\n".join(f"- {w}" for w in winners) if winners else "(none available yet)"
+
+    current_script = getattr(payload, "current_script", None)
+    current_word_count = (
+        script_length.count_words(
+            {
+                "hook": current_script.hook.model_dump(),
+                "body": [line.model_dump() for line in current_script.body],
+                "cta": current_script.cta.model_dump(),
+            }
+        )
+        if current_script
+        else None
+    )
 
     return (
         f"Chosen story situation (the creative brief — bring THIS to life):\n"
@@ -270,7 +336,7 @@ def _context_block(payload, target_duration: str) -> str:
         f"Category: {s.category}\n"
         f"{_angle_block(payload.creative_angle)}"
         f"{_language_block(payload.script_language)}\n"
-        f"{script_length.length_directive(target_duration)}"
+        f"{script_length.length_directive(target_duration, target_word_count, current_word_count)}"
         f"Platform: {payload.platform}\n"
         f"Max characters per line: {payload.max_line_chars}\n\n"
         f"Product: {p.product_name}\n"
@@ -323,7 +389,13 @@ def _repair_json(broken_text: str, error_message: str, max_tokens: int) -> dict:
     return _parse_script_json(raw)
 
 
-def _generate_with_recovery(system: str, user_message: str, max_tokens: int, target_duration: str) -> dict:
+def _generate_with_recovery(
+    system: str,
+    user_message: str,
+    max_tokens: int,
+    target_duration: str,
+    target_word_count: int | None = None,
+) -> dict:
     """Attempt 1 -> silent retry (attempt 2) -> repair pass -> only then raise.
     The caller (and therefore the user) only ever sees an error if all three
     recovery stages fail."""
@@ -353,23 +425,65 @@ def _generate_with_recovery(system: str, user_message: str, max_tokens: int, tar
                 "retry and repair pass. Please try again in a moment."
             ) from e
 
-    if script_length.count_words(data) < script_length.target_word_minimum(target_duration) * 0.6:
+    if target_word_count:
+        # A precise numeric target (length-adjustment controls) — tolerance is
+        # tight, since "barely moved from the current length" must be caught,
+        # not just catastrophic failures.
+        word_lo, word_hi = max(10, target_word_count - 10), target_word_count + 10
+        tol_lo, tol_hi = 0.9, 1.15
+    else:
+        word_lo, word_hi = script_length.target_word_minimum(target_duration), script_length.target_word_maximum(target_duration)
+        tol_lo, tol_hi = 0.75, 1.3
+
+    words = script_length.count_words(data)
+    if words < word_lo * tol_lo or words > word_hi * tol_hi:
+        direction = (
+            f"far too short ({words} words; target is {word_lo}-{word_hi})"
+            if words < word_lo
+            else f"far too long ({words} words; target is {word_lo}-{word_hi}) — this must actually "
+            "fit the spoken runtime, cut it down substantially by removing or merging blocks"
+        )
         try:
-            expanded_raw = _call_claude(
+            corrected_raw = _call_claude(
                 system,
                 user_message
-                + "\n\nIMPORTANT: your previous attempt was far too short for the requested "
-                "duration — expand significantly and cover the full 9-part structure with real "
-                "substance in each beat, not one throwaway line per beat.",
+                + f"\n\nIMPORTANT: your previous attempt was {direction}. Rewrite it to actually "
+                "hit the target word count while preserving the same story, hook, and structure.",
                 max_tokens,
             )
-            expanded_data = _parse_script_json(expanded_raw)
-            GeneratedScript(**expanded_data)
-            data = expanded_data
+            corrected_data = _parse_script_json(corrected_raw)
+            GeneratedScript(**corrected_data)
+            data = corrected_data
         except Exception as e:
-            logger.warning("Length-expansion regeneration failed, keeping shorter script: %s", e)
+            logger.warning("Length-correction regeneration failed, keeping prior script: %s", e)
 
     return data
+
+
+def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
+    return GeneratedScript(
+        **data,
+        situation=payload.selected_situation,
+        creative_angle=payload.creative_angle,
+        script_language=payload.script_language,
+        target_duration=target_duration,
+        estimated_duration_seconds=script_length.estimate_seconds(script_length.count_words(data)),
+    )
+
+
+def _generate_full_script(
+    payload,
+    target_duration: str,
+    target_word_count: int | None = None,
+    custom_instruction: str = "",
+) -> GeneratedScript:
+    user_message = _context_block(payload, target_duration, target_word_count)
+    if custom_instruction:
+        user_message += f"\n\nADDITIONAL INSTRUCTION: {custom_instruction}\n"
+    data = _generate_with_recovery(
+        _system_prompt(target_duration), user_message, _MAX_TOKENS, target_duration, target_word_count
+    )
+    return _finish(data, payload, target_duration)
 
 
 def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
@@ -379,16 +493,7 @@ def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
     target_duration = script_length.resolve_target_duration(
         payload.selected_situation.estimated_length, payload.target_duration
     )
-    user_message = _context_block(payload, target_duration)
-    data = _generate_with_recovery(_SYSTEM_PROMPT, user_message, _MAX_TOKENS, target_duration)
-
-    return GeneratedScript(
-        **data,
-        situation=payload.selected_situation,
-        creative_angle=payload.creative_angle,
-        script_language=payload.script_language,
-        target_duration=target_duration,
-    )
+    return _generate_full_script(payload, target_duration)
 
 
 def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> GeneratedScript:
@@ -399,39 +504,32 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
         payload.selected_situation.estimated_length, payload.target_duration
     )
 
-    if payload.scope == ScriptRegenerateScope.full:
-        return generate_script(
-            ScriptGenerationInput(
-                structured_product=payload.structured_product,
-                selected_situation=payload.selected_situation,
-                product_category=payload.product_category,
-                platform=payload.platform,
-                max_line_chars=payload.max_line_chars,
-                creative_angle=payload.creative_angle,
-                script_language=payload.script_language,
-                target_duration=target_duration,
-            )
-        )
+    # A "pure" full regenerate (no explicit length/instruction override — the
+    # RegenerateMenu's "Entire Script" option) intentionally starts fresh from
+    # the situation. Every other case — including full/length WITH a
+    # target_word_count or custom_instruction, i.e. the Shorten/Extend/one-click
+    # controls — must build on the CURRENT script, not discard it.
+    is_pure_full = (
+        payload.scope == ScriptRegenerateScope.full
+        and not payload.target_word_count
+        and not payload.custom_instruction
+    )
+    if is_pure_full:
+        return _generate_full_script(payload, target_duration)
 
     length_target = (
         script_length.bump_bucket(target_duration)
-        if payload.scope == ScriptRegenerateScope.length
+        if payload.scope == ScriptRegenerateScope.length and not payload.target_word_count
         else target_duration
     )
-    context = _context_block(payload, length_target)
+    context = _context_block(payload, length_target, payload.target_word_count)
     current_script_json = payload.current_script.model_dump_json(exclude={"situation"})
     user_message = (
         f"{context}\n\n"
-        f"Current script (JSON) — copy every untouched block back exactly as-is, only rewrite what "
-        f"the TASK above asks for:\n{current_script_json}"
+        f"Current script (JSON) — this is what exists right now; follow the TASK above to update "
+        f"it:\n{current_script_json}"
     )
-    system = _regen_system_prompt(payload.scope)
-    data = _generate_with_recovery(system, user_message, _MAX_TOKENS, length_target)
+    system = _regen_system_prompt(payload.scope, payload.custom_instruction)
+    data = _generate_with_recovery(system, user_message, _MAX_TOKENS, length_target, payload.target_word_count)
 
-    return GeneratedScript(
-        **data,
-        situation=payload.selected_situation,
-        creative_angle=payload.creative_angle,
-        script_language=payload.script_language,
-        target_duration=length_target,
-    )
+    return _finish(data, payload, length_target)

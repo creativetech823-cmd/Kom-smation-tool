@@ -11,9 +11,15 @@ import type {
   RewriteDirective,
   ScriptLanguage,
   ScriptRegenerateScope,
+  ScriptSuggestion,
   SelectedAsset,
   StorySituation,
   StructuredProduct,
+  TestImageResult,
+  VisualConcept,
+  VisualConceptDebugInfo,
+  VisualConceptScores,
+  VisualVariationStyle,
   VoiceoverResult,
 } from "./types";
 
@@ -23,6 +29,20 @@ export class ApiError extends Error {
   constructor(message: string, public status: number) {
     super(message);
   }
+}
+
+async function get<TResponse>(path: string): Promise<TResponse> {
+  const res = await fetch(`${API_BASE}${path}`);
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(
+      typeof detail.detail === "string" ? detail.detail : JSON.stringify(detail.detail),
+      res.status
+    );
+  }
+
+  return res.json() as Promise<TResponse>;
 }
 
 async function post<TResponse>(path: string, body: unknown): Promise<TResponse> {
@@ -56,6 +76,24 @@ async function postMultipart<TResponse>(path: string, formData: FormData): Promi
   }
 
   return res.json() as Promise<TResponse>;
+}
+
+async function postBlob(path: string, body: unknown): Promise<Blob> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new ApiError(
+      typeof detail.detail === "string" ? detail.detail : JSON.stringify(detail.detail),
+      res.status
+    );
+  }
+
+  return res.blob();
 }
 
 export function structureProduct(input: ProductInput) {
@@ -121,12 +159,27 @@ export function regenerateScriptSection(payload: {
   target_duration?: string;
   current_script: GeneratedScript;
   scope: ScriptRegenerateScope;
+  custom_instruction?: string;
+  target_word_count?: number;
 }) {
   return post<GeneratedScript>("/pipeline/regenerate-script-section", payload);
 }
 
-export function rewriteLine(payload: { text: string; directive: RewriteDirective; max_chars?: number }) {
+export function rewriteLine(payload: {
+  text: string;
+  directive: RewriteDirective;
+  max_chars?: number;
+  target_language?: ScriptLanguage;
+}) {
   return post<{ text: string }>("/pipeline/rewrite-line", payload);
+}
+
+export function generateAlternatives(payload: { text: string; directive: RewriteDirective; max_chars?: number }) {
+  return post<{ alternatives: string[] }>("/pipeline/generate-alternatives", payload);
+}
+
+export function getScriptSuggestions(payload: { script: GeneratedScript; target_duration?: string }) {
+  return post<{ suggestions: ScriptSuggestion[] }>("/pipeline/script-suggestions", payload);
 }
 
 export function auditCompliance(payload: {
@@ -170,4 +223,48 @@ export function generateMotion(payload: { line_id: string; image_url: string; vi
 export function motionFileUrl(videoPath: string): string {
   const filename = videoPath.split(/[\\/]/).pop();
   return `${API_BASE}/motion/${filename}`;
+}
+
+export function visualFileUrl(imagePath: string): string {
+  const filename = imagePath.split(/[\\/]/).pop();
+  return `${API_BASE}/visuals/${filename}`;
+}
+
+export function generateVisualConcepts(payload: {
+  structured_product: StructuredProduct;
+  script: GeneratedScript;
+  situation: StorySituation;
+  creative_angle?: string;
+  product_category?: string;
+}) {
+  return post<{ concepts: VisualConcept[] }>("/pipeline/visual-concepts", payload).then((r) => r.concepts);
+}
+
+export function regenerateVisualConcept(payload: {
+  structured_product: StructuredProduct;
+  script: GeneratedScript;
+  situation: StorySituation;
+  creative_angle?: string;
+  concept: VisualConcept;
+  variation_style?: VisualVariationStyle;
+  as_new_variation?: boolean;
+  is_manual_edit?: boolean;
+}) {
+  return post<VisualConcept>("/pipeline/visual-concepts/regenerate", payload);
+}
+
+export function scoreVisualConcept(payload: { concept: VisualConcept }) {
+  return post<VisualConceptScores>("/pipeline/visual-concepts/score", payload);
+}
+
+export function testVisualConceptImage() {
+  return post<TestImageResult>("/pipeline/visual-concepts/test", {});
+}
+
+export function getVisualConceptDebugInfo() {
+  return get<VisualConceptDebugInfo>("/pipeline/visual-concepts/debug");
+}
+
+export function downloadVisualConcept(payload: { concept: VisualConcept; format?: "png" | "jpeg" | "webp" }) {
+  return postBlob("/pipeline/visual-concepts/download", payload);
 }

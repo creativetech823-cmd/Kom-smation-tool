@@ -111,6 +111,7 @@ export type ScriptRegenerateScope =
   | "hook"
   | "cta"
   | "science"
+  | "story"
   | "product_explanation"
   | "emotional_tone"
   | "length";
@@ -133,7 +134,28 @@ export type ScriptLine = {
   ai_video_prompt?: string;
 };
 
-export type RewriteDirective = "improve" | "make_viral" | "make_emotional" | "increase_conversion" | "rewrite";
+export type RewriteDirective =
+  | "improve"
+  | "make_viral"
+  | "make_emotional"
+  | "increase_conversion"
+  | "rewrite"
+  | "make_shorter"
+  | "make_longer"
+  | "more_cinematic"
+  | "more_conversational"
+  | "more_scientific"
+  | "more_persuasive"
+  | "simplify"
+  | "professional_tone"
+  | "funny"
+  | "fear_based"
+  | "doctor_style"
+  | "storytelling_style"
+  | "ugc_style"
+  | "podcast_style"
+  | "meta_glasses_pov"
+  | "translate";
 
 export type ScriptLanguage = "english" | "hindi" | "hinglish";
 
@@ -146,6 +168,15 @@ export type GeneratedScript = {
   creative_angle?: string;
   script_language?: ScriptLanguage;
   target_duration?: string;
+  estimated_duration_seconds?: number;
+};
+
+export type ScriptSuggestion = {
+  line_id: string | null;
+  section: ScriptSection | null;
+  message: string;
+  action_label: string;
+  suggested_scope: ScriptRegenerateScope | null;
 };
 
 export type ComplianceViolation = {
@@ -234,3 +265,91 @@ export function flattenScript(script: GeneratedScript): FlatLine[] {
     { id: "cta", role: "cta", ...script.cta },
   ];
 }
+
+export type VisualSceneLabel =
+  | "hook"
+  | "emotional"
+  | "transformation"
+  | "product_shot"
+  | "social_proof"
+  | "testimonial"
+  | "ugc"
+  | "lifestyle";
+
+export type VisualConceptStyleParams = {
+  style: string;
+  lighting: string;
+  camera: string;
+  mood: string;
+  background: string;
+  characters: string;
+  composition: string;
+  brand_colors: string;
+  logo_placement: string;
+  product_position: string;
+  negative_prompt: string;
+};
+
+export type VisualConceptScores = {
+  visual_impact: number;
+  ad_quality: number;
+  ctr_prediction: number;
+  emotion_score: number;
+  brand_match: number;
+  photorealism: number;
+  notes: string;
+};
+
+export type TestImageResult = {
+  image_path: string;
+  used_model: string;
+  elapsed_seconds: number;
+};
+
+export type VisualConceptDebugInfo = {
+  api_key_loaded: boolean;
+  model: string;
+  api_url: string;
+  internet_access: boolean;
+};
+
+export type VisualConcept = {
+  id: string;
+  scene_number: number;
+  scene_title: string;
+  scene_label: VisualSceneLabel;
+  creative_angle: string;
+  aspect_ratio: string;
+  prompt: string;
+  style_params: VisualConceptStyleParams;
+  image_path: string;
+  scores: VisualConceptScores | null;
+  favorite: boolean;
+  seed: number | null;
+  resolution: string;
+  generation_time_seconds: number;
+  used_model: string;
+};
+
+export type VisualVariationStyle =
+  | "photorealistic"
+  | "luxury_product"
+  | "studio_photography"
+  | "commercial_advertisement"
+  | "lifestyle"
+  | "fashion"
+  | "apple_style"
+  | "nike_style"
+  | "cinematic"
+  | "moody"
+  | "bollywood"
+  | "documentary"
+  | "meta_glasses_pov"
+  | "ugc"
+  | "instagram_ad"
+  | "facebook_ad"
+  | "luxury_cosmetic"
+  | "minimal"
+  | "hyper_realistic"
+  | "generate_similar"
+  | "different_angle";

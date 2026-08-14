@@ -9,6 +9,7 @@ const OPTIONS: { scope: ScriptRegenerateScope; label: string; hint: string }[] =
   { scope: "hook", label: "Hook Only", hint: "Fresh opening, rest stays the same" },
   { scope: "cta", label: "CTA Only", hint: "Fresh close, rest stays the same" },
   { scope: "science", label: "Science Section", hint: "Rewrite the why-this-happens beat" },
+  { scope: "story", label: "Story Section", hint: "Rewrite the narrative/emotional beat" },
   { scope: "product_explanation", label: "Product Explanation", hint: "Rewrite product intro + ingredients" },
   { scope: "emotional_tone", label: "Emotional Tone", hint: "Push every line's feeling harder" },
   { scope: "length", label: "Make It Longer", hint: "Expand every beat with more depth" },

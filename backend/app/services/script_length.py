@@ -13,37 +13,45 @@ _SECTION_LABELS: dict[str, str] = {
 }
 _SECTION_ORDER = list(_SECTION_LABELS)
 
-# Exact block quota per section, per duration bucket — concrete per-beat counts
-# are far more reliable to hit than an abstract total-word target. "hook" and
-# "cta" are pinned to exactly 1: the JSON shape has a single hook/cta object
-# (not an array like "body"), so any extra weight there goes to "story" instead.
-_SECTION_BLOCKS: dict[str, dict[str, int]] = {
-    "15s": {"hook": 1, "problem": 1, "science": 1, "story": 1, "product_intro": 1, "ingredients": 1, "benefits": 1, "objection_handling": 0, "cta": 1},
-    "30s": {"hook": 1, "problem": 2, "science": 3, "story": 4, "product_intro": 2, "ingredients": 3, "benefits": 3, "objection_handling": 2, "cta": 1},
-    "45s": {"hook": 1, "problem": 3, "science": 4, "story": 5, "product_intro": 3, "ingredients": 4, "benefits": 4, "objection_handling": 3, "cta": 1},
-    "60s": {"hook": 1, "problem": 4, "science": 5, "story": 8, "product_intro": 4, "ingredients": 5, "benefits": 5, "objection_handling": 4, "cta": 1},
-    "90s": {"hook": 1, "problem": 6, "science": 7, "story": 12, "product_intro": 5, "ingredients": 7, "benefits": 8, "objection_handling": 7, "cta": 1},
+# Realistic spoken-word target per duration bucket (~150-165 wpm ad-read pace).
+_WORD_TARGETS: dict[str, tuple[int, int]] = {
+    "15s": (35, 50),
+    "20s": (45, 65),
+    "30s": (65, 90),
+    "45s": (100, 140),
+    "60s": (140, 180),
+    "90s": (220, 270),
+    "120s": (300, 360),
 }
 
-# (min, max) words per individual block's "text" field, per bucket.
-_WORDS_PER_BLOCK: dict[str, tuple[int, int]] = {
-    "15s": (10, 18),
-    "30s": (14, 20),
-    "45s": (15, 22),
-    "60s": (16, 24),
-    "90s": (16, 24),
+# Exact block quota per section, per duration bucket. At short durations most of
+# the 9-part structure is genuinely too much to fit — sections are dropped, not
+# compressed into fragments. "hook" and "cta" are pinned to exactly 1 always:
+# the JSON shape has a single hook/cta object (not an array like "body").
+_SECTION_BLOCKS: dict[str, dict[str, int]] = {
+    "15s": {"hook": 1, "problem": 1, "science": 0, "story": 0, "product_intro": 1, "ingredients": 0, "benefits": 0, "objection_handling": 0, "cta": 1},
+    "20s": {"hook": 1, "problem": 1, "science": 0, "story": 0, "product_intro": 1, "ingredients": 0, "benefits": 1, "objection_handling": 0, "cta": 1},
+    "30s": {"hook": 1, "problem": 1, "science": 1, "story": 0, "product_intro": 1, "ingredients": 0, "benefits": 1, "objection_handling": 0, "cta": 1},
+    "45s": {"hook": 1, "problem": 1, "science": 1, "story": 1, "product_intro": 1, "ingredients": 1, "benefits": 1, "objection_handling": 0, "cta": 1},
+    "60s": {"hook": 1, "problem": 1, "science": 1, "story": 1, "product_intro": 1, "ingredients": 1, "benefits": 1, "objection_handling": 1, "cta": 1},
+    "90s": {"hook": 1, "problem": 2, "science": 1, "story": 2, "product_intro": 1, "ingredients": 1, "benefits": 2, "objection_handling": 1, "cta": 1},
+    "120s": {"hook": 1, "problem": 2, "science": 2, "story": 2, "product_intro": 1, "ingredients": 2, "benefits": 2, "objection_handling": 2, "cta": 1},
 }
 
 _DEPTH_NOTE: dict[str, str] = {
-    "15s": "a tight, fast-moving cut — every beat earns its place",
-    "30s": "a medium-depth cut — hit every structural beat but keep it moving",
-    "45s": "a fuller cut with room to breathe on the science/story beats",
-    "60s": "a detailed, fully-developed cut — give every beat real depth",
-    "90s": "a cinematic long-form cut — expand story/science/objection handling substantially",
+    "15s": "a single fast beat — hook, the problem in one line, the product, and out",
+    "20s": "a very tight cut — every word counts, no room for a detour",
+    "30s": "a tight, fast-moving cut — every beat earns its place",
+    "45s": "a medium-depth cut — hits the core beats without lingering",
+    "60s": "a fuller cut with room to breathe on the science/story beats",
+    "90s": "a detailed, fully-developed cut — give every beat real depth",
+    "120s": "a cinematic long-form cut — expand story/science/objection handling substantially",
 }
 
-_BUCKET_SECONDS = {"15s": 15, "30s": 30, "45s": 45, "60s": 60, "90s": 90}
-_BUCKET_ORDER = ["15s", "30s", "45s", "60s", "90s"]
+_BUCKET_SECONDS = {"15s": 15, "20s": 20, "30s": 30, "45s": 45, "60s": 60, "90s": 90, "120s": 120}
+_BUCKET_ORDER = ["15s", "20s", "30s", "45s", "60s", "90s", "120s"]
+
+WPM = 165.0
 
 
 def bump_bucket(bucket: str) -> str:
@@ -72,21 +80,41 @@ def _quota(bucket: str) -> dict[str, int]:
     return _SECTION_BLOCKS.get(bucket, _SECTION_BLOCKS["30s"])
 
 
+def included_sections(bucket: str) -> list[str]:
+    """Ordered section keys that actually appear at this duration bucket."""
+    quota = _quota(bucket)
+    return [section for section in _SECTION_ORDER if quota.get(section, 0) > 0]
+
+
+def _word_target(bucket: str) -> tuple[int, int]:
+    return _WORD_TARGETS.get(bucket, _WORD_TARGETS["30s"])
+
+
 def total_blocks(bucket: str) -> int:
     return sum(_quota(bucket).values())
 
 
 def target_word_minimum(bucket: str) -> int:
-    wmin, _wmax = _WORDS_PER_BLOCK.get(bucket, _WORDS_PER_BLOCK["30s"])
-    return total_blocks(bucket) * wmin
+    return _word_target(bucket)[0]
 
 
-def length_directive(bucket: str) -> str:
+def target_word_maximum(bucket: str) -> int:
+    return _word_target(bucket)[1]
+
+
+def estimate_seconds(word_count: int) -> float:
+    """Rough spoken-duration estimate for a given word count, at WPM pace."""
+    return round((word_count / WPM) * 60, 1)
+
+
+def length_directive(
+    bucket: str,
+    target_word_count: int | None = None,
+    current_word_count: int | None = None,
+) -> str:
     quota = _quota(bucket)
-    wmin, wmax = _WORDS_PER_BLOCK.get(bucket, _WORDS_PER_BLOCK["30s"])
-    depth = _DEPTH_NOTE.get(bucket, _DEPTH_NOTE["30s"])
     blocks = total_blocks(bucket)
-    word_lo, word_hi = blocks * wmin, blocks * wmax
+    depth = _DEPTH_NOTE.get(bucket, _DEPTH_NOTE["30s"])
 
     quota_lines = "\n".join(
         f'  - "{section}" ({_SECTION_LABELS[section]}): {count} block(s)'
@@ -94,17 +122,57 @@ def length_directive(bucket: str) -> str:
         if count > 0
     )
 
+    if target_word_count:
+        # An explicit numeric target (shorten/extend/slider controls) — this is
+        # a length ADJUSTMENT of an existing script, so the block count is a
+        # flexible reference, not a hard requirement like during first generation.
+        word_lo, word_hi = max(10, target_word_count - 8), target_word_count + 8
+        wmin = max(4, word_lo // blocks)
+        wmax = max(wmin + 4, -(-word_hi // blocks))  # ceil division
+        current_note = ""
+        if current_word_count:
+            delta = target_word_count - current_word_count
+            verb = "add" if delta > 0 else "cut"
+            current_note = (
+                f"The CURRENT script below is {current_word_count} words. You must {verb} roughly "
+                f"{abs(delta)} words to reach the new target — a result close to {current_word_count} "
+                f"words unchanged is a FAILED output, this must be a real, noticeable change in length, "
+                f"achieved by genuinely expanding/trimming sentences and adding/removing/merging "
+                f"blocks, not by tweaking a word or two.\n"
+            )
+        return (
+            f"\nSCRIPT LENGTH TARGET (mandatory — treat as a hard ceiling, not a suggestion): the "
+            f"ENTIRE script (hook + every body block + CTA combined) must land at approximately "
+            f"{word_lo}-{word_hi} words TOTAL — not per block, not per section, the whole script. "
+            f"{current_note}"
+            f"This is a length ADJUSTMENT of the current script below — you may add, remove, split, "
+            f"or merge body blocks as needed to actually hit this target; the section list below is "
+            f"a reference for the beats a {bucket} video like this usually covers, not a fixed "
+            f"count:\n{quota_lines}\n"
+            f"As a guide, that's roughly {blocks} blocks at {wmin}-{wmax} words each, but adjust the "
+            f"block count freely — what matters is landing the TOTAL in {word_lo}-{word_hi} words. "
+            f"IMPORTANT: \"hook\" and \"cta\" are always exactly 1 block each — they are single JSON "
+            f"objects, not arrays. All other sections' blocks belong in the \"body\" array.\n"
+        )
+
+    word_lo, word_hi = _word_target(bucket)
+    wmin = max(4, word_lo // blocks)
+    wmax = max(wmin + 4, -(-word_hi // blocks))  # ceil division
     return (
-        f"\nSCRIPT LENGTH & STRUCTURE QUOTA (mandatory — a common failure mode is writing far too "
-        f"few blocks; follow this exactly): this is a ~{bucket} video, {depth}. Write EXACTLY this "
-        f"many blocks tagged with each \"section\" value (a block is one hook/body/cta array entry):\n"
+        f"\nSCRIPT LENGTH & STRUCTURE QUOTA (mandatory — this is a common failure mode: writing a "
+        f"script that's several times too long to actually voice in {bucket}; treat the word count "
+        f"as a hard ceiling, not a suggestion): this is a ~{bucket} video, {depth}. At normal spoken "
+        f"ad-read pace that means the ENTIRE script (hook + every body block + CTA combined) must "
+        f"land at approximately {word_lo}-{word_hi} words TOTAL — not per block, not per section, "
+        f"the whole script. Write EXACTLY this many blocks tagged with each \"section\" value (a "
+        f"block is one hook/body/cta array entry), and do NOT include any section not listed here:\n"
         f"{quota_lines}\n"
         f"That is {blocks} blocks total. Each block's \"text\" should be roughly {wmin}-{wmax} words "
-        f"(a full sentence or two, not a sentence fragment) — landing the whole script around "
-        f"{word_lo}-{word_hi} words all together. Writing noticeably fewer blocks, or merging several "
-        f"of these blocks into one, is a FAILED output — hit the exact per-section counts above. "
+        f"— short, punchy, spoken-pace phrases, not full paragraphs. Writing more blocks than listed, "
+        f"adding sections not listed, or writing long blocks that blow past the total word budget is "
+        f"a FAILED output — a {bucket} video cannot carry more than ~{word_hi} spoken words. "
         f"IMPORTANT: \"hook\" and \"cta\" are always exactly 1 block each — they are single JSON "
-        f"objects, not arrays. All the other sections' extra blocks belong in the \"body\" array.\n"
+        f"objects, not arrays. All other sections' blocks belong in the \"body\" array.\n"
     )
 
 

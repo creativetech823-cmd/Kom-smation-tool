@@ -20,6 +20,7 @@ app.mount("/renders", StaticFiles(directory="renders"), name="renders")
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 app.mount("/motion", StaticFiles(directory="motion"), name="motion")
 app.mount("/reference-uploads", StaticFiles(directory="reference_uploads"), name="reference_uploads")
+app.mount("/visuals", StaticFiles(directory="visuals"), name="visuals")
 
 
 @app.get("/health")

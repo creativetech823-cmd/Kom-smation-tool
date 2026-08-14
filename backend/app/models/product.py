@@ -37,6 +37,7 @@ class ScriptRegenerateScope(str, Enum):
     hook = "hook"
     cta = "cta"
     science = "science"
+    story = "story"
     product_explanation = "product_explanation"
     emotional_tone = "emotional_tone"
     length = "length"
@@ -252,6 +253,7 @@ class GeneratedScript(BaseModel):
     creative_angle: str = ""
     script_language: ScriptLanguage = ScriptLanguage.english
     target_duration: str = ""
+    estimated_duration_seconds: float = 0.0
 
     @property
     def full_text(self) -> str:
@@ -273,6 +275,12 @@ class ScriptSectionRegenerateInput(BaseModel):
     target_duration: str = ""
     current_script: GeneratedScript
     scope: ScriptRegenerateScope = ScriptRegenerateScope.full
+    # Free text appended to the scope's guidance — powers one-click actions like
+    # "Add More Science" or "Remove Repetition" without needing a new enum value.
+    custom_instruction: str = ""
+    # Precise numeric word-count target — used by Shorten/Extend/slider controls
+    # to override the bucket's normal range with an exact goal.
+    target_word_count: Optional[int] = None
 
 
 class AssetSourcingInput(BaseModel):
@@ -383,13 +391,176 @@ class RewriteDirective(str, Enum):
     make_emotional = "make_emotional"
     increase_conversion = "increase_conversion"
     rewrite = "rewrite"
+    make_shorter = "make_shorter"
+    make_longer = "make_longer"
+    more_cinematic = "more_cinematic"
+    more_conversational = "more_conversational"
+    more_scientific = "more_scientific"
+    more_persuasive = "more_persuasive"
+    simplify = "simplify"
+    professional_tone = "professional_tone"
+    funny = "funny"
+    fear_based = "fear_based"
+    doctor_style = "doctor_style"
+    storytelling_style = "storytelling_style"
+    ugc_style = "ugc_style"
+    podcast_style = "podcast_style"
+    meta_glasses_pov = "meta_glasses_pov"
+    translate = "translate"
 
 
 class RewriteLineInput(BaseModel):
     text: str = Field(..., min_length=1)
     directive: RewriteDirective
     max_chars: Optional[int] = None
+    # Only used when directive == translate.
+    target_language: Optional[ScriptLanguage] = None
 
 
 class RewriteLineResult(BaseModel):
     text: str
+
+
+class GenerateAlternativesResult(BaseModel):
+    alternatives: list[str] = Field(default_factory=list)
+
+
+class ScriptSuggestion(BaseModel):
+    """One AI-generated improvement suggestion for a finished script."""
+
+    line_id: Optional[str] = None
+    section: Optional[ScriptSection] = None
+    message: str
+    action_label: str
+    suggested_scope: Optional[ScriptRegenerateScope] = None
+
+    @field_validator("section", "suggested_scope", "line_id", mode="before")
+    @classmethod
+    def _blank_to_none(cls, v: object) -> object:
+        return v or None
+
+
+class ScriptSuggestionsResult(BaseModel):
+    suggestions: list[ScriptSuggestion] = Field(default_factory=list)
+
+
+class ScriptSuggestionsInput(BaseModel):
+    script: GeneratedScript
+    target_duration: str = ""
+
+
+class VisualSceneLabel(str, Enum):
+    hook = "hook"
+    emotional = "emotional"
+    transformation = "transformation"
+    product_shot = "product_shot"
+    social_proof = "social_proof"
+    testimonial = "testimonial"
+    ugc = "ugc"
+    lifestyle = "lifestyle"
+
+
+class VisualConceptStyleParams(BaseModel):
+    """Fields exposed in the "Edit Prompt" modal — merged into the final
+    generation prompt when non-empty."""
+
+    style: str = ""
+    lighting: str = ""
+    camera: str = ""
+    mood: str = ""
+    background: str = ""
+    characters: str = ""
+    composition: str = ""
+    brand_colors: str = ""
+    logo_placement: str = ""
+    product_position: str = ""
+    negative_prompt: str = ""
+
+
+class VisualConceptScores(BaseModel):
+    """Claude Vision's assessment of a rendered concept — an AI judgment call
+    against stated creative criteria, not a validated ad-industry metric."""
+
+    visual_impact: int = 0
+    ad_quality: int = 0
+    ctr_prediction: int = 0
+    emotion_score: int = 0
+    brand_match: int = 0
+    photorealism: int = 0
+    notes: str = ""
+
+
+class VisualConcept(BaseModel):
+    id: str
+    scene_number: int
+    scene_title: str
+    scene_label: VisualSceneLabel
+    creative_angle: str = ""
+    aspect_ratio: str = "9:16"
+    prompt: str
+    style_params: VisualConceptStyleParams = Field(default_factory=VisualConceptStyleParams)
+    image_path: str = ""
+    scores: Optional[VisualConceptScores] = None
+    favorite: bool = False
+    seed: Optional[int] = None
+    resolution: str = ""
+    generation_time_seconds: float = 0.0
+    used_model: str = ""
+
+    @field_validator("scene_label", mode="before")
+    @classmethod
+    def _blank_scene_label_to_hook(cls, v: object) -> object:
+        return v or "hook"
+
+
+class VisualConceptsInput(BaseModel):
+    structured_product: StructuredProduct
+    script: GeneratedScript
+    situation: StorySituation
+    creative_angle: str = ""
+    product_category: str = ""
+
+
+class VisualConceptsResult(BaseModel):
+    concepts: list[VisualConcept] = Field(default_factory=list)
+
+
+class VisualConceptRegenerateInput(BaseModel):
+    structured_product: StructuredProduct
+    script: GeneratedScript
+    situation: StorySituation
+    creative_angle: str = ""
+    concept: VisualConcept
+    variation_style: Optional[str] = None
+    as_new_variation: bool = False
+    # True when the user edited the prompt/style fields directly (Edit Prompt
+    # modal) — routes through image-conditioned editing instead of a fresh
+    # from-scratch generation, same as variation_style.
+    is_manual_edit: bool = False
+
+
+class VisualConceptScoreInput(BaseModel):
+    concept: VisualConcept
+
+
+class VisualConceptDownloadInput(BaseModel):
+    concept: VisualConcept
+    format: str = "png"
+
+
+class TestImageResult(BaseModel):
+    """Diagnostic — isolates whether a failure is in the HF pipeline itself
+    vs. the script-to-image flow around it."""
+
+    image_path: str
+    used_model: str = ""
+    elapsed_seconds: float = 0.0
+
+
+class VisualConceptDebugInfo(BaseModel):
+    """Static config + a live connectivity check — fast, no image generation."""
+
+    api_key_loaded: bool
+    model: str
+    api_url: str
+    internet_access: bool

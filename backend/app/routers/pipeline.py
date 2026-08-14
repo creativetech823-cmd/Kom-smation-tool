@@ -1,7 +1,9 @@
 import logging
+from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from app.models.product import (
     AssetSourcingInput,
@@ -11,6 +13,7 @@ from app.models.product import (
     ComplianceResult,
     FetchUrlInput,
     FetchUrlResult,
+    GenerateAlternativesResult,
     GeneratedScript,
     MotionGenerationInput,
     MotionGenerationResult,
@@ -23,11 +26,22 @@ from app.models.product import (
     RewriteLineResult,
     ScriptGenerationInput,
     ScriptSectionRegenerateInput,
+    ScriptSuggestionsInput,
+    ScriptSuggestionsResult,
     SelectedAsset,
     SourceType,
     StorySituationsInput,
     StorySituationsResult,
     StructuredProduct,
+    TestImageResult,
+    VisualConcept,
+    VisualConceptDebugInfo,
+    VisualConceptDownloadInput,
+    VisualConceptRegenerateInput,
+    VisualConceptScoreInput,
+    VisualConceptScores,
+    VisualConceptsInput,
+    VisualConceptsResult,
     VoiceoverInput,
     VoiceoverResult,
 )
@@ -44,9 +58,19 @@ from app.services.content_extraction_service import (
 from app.services.motion_service import generate_motion_clip
 from app.services.render_service import render_video
 from app.services.rewrite_service import rewrite_line
+from app.services.script_alternatives_service import generate_alternatives
 from app.services.script_service import generate_script, regenerate_script_section
+from app.services.script_suggestions_service import suggest_script_improvements
 from app.services.story_situation_service import generate_situations
 from app.services.tts_service import synthesize_voiceover
+from app.services.visual_concept_service import (
+    generate_test_image,
+    generate_visual_concepts,
+    get_debug_info,
+    regenerate_visual_concept,
+    render_download,
+    score_visual_concept,
+)
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 logger = logging.getLogger("pipeline")
@@ -232,12 +256,96 @@ def regenerate_script(payload: ScriptSectionRegenerateInput) -> GeneratedScript:
 
 @router.post("/rewrite-line", response_model=RewriteLineResult)
 def rewrite_line_endpoint(payload: RewriteLineInput) -> RewriteLineResult:
-    """AI quick-action — rewrite one script line's text per a directive."""
+    """AI quick-action — rewrite (or translate) one script line's text per a directive."""
     try:
         return rewrite_line(payload)
     except Exception as e:
         logger.exception("Unhandled error in rewrite_line")
         raise HTTPException(502, f"Couldn't rewrite that line: {e}")
+
+
+@router.post("/generate-alternatives", response_model=GenerateAlternativesResult)
+def generate_alternatives_endpoint(payload: RewriteLineInput) -> GenerateAlternativesResult:
+    """AI quick-action — 5 distinct rewrites of one script line."""
+    try:
+        return generate_alternatives(payload)
+    except Exception as e:
+        logger.exception("Unhandled error in generate_alternatives")
+        raise HTTPException(502, f"Couldn't generate alternatives: {e}")
+
+
+@router.post("/script-suggestions", response_model=ScriptSuggestionsResult)
+def script_suggestions_endpoint(payload: ScriptSuggestionsInput) -> ScriptSuggestionsResult:
+    """On-demand AI critique pass — a handful of concrete improvement suggestions."""
+    try:
+        return suggest_script_improvements(payload.script, payload.target_duration)
+    except Exception as e:
+        logger.exception("Unhandled error in suggest_script_improvements")
+        raise HTTPException(502, f"Couldn't get suggestions: {e}")
+
+
+@router.post("/visual-concepts", response_model=VisualConceptsResult)
+def visual_concepts(payload: VisualConceptsInput) -> VisualConceptsResult:
+    """AI Visual Concepts — 3 distinct storyboard-quality stills (hook,
+    emotional, transformation) rendered from the finished script."""
+    try:
+        return generate_visual_concepts(payload)
+    except Exception as e:
+        logger.exception("Unhandled error in generate_visual_concepts")
+        raise HTTPException(502, f"Couldn't generate visual concepts: {e}")
+
+
+@router.post("/visual-concepts/regenerate", response_model=VisualConcept)
+def visual_concepts_regenerate(payload: VisualConceptRegenerateInput) -> VisualConcept:
+    """Regenerate one visual concept — same prompt, an edited prompt, or a
+    style-preset directive (variation_style) applied on top."""
+    try:
+        return regenerate_visual_concept(payload)
+    except Exception as e:
+        logger.exception("Unhandled error in regenerate_visual_concept")
+        raise HTTPException(502, f"Couldn't regenerate that image: {e}")
+
+
+@router.post("/visual-concepts/score", response_model=VisualConceptScores)
+def visual_concepts_score(payload: VisualConceptScoreInput) -> VisualConceptScores:
+    """Claude Vision's AI assessment of a rendered concept against a creative rubric."""
+    try:
+        return score_visual_concept(payload)
+    except Exception as e:
+        logger.exception("Unhandled error in score_visual_concept")
+        raise HTTPException(502, f"Couldn't score that image: {e}")
+
+
+@router.post("/visual-concepts/download")
+def visual_concepts_download(payload: VisualConceptDownloadInput) -> FileResponse:
+    """A fresh, higher-resolution render (not an upscale of the preview),
+    resized to an exact 4K-pixel-class canvas, in the requested format."""
+    try:
+        path = render_download(payload)
+    except Exception as e:
+        logger.exception("Unhandled error in render_download")
+        raise HTTPException(502, f"Couldn't render the download: {e}")
+    media_types = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+    ext = Path(path).suffix.lstrip(".").lower()
+    return FileResponse(path, media_type=media_types.get(ext, "image/png"), filename=Path(path).name)
+
+
+@router.post("/visual-concepts/test", response_model=TestImageResult)
+def visual_concepts_test() -> TestImageResult:
+    """Diagnostic — generate one image with a fixed prompt, isolating whether
+    a failure is in the HF pipeline itself or in the script-to-image flow."""
+    try:
+        result = generate_test_image()
+    except Exception as e:
+        logger.exception("Unhandled error in generate_test_image")
+        raise HTTPException(502, f"Test image generation failed: {e}")
+    return TestImageResult(**result)
+
+
+@router.get("/visual-concepts/debug", response_model=VisualConceptDebugInfo)
+def visual_concepts_debug() -> VisualConceptDebugInfo:
+    """Fast, no-image-generation diagnostic — config + live connectivity check."""
+    return VisualConceptDebugInfo(**get_debug_info())
 
 
 @router.post("/compliance-audit", response_model=ComplianceResult)
