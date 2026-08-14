@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import io
 import json
@@ -11,8 +10,6 @@ from pathlib import Path
 from typing import Callable
 
 import requests
-from anthropic import Anthropic
-from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from PIL import Image
@@ -28,35 +25,16 @@ from app.models.product import (
     VisualConceptsResult,
     VisualConceptStyleParams,
 )
-from app.services.claude_utils import extract_json_text
 from app.services.compliance_rules import rules_for_category
+from app.services.gemini_utils import (
+    call_gemini_with_retry,
+    classify_error,
+    generate_text,
+    get_gemini_client,
+    reset_gemini_client,
+)
 
 logger = logging.getLogger("visual_concept_service")
-_claude_client = Anthropic(api_key=settings.anthropic_api_key)
-
-# Unlike the Anthropic/HF clients, google-genai's Client validates that the
-# API key is non-empty at CONSTRUCTION time, not just on first call — so it
-# can't be built eagerly at module import (the app must still start before a
-# key is configured). Built lazily on first real use instead; an empty/
-# placeholder key still fails naturally on the actual API call, which
-# _classify_error turns into a clear "API key missing" message either way.
-_gemini_client: genai.Client | None = None
-
-
-def _get_gemini_client() -> genai.Client:
-    global _gemini_client
-    if _gemini_client is None:
-        _gemini_client = genai.Client(api_key=settings.gemini_api_key or "missing-api-key")
-    return _gemini_client
-
-
-def _reset_gemini_client() -> None:
-    """Discards the cached client so the next call builds a fresh one — used
-    when the underlying httpx connection was torn down out from under us
-    (e.g. a platform restart mid-request), which raises 'client has been
-    closed' rather than a normal API error."""
-    global _gemini_client
-    _gemini_client = None
 
 _IMAGE_SIZE_PREVIEW = "1K"
 _IMAGE_SIZE_DOWNLOAD = "4K"
@@ -229,34 +207,6 @@ def _cache_key(mode: str, prompt_or_instruction: str, aspect_ratio: str, seed: i
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _classify_error(e: Exception | None) -> str:
-    """A short, specific, user-displayable reason — never a generic 'Network
-    Error' unless the failure is genuinely a connection-level problem."""
-    if e is None:
-        return "Unknown error — no attempts were made."
-    if not settings.gemini_api_key:
-        return "API key missing — no GEMINI_API_KEY configured on the backend."
-    if isinstance(e, genai_errors.APIError):
-        code = getattr(e, "code", None)
-        message = getattr(e, "message", None) or str(e)
-        if code == 429:
-            return f"Gemini quota exceeded. {message}"[:300]
-        if code in (401, 403):
-            return f"API key invalid or lacks permission. {message}"[:300]
-        if code == 400:
-            return f"Invalid request to Gemini: {message}"[:300]
-        if code and code >= 500:
-            return f"Gemini service error (HTTP {code}): {message}"[:300]
-        return f"Gemini returned HTTP {code}: {message}"[:300]
-    name = type(e).__name__
-    msg = str(e)
-    if "timeout" in name.lower() or "timeout" in msg.lower():
-        return "Gemini timeout — the request took too long. Try again."
-    if any(term in name for term in ("Connect", "DNS", "Network", "Socket")):
-        return f"Network error reaching Gemini: {msg[:200]}"
-    return f"Invalid response from Gemini ({name}): {msg[:200]}"
-
-
 def _extract_image_bytes(response: genai_types.GenerateContentResponse) -> bytes:
     for candidate in response.candidates or []:
         content = getattr(candidate, "content", None)
@@ -275,7 +225,7 @@ def _generate_image(prompt: str, aspect_ratio: str, seed: int | None = None, ima
         image_config=genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
         seed=seed,
     )
-    response = _get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=[prompt], config=config)
+    response = get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=[prompt], config=config)
     data = _extract_image_bytes(response)
     return data, settings.gemini_image_model, time.time() - t0
 
@@ -291,7 +241,7 @@ def _edit_image(image_bytes: bytes, instruction: str, aspect_ratio: str, image_s
         image_config=genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
     )
     contents = [instruction, genai_types.Part.from_bytes(data=image_bytes, mime_type="image/png")]
-    response = _get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=contents, config=config)
+    response = get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=contents, config=config)
     data = _extract_image_bytes(response)
     return data, settings.gemini_image_model, time.time() - t0
 
@@ -322,10 +272,10 @@ def _call_with_retry(fn: Callable[[], tuple[bytes, str, float]], *, label: str, 
             if not transient or attempt == max_attempts:
                 break
             if client_closed:
-                _reset_gemini_client()
+                reset_gemini_client()
             time.sleep(min(2**attempt, 8))
 
-    reason = _classify_error(last_error)
+    reason = classify_error(last_error)
     if attempt > 1:
         reason = f"Retry failed after {attempt} attempts. {reason}"
     logger.error("[%s] All attempts failed. Final reason: %s", label, reason)
@@ -356,7 +306,7 @@ def _edit_cached(image_bytes: bytes, instruction: str, aspect_ratio: str, label:
 
 
 # ---------------------------------------------------------------------------
-# Scene planning (Claude — unchanged provider, richer context)
+# Scene planning (text generation, richer context)
 # ---------------------------------------------------------------------------
 
 
@@ -386,18 +336,21 @@ def _build_plan_user_message(payload: VisualConceptsInput) -> str:
 
 def plan_visual_concepts(payload: VisualConceptsInput) -> list[VisualConcept]:
     logger.info("Preparing prompt... understanding story — product=%s situation=%s", payload.structured_product.product_name, payload.situation.title)
-    response = _claude_client.messages.create(
-        model=settings.claude_structuring_model,
-        max_tokens=4096,
-        system=_SCENE_PLAN_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_plan_user_message(payload)}],
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SCENE_PLAN_SYSTEM_PROMPT,
+            contents=[_build_plan_user_message(payload)],
+            model=settings.gemini_text_model,
+            max_output_tokens=6144,
+            json_mode=True,
+        ),
+        label="plan_visual_concepts",
     )
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
-        logger.error("Claude returned malformed JSON while planning visual concepts.")
-        raise ValueError("Claude returned malformed JSON while planning visual concepts.") from e
+        logger.error("Gemini returned malformed JSON while planning visual concepts.")
+        raise ValueError("Gemini returned malformed JSON while planning visual concepts.") from e
 
     labels = ["hook", "emotional", "transformation"]
     concepts: list[VisualConcept] = []
@@ -502,26 +455,23 @@ def score_visual_concept(payload: VisualConceptScoreInput) -> VisualConceptScore
 
     ext = path.suffix.lstrip(".").lower()
     media_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-    b64_data = base64.b64encode(path.read_bytes()).decode("ascii")
 
-    response = _claude_client.messages.create(
-        model=settings.claude_structuring_model,
-        max_tokens=512,
-        system=_SCORE_SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": f"Intended prompt: {concept.prompt}"},
-                    {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64_data}},
-                ],
-            }
-        ],
-        extra_body={"thinking": {"type": "disabled"}},
-    )
     try:
-        data = json.loads(extract_json_text(response.content))
-    except json.JSONDecodeError:
+        text = call_gemini_with_retry(
+            lambda: generate_text(
+                system_instruction=_SCORE_SYSTEM_PROMPT,
+                contents=[
+                    f"Intended prompt: {concept.prompt}",
+                    genai_types.Part.from_bytes(data=path.read_bytes(), mime_type=media_type),
+                ],
+                model=settings.gemini_text_model,
+                max_output_tokens=1024,
+                json_mode=True,
+            ),
+            label="score_visual_concept",
+        )
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
         return VisualConceptScores(notes="Scoring failed — malformed response.")
     return VisualConceptScores(**data)
 

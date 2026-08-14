@@ -10,12 +10,10 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: CLAUDE_STRUCTURING_MODEL
-        value: claude-sonnet-5
-      - key: CLAUDE_COMPLIANCE_MODEL
-        value: claude-haiku-4-5-20251001
+      - key: GEMINI_TEXT_MODEL
+        value: gemini-flash-latest
+      - key: GEMINI_COMPLIANCE_MODEL
+        value: gemini-pro-latest
       - key: PEXELS_API_KEY
         sync: false
       - key: PIXABAY_API_KEY

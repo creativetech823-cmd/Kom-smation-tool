@@ -1,14 +1,10 @@
 import json
 import uuid
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import StorySituation, StorySituationsInput, StorySituationsResult
-from app.services.claude_utils import extract_json_text
 from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are an award-winning creative director at an advertising agency, running an
 ideation session — NOT writing a script. Your job is to propose distinct marketing angles ("story
@@ -96,21 +92,22 @@ def _build_user_message(payload: StorySituationsInput) -> str:
 def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     """Stage 3.5 — structured product -> diverse story-situation options for the user to pick from."""
 
-    response = _client.messages.create(
-        model=settings.claude_structuring_model,
-        max_tokens=8192,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(payload)}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so JSON generation gets the full budget.
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_build_user_message(payload)],
+            model=settings.gemini_text_model,
+            max_output_tokens=8192,
+            json_mode=True,
+        ),
+        label="generate_situations",
     )
 
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
         raise ValueError(
-            "Claude returned malformed JSON while generating story ideas — the response may have "
+            "Gemini returned malformed JSON while generating story ideas — the response may have "
             "been truncated. Try again, or ask for fewer situations."
         ) from e
 

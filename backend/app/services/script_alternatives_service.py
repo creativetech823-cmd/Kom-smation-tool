@@ -1,12 +1,8 @@
 import json
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import GenerateAlternativesResult, RewriteLineInput
-from app.services.claude_utils import extract_json_text
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are a script-line editor for a short-form video ad content factory.
 Given ONE line of dialogue/on-screen text, write 5 genuinely distinct alternative versions of it —
@@ -27,17 +23,20 @@ def _build_user_message(payload: RewriteLineInput) -> str:
 def generate_alternatives(payload: RewriteLineInput) -> GenerateAlternativesResult:
     """AI quick-action — 5 distinct rewrites of one script line, for the user to pick from."""
 
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(payload)}],
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_build_user_message(payload)],
+            model=settings.gemini_text_model,
+            max_output_tokens=1536,
+            json_mode=True,
+        ),
+        label="generate_alternatives",
     )
 
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
-        raise ValueError("Claude returned malformed JSON while generating alternatives.") from e
+        raise ValueError("Gemini returned malformed JSON while generating alternatives.") from e
 
     return GenerateAlternativesResult(**data)

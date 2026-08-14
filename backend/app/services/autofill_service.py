@@ -1,12 +1,8 @@
 import json
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import AutoFillInput, AutoFillSuggestion
-from app.services.claude_utils import call_claude_with_retry, extract_json_text
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You extract a first-draft product profile from raw scraped/extracted content
 (a fetched webpage, an uploaded document, etc.) BEFORE the user has entered anything about the
@@ -38,31 +34,30 @@ Rules:
 
 
 def suggest_product_fields(payload: AutoFillInput) -> AutoFillSuggestion:
-    """Pre-Stage-1 — a lightweight Claude call that guesses editable form
+    """Pre-Stage-1 — a lightweight Gemini call that guesses editable form
     fields from raw extracted text, run before product_name/target_audience
     exist (structure_product requires those, so it can't do this job)."""
 
-    response = call_claude_with_retry(
-        lambda: _client.messages.create(
-            model=settings.claude_structuring_model,
-            max_tokens=1024,
-            system=_SYSTEM_PROMPT,
-            # Kept well under Claude's large-request capacity tier — big
-            # payloads (50K+ chars) were consistently hitting sustained
-            # 529 overloaded errors during demand spikes that smaller
-            # requests sailed through, even with retries.
-            messages=[{"role": "user", "content": payload.raw_text[:20_000]}],
-            # Extended thinking is on by default and its tokens count against
-            # max_tokens — disabled so JSON generation gets the full budget.
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            # Kept well under large-request capacity tiers — big payloads
+            # (50K+ chars) were consistently hitting sustained overload
+            # errors during demand spikes that smaller requests sailed
+            # through, even with retries.
+            contents=[payload.raw_text[:20_000]],
+            model=settings.gemini_text_model,
+            max_output_tokens=1536,
+            json_mode=True,
+        ),
+        label="suggest_product_fields",
     )
 
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
         raise ValueError(
-            "Claude returned malformed JSON while suggesting product fields — try again."
+            "Gemini returned malformed JSON while suggesting product fields — try again."
         ) from e
 
     return AutoFillSuggestion(

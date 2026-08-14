@@ -2,7 +2,6 @@ import json
 import logging
 import re
 
-from anthropic import Anthropic
 from pydantic import ValidationError
 
 from app.config import settings
@@ -14,11 +13,10 @@ from app.models.product import (
     ScriptSectionRegenerateInput,
 )
 from app.services import script_length
-from app.services.claude_utils import extract_json_text
 from app.services.compliance_rules import rules_for_category
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 logger = logging.getLogger("script_service")
-_client = Anthropic(api_key=settings.anthropic_api_key)
 
 _MAX_TOKENS = 16000
 
@@ -351,20 +349,17 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
     )
 
 
-def _call_claude(system: str, user_message: str, max_tokens: int) -> str:
-    response = _client.messages.create(
-        model=settings.claude_structuring_model,
-        max_tokens=max_tokens,
-        system=system,
-        messages=[{"role": "user", "content": user_message}],
-        # Extended thinking is on by default for this model and its tokens count
-        # against max_tokens — if thinking eats the whole budget, no text block
-        # (or a truncated one) comes back at all. This is JSON generation, not a
-        # reasoning task, so thinking is disabled to guarantee the full budget
-        # goes to the actual script text.
-        extra_body={"thinking": {"type": "disabled"}},
+def _call_llm(system: str, user_message: str, max_tokens: int) -> str:
+    return call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=system,
+            contents=[user_message],
+            model=settings.gemini_text_model,
+            max_output_tokens=max_tokens,
+            json_mode=True,
+        ),
+        label="script_service",
     )
-    return extract_json_text(response.content)
 
 
 def _parse_script_json(raw_text: str) -> dict:
@@ -385,7 +380,7 @@ off mid-object, complete it sensibly rather than leaving it truncated."""
 
 def _repair_json(broken_text: str, error_message: str, max_tokens: int) -> dict:
     user_message = f"Parser error: {error_message}\n\nBroken JSON:\n{broken_text}"
-    raw = _call_claude(_REPAIR_SYSTEM_PROMPT, user_message, max_tokens)
+    raw = _call_llm(_REPAIR_SYSTEM_PROMPT, user_message, max_tokens)
     return _parse_script_json(raw)
 
 
@@ -405,7 +400,7 @@ def _generate_with_recovery(
 
     for attempt in (1, 2):
         try:
-            last_raw = _call_claude(system, user_message, max_tokens)
+            last_raw = _call_llm(system, user_message, max_tokens)
             candidate = _parse_script_json(last_raw)
             GeneratedScript(**candidate)
             data = candidate
@@ -421,7 +416,7 @@ def _generate_with_recovery(
         except Exception as e:
             logger.warning("Script JSON repair pass also failed: %s", e)
             raise ValueError(
-                "Claude returned malformed JSON while writing the script, even after an automatic "
+                "Gemini returned malformed JSON while writing the script, even after an automatic "
                 "retry and repair pass. Please try again in a moment."
             ) from e
 
@@ -444,7 +439,7 @@ def _generate_with_recovery(
             "fit the spoken runtime, cut it down substantially by removing or merging blocks"
         )
         try:
-            corrected_raw = _call_claude(
+            corrected_raw = _call_llm(
                 system,
                 user_message
                 + f"\n\nIMPORTANT: your previous attempt was {direction}. Rewrite it to actually "

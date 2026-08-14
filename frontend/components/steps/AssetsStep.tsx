@@ -42,7 +42,7 @@ export function AssetsStep({
     <Card glow>
       <CardHeader
         title="Asset Sourcing"
-        subtitle="Pexels + Pixabay search, auto-broadened, ranked by Claude Vision."
+        subtitle="Pexels + Pixabay search, auto-broadened, ranked by Gemini Vision."
         icon={<IconImage />}
       />
       <CardBody>

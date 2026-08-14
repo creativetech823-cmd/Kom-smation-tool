@@ -7,7 +7,7 @@ export type ProgressStage = { id: string; label: string };
 /**
  * Like AiWorkingChecklist, but driven by real external state (currentIndex)
  * instead of a timer — for flows made of genuinely separate awaited calls
- * (e.g. fetch a URL, then run a Claude call on the result).
+ * (e.g. fetch a URL, then run a Gemini call on the result).
  */
 export function StagedProgress({ stages, currentIndex }: { stages: ProgressStage[]; currentIndex: number }) {
   return (

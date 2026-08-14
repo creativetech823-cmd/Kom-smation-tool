@@ -1,14 +1,11 @@
-import base64
 import json
 
 import httpx
-from anthropic import Anthropic
+from google.genai import types as genai_types
 
 from app.config import settings
 from app.models.product import AssetCandidate, AssetSourcingInput, SelectedAsset
-from app.services.claude_utils import extract_json_text
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _BROADEN_SYSTEM_PROMPT = """You broaden an overly specific stock-photo search query into a more
 generic one likely to return results, while staying visually relevant.
@@ -68,71 +65,61 @@ def search_pixabay(query: str, per_page: int = 3) -> list[AssetCandidate]:
 
 
 def broaden_tag(tag: str) -> str:
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=64,
-        system=_BROADEN_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": tag}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so tiny-budget calls don't get starved.
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_BROADEN_SYSTEM_PROMPT,
+            contents=[tag],
+            model=settings.gemini_text_model,
+            max_output_tokens=256,
+        ),
+        label="broaden_tag",
     )
-    text_block = next(b for b in response.content if b.type == "text")
-    return text_block.text.strip().strip('"')
+    return text.strip().strip('"')
 
 
-def _download_as_base64(url: str) -> tuple[str, str] | None:
-    """Fetch an image ourselves rather than letting Claude fetch the URL —
-    stock sites like Pixabay serve redirect/CDN URLs that Claude's server-side
+def _download_bytes(url: str) -> tuple[str, bytes] | None:
+    """Fetch an image ourselves rather than letting Gemini fetch the URL —
+    stock sites like Pixabay serve redirect/CDN URLs that a server-side
     fetch can't reliably reach."""
     try:
         resp = httpx.get(url, timeout=15, follow_redirects=True)
         resp.raise_for_status()
         media_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
-        return media_type, base64.b64encode(resp.content).decode("ascii")
+        return media_type, resp.content
     except Exception:
         return None
 
 
 def rank_with_vision(target_description: str, candidates: list[AssetCandidate]) -> tuple[int, str]:
-    """Claude Vision picks the best-matching candidate. Falls back to the
+    """Gemini Vision picks the best-matching candidate. Falls back to the
     first downloadable candidate if the vision call fails for any reason —
     never blocks the pipeline."""
-    content = [
-        {
-            "type": "text",
-            "text": f"Target visual: {target_description}\n\nCandidates below, in order.",
-        }
-    ]
+    content: list = [f"Target visual: {target_description}\n\nCandidates below, in order."]
     downloadable_indices: list[int] = []
     for i, c in enumerate(candidates):
-        downloaded = _download_as_base64(c.url)
+        downloaded = _download_bytes(c.url)
         if downloaded is None:
             continue
-        media_type, b64_data = downloaded
-        content.append({"type": "text", "text": f"Candidate {i}:"})
-        content.append(
-            {
-                "type": "image",
-                "source": {"type": "base64", "media_type": media_type, "data": b64_data},
-            }
-        )
+        media_type, data = downloaded
+        content.append(f"Candidate {i}:")
+        content.append(genai_types.Part.from_bytes(data=data, mime_type=media_type))
         downloadable_indices.append(i)
 
     if not downloadable_indices:
         return 0, "No candidate images could be downloaded — defaulted to first candidate."
 
     try:
-        response = _client.messages.create(
-            model=settings.claude_structuring_model,
-            max_tokens=256,
-            system=_VISION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": content}],
-            # Extended thinking is on by default and its tokens count against
-            # max_tokens — disabled so tiny-budget calls don't get starved.
-            extra_body={"thinking": {"type": "disabled"}},
+        text = call_gemini_with_retry(
+            lambda: generate_text(
+                system_instruction=_VISION_SYSTEM_PROMPT,
+                contents=content,
+                model=settings.gemini_text_model,
+                max_output_tokens=512,
+                json_mode=True,
+            ),
+            label="rank_with_vision",
         )
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
         return data["best_index"], data.get("reasoning", "")
     except Exception:
         return downloadable_indices[0], "Vision ranking unavailable — defaulted to first downloadable candidate."
@@ -140,7 +127,7 @@ def rank_with_vision(target_description: str, candidates: list[AssetCandidate]) 
 
 def source_asset_for_line(payload: AssetSourcingInput) -> SelectedAsset:
     """Stage 8 — search tags in order, auto-broaden on zero results, then
-    have Claude Vision pick the best match among gathered candidates."""
+    have Gemini Vision pick the best match among gathered candidates."""
 
     for tag in payload.visual_tags:
         candidates = search_pexels(tag) + search_pixabay(tag)

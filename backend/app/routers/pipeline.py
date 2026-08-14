@@ -130,7 +130,7 @@ def _build_context_text(payload: ProductInput) -> str:
 
 @router.post("/structure", response_model=StructuredProduct)
 def structure(payload: ProductInput) -> StructuredProduct:
-    """Stage 1 + Stage 3 — validate input, then structure it via Claude."""
+    """Stage 1 + Stage 3 — validate input, then structure it via Gemini."""
     _validate_input(payload)
     raw_text = _build_context_text(payload)
     try:
@@ -308,7 +308,7 @@ def visual_concepts_regenerate(payload: VisualConceptRegenerateInput) -> VisualC
 
 @router.post("/visual-concepts/score", response_model=VisualConceptScores)
 def visual_concepts_score(payload: VisualConceptScoreInput) -> VisualConceptScores:
-    """Claude Vision's AI assessment of a rendered concept against a creative rubric."""
+    """Gemini Vision's AI assessment of a rendered concept against a creative rubric."""
     try:
         return score_visual_concept(payload)
     except Exception as e:
@@ -361,7 +361,7 @@ def compliance_audit(payload: ComplianceCheckInput) -> ComplianceResult:
 @router.post("/source-asset", response_model=SelectedAsset)
 def source_asset(payload: AssetSourcingInput) -> SelectedAsset:
     """Stage 8 — search Pexels/Pixabay for one script line's visual tags,
-    auto-broadening on zero results, then Claude Vision picks the best match."""
+    auto-broadening on zero results, then Gemini Vision picks the best match."""
     try:
         return source_asset_for_line(payload)
     except Exception as e:

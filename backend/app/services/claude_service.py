@@ -1,12 +1,8 @@
 import json
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import ProductInput, StructuredProduct
-from app.services.claude_utils import extract_json_text
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are a product-data structuring engine for an ad-generation pipeline.
 You will receive raw product information (scraped website text, a free-typed description, or
@@ -64,23 +60,24 @@ def _build_user_message(payload: ProductInput, raw_text: str) -> str:
 
 
 def structure_product(payload: ProductInput, raw_text: str = "") -> StructuredProduct:
-    """Stage 3 — turn raw input into a StructuredProduct via Claude."""
+    """Stage 3 — turn raw input into a StructuredProduct via Gemini."""
 
-    response = _client.messages.create(
-        model=settings.claude_structuring_model,
-        max_tokens=2048,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(payload, raw_text)}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so JSON generation gets the full budget.
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_build_user_message(payload, raw_text)],
+            model=settings.gemini_text_model,
+            max_output_tokens=3072,
+            json_mode=True,
+        ),
+        label="structure_product",
     )
 
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
         raise ValueError(
-            "Claude returned malformed JSON while structuring the product — the response may "
+            "Gemini returned malformed JSON while structuring the product — the response may "
             "have been truncated. Try again, or shorten the product description."
         ) from e
 

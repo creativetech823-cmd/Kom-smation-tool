@@ -1,13 +1,9 @@
 import json
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import ComplianceCheckInput, ComplianceResult
-from app.services.claude_utils import extract_json_text
 from app.services.compliance_rules import rules_for_category
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are an independent compliance auditor for an ad-generation pipeline.
 You did NOT write the script you are reviewing — you have no stake in it being approved.
@@ -45,17 +41,28 @@ def _build_user_message(payload: ComplianceCheckInput) -> str:
 
 
 def audit_script(payload: ComplianceCheckInput) -> ComplianceResult:
-    """Stage 7 — independent compliance pass, separate model from Stage 6."""
+    """Stage 7 — independent compliance pass, separate model from Stage 6.
+    Uses gemini_compliance_model (a stronger model that can't run with
+    thinking disabled) rather than the fast/cheap model used everywhere
+    else — preserving the original "independent second opinion" design
+    intent, not just a different provider."""
 
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(payload)}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so JSON generation gets the full budget.
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_build_user_message(payload)],
+            model=settings.gemini_compliance_model,
+            max_output_tokens=2048,
+            json_mode=True,
+            disable_thinking=False,
+        ),
+        label="audit_script",
     )
 
-    data = json.loads(extract_json_text(response.content))
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            "Gemini returned malformed JSON during the compliance audit. Try again."
+        ) from e
     return ComplianceResult(**data)

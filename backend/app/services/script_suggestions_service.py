@@ -1,12 +1,8 @@
 import json
 
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import GeneratedScript, ScriptSuggestionsResult
-from app.services.claude_utils import extract_json_text
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are a script doctor reviewing a finished short-form video ad script. Give 3-6
 concrete, high-value suggestions for improving it — weak hooks, weak CTAs, an overlong or repetitive
@@ -43,17 +39,20 @@ def _build_user_message(script: GeneratedScript, target_duration: str) -> str:
 
 
 def suggest_script_improvements(script: GeneratedScript, target_duration: str) -> ScriptSuggestionsResult:
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=1024,
-        system=_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_message(script, target_duration)}],
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_build_user_message(script, target_duration)],
+            model=settings.gemini_text_model,
+            max_output_tokens=1536,
+            json_mode=True,
+        ),
+        label="suggest_script_improvements",
     )
 
     try:
-        data = json.loads(extract_json_text(response.content))
+        data = json.loads(text)
     except json.JSONDecodeError as e:
-        raise ValueError("Claude returned malformed JSON while generating suggestions.") from e
+        raise ValueError("Gemini returned malformed JSON while generating suggestions.") from e
 
     return ScriptSuggestionsResult(**data)

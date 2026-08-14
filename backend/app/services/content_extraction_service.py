@@ -1,4 +1,3 @@
-import base64
 import csv
 import io
 import re
@@ -10,16 +9,15 @@ from uuid import uuid4
 import httpx
 import openpyxl
 import pypdf
-from anthropic import Anthropic
 from docx import Document as DocxDocument
 from fastapi import UploadFile
+from google.genai import types as genai_types
 from pptx import Presentation
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from app.config import settings
 from app.models.product import ReferenceAnalysis, ReferenceKind, ReferenceMaterial
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _CHUNK_SIZE = 1024 * 1024
 _MAX_DOC_BYTES = settings.max_reference_upload_mb * 1024 * 1024
@@ -94,32 +92,20 @@ def _cap_text(text: str) -> tuple[str, bool]:
     return text, False
 
 
-def _describe_image_with_claude(data: bytes, media_type: str) -> str:
+def _describe_image_with_gemini(data: bytes, media_type: str) -> str:
     """Never raises — a failed vision call just yields an empty description
     rather than blocking the whole upload."""
     try:
-        response = _client.messages.create(
-            model=settings.claude_compliance_model,
-            max_tokens=300,
-            system=_IMAGE_DESCRIBE_SYSTEM_PROMPT,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {"type": "base64", "media_type": media_type, "data": base64.b64encode(data).decode("ascii")},
-                        },
-                        {"type": "text", "text": "Describe this image."},
-                    ],
-                }
-            ],
-            # Extended thinking is on by default and its tokens count against
-            # max_tokens — disabled so tiny-budget calls don't get starved.
-            extra_body={"thinking": {"type": "disabled"}},
+        text = call_gemini_with_retry(
+            lambda: generate_text(
+                system_instruction=_IMAGE_DESCRIBE_SYSTEM_PROMPT,
+                contents=[genai_types.Part.from_bytes(data=data, mime_type=media_type), "Describe this image."],
+                model=settings.gemini_text_model,
+                max_output_tokens=512,
+            ),
+            label="describe_image",
         )
-        text_block = next((b for b in response.content if b.type == "text"), None)
-        return text_block.text.strip() if text_block else ""
+        return text.strip()
     except Exception:
         return ""
 
@@ -181,7 +167,7 @@ def _extract_bytes_by_kind(kind: ReferenceKind, ext: str, data: bytes) -> str:
     if kind == ReferenceKind.xlsx:
         return _extract_xlsx(data)
     if kind == ReferenceKind.image:
-        return _describe_image_with_claude(data, _IMAGE_MEDIA_TYPES.get(ext, "image/jpeg"))
+        return _describe_image_with_gemini(data, _IMAGE_MEDIA_TYPES.get(ext, "image/jpeg"))
     return ""
 
 

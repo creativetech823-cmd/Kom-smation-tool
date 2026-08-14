@@ -1,9 +1,6 @@
-from anthropic import Anthropic
-
 from app.config import settings
 from app.models.product import RewriteDirective, RewriteLineInput, RewriteLineResult, ScriptLanguage
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _DIRECTIVE_GUIDANCE: dict[RewriteDirective, str] = {
     RewriteDirective.improve: "Tighten and sharpen this line — better rhythm, clearer meaning, "
@@ -90,16 +87,15 @@ def rewrite_line(payload: RewriteLineInput) -> RewriteLineResult:
 
     system = _TRANSLATE_SYSTEM_PROMPT if payload.directive == RewriteDirective.translate else _SYSTEM_PROMPT
 
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=256,
-        system=system,
-        messages=[{"role": "user", "content": _build_user_message(payload)}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so tiny-budget calls don't get starved.
-        extra_body={"thinking": {"type": "disabled"}},
+    text = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=system,
+            contents=[_build_user_message(payload)],
+            model=settings.gemini_text_model,
+            max_output_tokens=512,
+        ),
+        label="rewrite_line",
     )
 
-    text_block = next(b for b in response.content if b.type == "text")
-    rewritten = text_block.text.strip().strip('"')
+    rewritten = text.strip().strip('"')
     return RewriteLineResult(text=rewritten)

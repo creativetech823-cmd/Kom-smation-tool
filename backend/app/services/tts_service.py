@@ -1,14 +1,12 @@
 import uuid
 from pathlib import Path
 
-from anthropic import Anthropic
 from gtts import gTTS
 from mutagen.mp3 import MP3
 
 from app.config import settings
 from app.models.product import VoiceoverLine, VoiceoverResult
-
-_client = Anthropic(api_key=settings.anthropic_api_key)
+from app.services.gemini_utils import call_gemini_with_retry, generate_text
 
 _TRANSLATE_SYSTEM_PROMPT = """You convert a short video-ad script line into natural, conversational
 spoken Hindi (Devanagari script) — the way a voiceover artist would actually say it, not a stiff
@@ -23,17 +21,16 @@ def _translate_to_hindi(text: str) -> str:
     # copy) — strip it before translation so the ** characters don't confuse
     # the model or leak into the spoken output.
     plain_text = text.replace("**", "")
-    response = _client.messages.create(
-        model=settings.claude_compliance_model,
-        max_tokens=256,
-        system=_TRANSLATE_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": plain_text}],
-        # Extended thinking is on by default and its tokens count against
-        # max_tokens — disabled so tiny-budget calls don't get starved.
-        extra_body={"thinking": {"type": "disabled"}},
+    result = call_gemini_with_retry(
+        lambda: generate_text(
+            system_instruction=_TRANSLATE_SYSTEM_PROMPT,
+            contents=[plain_text],
+            model=settings.gemini_text_model,
+            max_output_tokens=512,
+        ),
+        label="translate_to_hindi",
     )
-    text_block = next(b for b in response.content if b.type == "text")
-    return text_block.text.strip().strip('"').replace("**", "")
+    return result.strip().strip('"').replace("**", "")
 
 
 def _audio_dir() -> Path:

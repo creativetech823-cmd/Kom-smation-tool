@@ -170,7 +170,7 @@ class StorySituation(BaseModel):
     emotion: str
     persona: str
     marketing_angle: str
-    category: str  # e.g. "Emotional", "Educational" — Claude-generated, not an enum
+    category: str  # e.g. "Emotional", "Educational" — Gemini-generated, not an enum
     difficulty: str  # "easy" | "medium" | "hard" — production complexity
     estimated_length: str  # e.g. "15s" | "30s" | "60s"
     virality_score: float = Field(ge=0.0, le=10.0)
@@ -180,7 +180,7 @@ class StorySituation(BaseModel):
 
 
 class StorySituationsInput(BaseModel):
-    """Stage 3.5 input — ask Claude for N diverse story situations for a product."""
+    """Stage 3.5 input — ask Gemini for N diverse story situations for a product."""
 
     structured_product: StructuredProduct
     product_category: str = Field(..., min_length=1)
@@ -237,7 +237,7 @@ class ScriptLine(BaseModel):
     @field_validator("section", mode="before")
     @classmethod
     def _blank_section_to_none(cls, v: object) -> object:
-        """Claude occasionally emits "" instead of omitting the field — treat
+        """Gemini occasionally emits "" instead of omitting the field — treat
         that the same as not tagging a section rather than a validation error."""
         return v or None
 
@@ -478,7 +478,7 @@ class VisualConceptStyleParams(BaseModel):
 
 
 class VisualConceptScores(BaseModel):
-    """Claude Vision's assessment of a rendered concept — an AI judgment call
+    """Gemini Vision's assessment of a rendered concept — an AI judgment call
     against stated creative criteria, not a validated ad-industry metric."""
 
     visual_impact: int = 0
