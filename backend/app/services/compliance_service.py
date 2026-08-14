@@ -41,20 +41,19 @@ def _build_user_message(payload: ComplianceCheckInput) -> str:
 
 
 def audit_script(payload: ComplianceCheckInput) -> ComplianceResult:
-    """Stage 7 — independent compliance pass, separate model from Stage 6.
-    Uses gemini_compliance_model (a stronger model that can't run with
-    thinking disabled) rather than the fast/cheap model used everywhere
-    else — preserving the original "independent second opinion" design
-    intent, not just a different provider."""
+    """Stage 7 — independent compliance pass, separate call from Stage 6's
+    script generation (fresh prompt/context, no memory of writing the
+    script). Uses gemini_text_model like everything else — a dedicated
+    stronger/thinking-mode model was tried first but was meaningfully more
+    expensive per audit for benefit that didn't justify the cost."""
 
     text = call_gemini_with_retry(
         lambda: generate_text(
             system_instruction=_SYSTEM_PROMPT,
             contents=[_build_user_message(payload)],
-            model=settings.gemini_compliance_model,
+            model=settings.gemini_text_model,
             max_output_tokens=2048,
             json_mode=True,
-            disable_thinking=False,
         ),
         label="audit_script",
     )

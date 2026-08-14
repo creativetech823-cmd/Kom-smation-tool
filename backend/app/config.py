@@ -17,13 +17,7 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
     gemini_image_model: str = "gemini-2.5-flash-image"
-    # "gemini-flash-latest" handles the high-frequency/latency-sensitive text
-    # calls (structuring, scripts, rewrites, etc). "gemini-pro-latest" is used
-    # only for compliance auditing, preserving the original design intent of
-    # an independent, higher-scrutiny model reviewing the writer's output —
-    # note it can't run with thinking disabled, so it's slower by design.
     gemini_text_model: str = "gemini-flash-latest"
-    gemini_compliance_model: str = "gemini-pro-latest"
     visuals_output_dir: str = "./visuals"
 
     max_reference_upload_mb: int = 30
