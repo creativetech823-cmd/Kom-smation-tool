@@ -49,6 +49,15 @@ def _get_gemini_client() -> genai.Client:
         _gemini_client = genai.Client(api_key=settings.gemini_api_key or "missing-api-key")
     return _gemini_client
 
+
+def _reset_gemini_client() -> None:
+    """Discards the cached client so the next call builds a fresh one — used
+    when the underlying httpx connection was torn down out from under us
+    (e.g. a platform restart mid-request), which raises 'client has been
+    closed' rather than a normal API error."""
+    global _gemini_client
+    _gemini_client = None
+
 _IMAGE_SIZE_PREVIEW = "1K"
 _IMAGE_SIZE_DOWNLOAD = "4K"
 
@@ -307,9 +316,13 @@ def _call_with_retry(fn: Callable[[], tuple[bytes, str, float]], *, label: str, 
                 "[%s] Status: failed — attempt=%d code=%s response_time=%.1fs error=%s",
                 label, attempt, code, time.time() - t0, e,
             )
-            transient = code in (429, 500, 502, 503) or "timeout" in str(e).lower()
+            message = str(e).lower()
+            client_closed = "client has been closed" in message
+            transient = code in (429, 500, 502, 503) or "timeout" in message or client_closed
             if not transient or attempt == max_attempts:
                 break
+            if client_closed:
+                _reset_gemini_client()
             time.sleep(min(2**attempt, 8))
 
     reason = _classify_error(last_error)
