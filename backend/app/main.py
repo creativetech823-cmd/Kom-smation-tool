@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import pipeline
+from app.db import Base, SessionLocal, engine, run_lightweight_migrations
+from app.routers import library, pipeline
+from app.services.seed_data import seed_if_empty
 
 app = FastAPI(title="AI Content Factory Engine")
 
@@ -16,11 +18,23 @@ app.add_middleware(
 )
 
 app.include_router(pipeline.router)
+app.include_router(library.router)
 app.mount("/renders", StaticFiles(directory="renders"), name="renders")
 app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 app.mount("/motion", StaticFiles(directory="motion"), name="motion")
 app.mount("/reference-uploads", StaticFiles(directory="reference_uploads"), name="reference_uploads")
 app.mount("/visuals", StaticFiles(directory="visuals"), name="visuals")
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    Base.metadata.create_all(bind=engine)
+    run_lightweight_migrations()
+    db = SessionLocal()
+    try:
+        seed_if_empty(db)
+    finally:
+        db.close()
 
 
 @app.get("/health")

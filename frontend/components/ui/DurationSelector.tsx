@@ -30,7 +30,7 @@ export function DurationSelector({
             disabled={disabled}
             onClick={() => onChange(opt.value)}
             className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-              active ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--foreground)]"
+              active ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
             }`}
           >
             {opt.label}

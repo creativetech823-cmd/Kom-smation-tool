@@ -2,11 +2,36 @@ import json
 import uuid
 
 from app.config import settings
-from app.models.product import StorySituation, StorySituationsInput, StorySituationsResult
+from app.models.product import ScriptLanguage, StorySituation, StorySituationsInput, StorySituationsResult
 from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
-_SYSTEM_PROMPT = """You are an award-winning creative director at an advertising agency, running an
+_LANGUAGE_NOTES: dict[ScriptLanguage, str] = {
+    ScriptLanguage.english: (
+        'LANGUAGE: Write every "title" and "description" in natural conversational English.\n\n'
+    ),
+    ScriptLanguage.hindi: (
+        'LANGUAGE (mandatory): Write every "title" and "description" ENTIRELY in Devanagari script '
+        "(हिंदी), the way a creative director would actually pitch it in the room — natural spoken "
+        "Hindi, not a stiff formal translation. Write directly in Hindi from the first draft; do NOT "
+        "compose it in English and translate. The product/brand name itself may stay in Roman script "
+        "if that's how it's branded.\n\n"
+    ),
+    ScriptLanguage.hinglish: (
+        'LANGUAGE (mandatory): Write every "title" and "description" in natural spoken Hinglish — '
+        "Hindi sentence structure and vocabulary in ROMAN (Latin) script, code-switching to English "
+        "for words Indian audiences naturally say in English — the way a creative director would "
+        "actually pitch it in the room. Write directly in Hinglish from the first draft; do NOT "
+        "compose it in English and translate it — a translated pitch always reads stiff.\n\n"
+    ),
+}
+
+
+def _language_note(language: ScriptLanguage) -> str:
+    return _LANGUAGE_NOTES.get(language, _LANGUAGE_NOTES[ScriptLanguage.hinglish])
+
+
+_SYSTEM_PROMPT_TEMPLATE = """You are an award-winning creative director at an advertising agency, running an
 ideation session — NOT writing a script. Your job is to propose distinct marketing angles ("story
 situations") for a product: each one names a person, a problem or context, and an emotional arc
 that could become a short-form video ad. A story situation is a premise, never dialogue or scenes.
@@ -23,7 +48,7 @@ categories in the same batch (for example: emotional/relational stories, inspira
 stories, educational/expert-authority stories, social/peer-context stories, everyday-lifestyle stories)
 — but choose category labels that fit this product rather than reusing a fixed taxonomy.
 
-For each situation produce:
+{language_note}For each situation produce:
 - "title": a punchy 3-7 word title
 - "description": 1-3 sentences establishing the person, their situation, and the emotional stakes
 - "emotion": the core emotion driving it (e.g. "fear", "pride", "relief", "hope")
@@ -67,7 +92,13 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
     }}
   ]
 }}
-""".format(angle_catalog=catalog_prompt_block())
+"""
+
+
+def _system_prompt(language: ScriptLanguage) -> str:
+    return _SYSTEM_PROMPT_TEMPLATE.format(
+        angle_catalog=catalog_prompt_block(), language_note=_language_note(language)
+    )
 
 
 def _build_user_message(payload: StorySituationsInput) -> str:
@@ -92,11 +123,11 @@ def _build_user_message(payload: StorySituationsInput) -> str:
 def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     """Stage 3.5 — structured product -> diverse story-situation options for the user to pick from."""
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
-            system_instruction=_SYSTEM_PROMPT,
+            system_instruction=_system_prompt(payload.script_language),
             contents=[_build_user_message(payload)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=8192,
             json_mode=True,
         ),

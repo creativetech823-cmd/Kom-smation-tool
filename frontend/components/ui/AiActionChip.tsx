@@ -39,7 +39,7 @@ export function AiActionChipRow({
             )}
           >
             {isLoading ? (
-              <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/30 border-t-[var(--accent)]" />
+              <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-[var(--foreground)]/30 border-t-[var(--accent)]" />
             ) : (
               <span>{action.emoji}</span>
             )}

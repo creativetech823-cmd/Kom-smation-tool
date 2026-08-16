@@ -79,7 +79,7 @@ export function Stepper({
             {i < steps.length - 1 && (
               <div className="relative mx-1 h-[2px] min-w-6 flex-1 overflow-hidden rounded-full bg-[var(--border)]">
                 <motion.div
-                  className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)]"
+                  className="absolute inset-y-0 left-0 w-full origin-left rounded-full bg-[var(--accent)]"
                   initial={false}
                   animate={{ scaleX: isDone ? 1 : 0 }}
                   transition={{ duration: 0.4, ease: "easeInOut" }}

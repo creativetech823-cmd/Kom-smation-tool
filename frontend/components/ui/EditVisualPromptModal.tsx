@@ -62,7 +62,7 @@ export function EditVisualPromptModal({
           exit={{ scale: 0.97, opacity: 0, y: 8 }}
           transition={{ duration: 0.16 }}
           onClick={(e) => e.stopPropagation()}
-          className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--border-strong)] bg-[var(--surface)] p-5 shadow-[0_40px_100px_-20px_rgba(0,0,0,0.9)]"
+          className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--border-strong)] bg-[var(--surface)] p-5 shadow-[0_40px_100px_-20px_var(--shadow-color)]"
         >
           <div className="mb-4 flex items-center justify-between">
             <h3 className="text-[14px] font-semibold text-[var(--foreground)]">Edit Prompt — {concept.scene_title}</h3>
@@ -110,9 +110,9 @@ export function EditVisualPromptModal({
               type="button"
               disabled={loading}
               onClick={() => onRegenerate({ prompt, style_params: styleParams })}
-              className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12.5px] font-medium text-white hover:brightness-110 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--on-accent)] hover:brightness-110 disabled:opacity-50"
             >
-              {loading && <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />}
+              {loading && <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--on-accent)]/30 border-t-[var(--on-accent)]" />}
               Regenerate with these changes
             </button>
             <button

@@ -18,6 +18,8 @@ backend/renders/
 backend/audio/
 backend/motion/
 backend/reference_uploads/
+backend/content_factory.db
+backend/visuals/
 
 # Logs
 logs

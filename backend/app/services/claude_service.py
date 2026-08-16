@@ -2,7 +2,7 @@ import json
 
 from app.config import settings
 from app.models.product import ProductInput, StructuredProduct
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are a product-data structuring engine for an ad-generation pipeline.
 You will receive raw product information (scraped website text, a free-typed description, or
@@ -62,11 +62,11 @@ def _build_user_message(payload: ProductInput, raw_text: str) -> str:
 def structure_product(payload: ProductInput, raw_text: str = "") -> StructuredProduct:
     """Stage 3 — turn raw input into a StructuredProduct via Gemini."""
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_SYSTEM_PROMPT,
             contents=[_build_user_message(payload, raw_text)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=3072,
             json_mode=True,
         ),

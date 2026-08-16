@@ -2,12 +2,16 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 
-type SidebarItem = { key: string; label: string; icon: ReactNode; active?: boolean; comingSoon?: boolean };
+type SidebarItem = { key: string; label: string; href: string; icon: ReactNode };
+type SidebarGroup = { label: string; items: SidebarItem[] };
 
-export function Sidebar({ onToast }: { onToast: (message: string) => void }) {
+export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
+  const pathname = usePathname();
 
   useEffect(() => {
     // Deferred to after mount, not a lazy useState initializer: the server has no
@@ -25,27 +29,41 @@ export function Sidebar({ onToast }: { onToast: (message: string) => void }) {
     });
   }
 
-  const items: SidebarItem[] = [
-    { key: "pipeline", label: "Content Pipeline", icon: <IconPipeline />, active: true },
-    { key: "projects", label: "Projects", icon: <IconProjects />, comingSoon: true },
-    { key: "templates", label: "Templates", icon: <IconTemplates />, comingSoon: true },
-    { key: "history", label: "History", icon: <IconHistory />, comingSoon: true },
-    { key: "library", label: "Content Library", icon: <IconLibrary />, comingSoon: true },
+  const groups: SidebarGroup[] = [
+    {
+      label: "Create",
+      items: [{ key: "pipeline", label: "Content Pipeline", href: "/", icon: <IconPipeline /> }],
+    },
+    {
+      label: "Library",
+      items: [
+        { key: "projects", label: "Projects", href: "/projects", icon: <IconProjects /> },
+        { key: "templates", label: "Templates", href: "/templates", icon: <IconTemplates /> },
+        { key: "hooks", label: "Hooks", href: "/hooks", icon: <IconHooks /> },
+        { key: "library", label: "Content Library", href: "/library", icon: <IconLibrary /> },
+        { key: "favorites", label: "Favorites", href: "/favorites", icon: <IconFavorites /> },
+      ],
+    },
+    {
+      label: "Activity",
+      items: [{ key: "history", label: "History", href: "/history", icon: <IconHistory /> }],
+    },
   ];
   const bottomItems: SidebarItem[] = [
-    { key: "settings", label: "Settings", icon: <IconSettings />, comingSoon: true },
-    { key: "help", label: "Help", icon: <IconHelp />, comingSoon: true },
+    { key: "settings", label: "Settings", href: "/settings", icon: <IconSettings /> },
+    { key: "help", label: "Help", href: "/help", icon: <IconHelp /> },
   ];
 
-  function handleClick(item: SidebarItem) {
-    if (item.comingSoon) onToast(`${item.label} — coming soon`);
+  function isActive(href: string): boolean {
+    if (href === "/") return pathname === "/";
+    return pathname === href || pathname.startsWith(`${href}/`);
   }
 
   return (
     <motion.aside
       animate={{ width: collapsed ? 72 : 220 }}
       transition={{ duration: 0.25, ease: "easeInOut" }}
-      className="sticky top-0 flex h-screen shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--surface)]/60 py-4 backdrop-blur-xl"
+      className="sticky top-0 flex h-screen shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--surface)] py-4"
     >
       <div className="flex items-center px-3">
         {!collapsed && (
@@ -57,24 +75,36 @@ export function Sidebar({ onToast }: { onToast: (message: string) => void }) {
           type="button"
           onClick={toggle}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+          className="ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted)] transition-colors hover:bg-[var(--foreground)]/[0.06] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
         >
           <IconChevron collapsed={collapsed} />
         </button>
       </div>
 
-      <nav className="mt-4 flex flex-1 flex-col gap-1 px-2">
-        {items.map((item) => (
-          <SidebarButton key={item.key} item={item} collapsed={collapsed} onClick={() => handleClick(item)} />
+      <nav className="mt-4 flex flex-1 flex-col gap-4 overflow-y-auto px-2">
+        {groups.map((group) => (
+          <div key={group.label} className="flex flex-col gap-1">
+            {!collapsed && (
+              <p className="px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]/70">
+                {group.label}
+              </p>
+            )}
+            {group.items.map((item) => (
+              <SidebarButton key={item.key} item={item} collapsed={collapsed} active={isActive(item.href)} />
+            ))}
+          </div>
         ))}
-        <div className="my-2 h-px bg-[var(--border)]" />
-        {bottomItems.map((item) => (
-          <SidebarButton key={item.key} item={item} collapsed={collapsed} onClick={() => handleClick(item)} />
-        ))}
+
+        <div className="mt-auto flex flex-col gap-1">
+          <div className="mb-2 h-px bg-[var(--border)]" />
+          {bottomItems.map((item) => (
+            <SidebarButton key={item.key} item={item} collapsed={collapsed} active={isActive(item.href)} />
+          ))}
+        </div>
       </nav>
 
-      <div className="mt-auto flex items-center gap-2.5 border-t border-[var(--border)] px-3 pt-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-[12px] font-semibold text-white">
+      <div className="mt-3 flex items-center gap-2.5 border-t border-[var(--border)] px-3 pt-3">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] text-[12px] font-semibold text-[var(--on-accent)]">
           CF
         </div>
         <AnimatePresence>
@@ -90,25 +120,16 @@ export function Sidebar({ onToast }: { onToast: (message: string) => void }) {
   );
 }
 
-function SidebarButton({
-  item,
-  collapsed,
-  onClick,
-}: {
-  item: SidebarItem;
-  collapsed: boolean;
-  onClick: () => void;
-}) {
+function SidebarButton({ item, collapsed, active }: { item: SidebarItem; collapsed: boolean; active: boolean }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <Link
+      href={item.href}
       title={collapsed ? item.label : undefined}
       className={cn(
         "flex items-center gap-3 rounded-xl px-2.5 py-2 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
-        item.active
+        active
           ? "bg-[var(--accent-soft)] text-[var(--accent)]"
-          : "text-[var(--muted)] hover:bg-white/[0.05] hover:text-[var(--foreground)]"
+          : "text-[var(--muted)] hover:bg-[var(--foreground)]/[0.05] hover:text-[var(--foreground)]"
       )}
     >
       <span className="flex h-5 w-5 shrink-0 items-center justify-center">{item.icon}</span>
@@ -124,12 +145,7 @@ function SidebarButton({
           </motion.span>
         )}
       </AnimatePresence>
-      {!collapsed && item.comingSoon && (
-        <span className="ml-auto shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
-          Soon
-        </span>
-      )}
-    </button>
+    </Link>
   );
 }
 
@@ -180,6 +196,21 @@ function IconTemplates() {
   );
 }
 
+function IconHooks() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M9 3v9a5 5 0 0010 0v-2"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="9" cy="3" r="2" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
 function IconHistory() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
@@ -194,6 +225,19 @@ function IconLibrary() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M4 4h6v16H4a1 1 0 01-1-1V5a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
       <path d="M14 4h6a1 1 0 011 1v14a1 1 0 01-1 1h-6V4z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconFavorites() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M12 20s-7.5-4.6-9.5-9.1C1.3 7.6 3 4.5 6.2 4.1c1.9-.2 3.6.8 4.8 2.3 1.2-1.5 2.9-2.5 4.8-2.3 3.2.4 4.9 3.5 3.7 6.8C19.5 15.4 12 20 12 20z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

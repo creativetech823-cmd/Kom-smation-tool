@@ -171,12 +171,54 @@ export type GeneratedScript = {
   estimated_duration_seconds?: number;
 };
 
-export type ScriptSuggestion = {
+export type ScriptSuggestionCategory =
+  | "hook"
+  | "opening_line"
+  | "emotional_impact"
+  | "clarity"
+  | "flow"
+  | "storytelling"
+  | "product_integration"
+  | "cta"
+  | "repetition"
+  | "length"
+  | "natural_hinglish"
+  | "brand_mention"
+  | "audience_relevance"
+  | "virality";
+
+export type ScriptSuggestionCard = {
+  id: string;
+  category: ScriptSuggestionCategory;
+  title: string;
+  why: string;
   line_id: string | null;
-  section: ScriptSection | null;
-  message: string;
-  action_label: string;
+  current_text: string | null;
+  suggested_text: string | null;
   suggested_scope: ScriptRegenerateScope | null;
+  instruction: string | null;
+};
+
+export type SmartScriptSuggestionsResult = {
+  status: "strong" | "needs_work";
+  headline: string;
+  cards: ScriptSuggestionCard[];
+  optional_ideas: string[];
+};
+
+export type ScriptCommandSelection = {
+  line_id: string;
+  selected_text: string;
+};
+
+export type ScriptCommandResult = {
+  is_full_rewrite: boolean;
+  title: string;
+  why: string;
+  line_id: string | null;
+  current_text: string | null;
+  suggested_text: string | null;
+  full_script_after: GeneratedScript | null;
 };
 
 export type ComplianceViolation = {
@@ -313,6 +355,8 @@ export type VisualConceptDebugInfo = {
   internet_access: boolean;
 };
 
+export type VisualConceptStatus = "pending" | "generating" | "completed" | "failed";
+
 export type VisualConcept = {
   id: string;
   scene_number: number;
@@ -329,6 +373,8 @@ export type VisualConcept = {
   resolution: string;
   generation_time_seconds: number;
   used_model: string;
+  status: VisualConceptStatus;
+  error: string | null;
 };
 
 export type VisualVariationStyle =
@@ -353,3 +399,98 @@ export type VisualVariationStyle =
   | "hyper_realistic"
   | "generate_similar"
   | "different_angle";
+
+// ---------------------------------------------------------------------------
+// Library — Projects, Content Assets, Hooks, Templates, History
+// ---------------------------------------------------------------------------
+
+export type ProjectStatus = "active" | "archived";
+
+export type Project = {
+  id: string;
+  name: string;
+  description: string;
+  product_category: string;
+  status: ProjectStatus;
+  pipeline_state: Record<string, unknown> | null;
+  pipeline_stage: string | null;
+  created_at: string;
+  updated_at: string;
+  asset_count: number;
+};
+
+export type ContentAssetType = "script" | "image" | "video" | "voiceover" | "render";
+
+export type ContentAsset = {
+  id: string;
+  project_id: string | null;
+  asset_type: ContentAssetType;
+  title: string;
+  product_name: string;
+  file_path: string | null;
+  thumbnail_path: string | null;
+  content_json: Record<string, unknown> | null;
+  source_hook_id: string | null;
+  source_hook_text: string | null;
+  model_used: string | null;
+  is_favorite: boolean;
+  created_at: string;
+  updated_at: string;
+  project_name: string | null;
+};
+
+export type Hook = {
+  id: string;
+  text: string;
+  category: string;
+  platform: string;
+  tone: string;
+  usage_count: number;
+  is_favorite: boolean;
+  created_at: string;
+};
+
+export type HookListResult = {
+  items: Hook[];
+  total: number;
+  page: number;
+  page_size: number;
+};
+
+export type TemplateKind = "static" | "video";
+
+export type Template = {
+  id: string;
+  name: string;
+  kind: TemplateKind;
+  category: string;
+  description: string;
+  thumbnail_key: string;
+  is_official: boolean;
+  config_json: Record<string, unknown> | null;
+  is_favorite: boolean;
+  created_at: string;
+};
+
+export type HistoryEventType =
+  | "created_project"
+  | "generated_script"
+  | "generated_image"
+  | "generated_video"
+  | "generated_voiceover"
+  | "used_template"
+  | "used_hook"
+  | "edited_script"
+  | "exported_video"
+  | "deleted_content"
+  | "restored_content";
+
+export type HistoryEvent = {
+  id: string;
+  event_type: HistoryEventType;
+  summary: string;
+  project_id: string | null;
+  asset_id: string | null;
+  created_at: string;
+  project_name: string | null;
+};

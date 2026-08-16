@@ -46,7 +46,7 @@ export function RegenerateMenu({
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1.5 w-64 overflow-hidden rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]">
+        <div className="absolute right-0 top-full z-20 mt-1.5 w-64 overflow-hidden rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_var(--shadow-color)]">
           {OPTIONS.map((opt) => (
             <button
               key={opt.scope}
@@ -55,7 +55,7 @@ export function RegenerateMenu({
                 setOpen(false);
                 onSelect(opt.scope);
               }}
-              className="block w-full border-b border-[var(--border)] px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-white/[0.06]"
+              className="block w-full border-b border-[var(--border)] px-3.5 py-2.5 text-left transition-colors last:border-b-0 hover:bg-[var(--foreground)]/[0.06]"
             >
               <div className="text-[12.5px] font-medium text-[var(--foreground)]">{opt.label}</div>
               <div className="text-[11px] text-[var(--muted)]">{opt.hint}</div>

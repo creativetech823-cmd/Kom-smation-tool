@@ -61,6 +61,7 @@ export function VisualConceptCard({
   onRegenerate,
   onGenerateVariation,
   onToggleFavorite,
+  onRetry,
 }: {
   concept: VisualConcept;
   regenerating: boolean;
@@ -72,6 +73,7 @@ export function VisualConceptCard({
   onRegenerate: (variationStyle?: VisualVariationStyle) => void;
   onGenerateVariation: (variationStyle: "generate_similar" | "different_angle") => void;
   onToggleFavorite: () => void;
+  onRetry?: () => void;
 }) {
   const [styleMenuOpen, setStyleMenuOpen] = useState(false);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
@@ -97,21 +99,47 @@ export function VisualConceptCard({
 
   const labelMeta = SCENE_LABEL_META[concept.scene_label] ?? SCENE_LABEL_META.hook;
   const isBusy = regenerating || downloading;
+  const isRendering = concept.status === "pending" || concept.status === "generating";
+  const isFailed = concept.status === "failed";
+  const isReady = concept.status === "completed" && Boolean(concept.image_path);
 
   return (
     <motion.div
       whileHover={{ y: -3 }}
-      className="group relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 backdrop-blur-xl shadow-[0_1px_0_rgba(255,255,255,0.05)_inset,0_20px_60px_-30px_rgba(0,0,0,0.85)] transition-shadow duration-300 hover:shadow-[0_0_0_1px_rgba(124,92,255,0.35),0_30px_70px_-25px_rgba(124,92,255,0.35)]"
+      className="group relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset,0_8px_24px_-12px_var(--shadow-color)] transition-shadow duration-300 hover:border-[var(--accent)]/40 hover:shadow-[0_12px_28px_-14px_var(--shadow-color)]"
     >
-      <div className="relative aspect-[9/16] w-full overflow-hidden bg-black/40">
+      <div className="relative aspect-[9/16] w-full overflow-hidden bg-[var(--surface-2)]">
         {isBusy ? (
           <div className="animate-shimmer h-full w-full" />
-        ) : concept.image_path ? (
+        ) : isReady ? (
           <img
             src={visualFileUrl(concept.image_path)}
             alt={concept.scene_title}
             className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
           />
+        ) : isFailed ? (
+          <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 px-4 text-center">
+            <span className="text-[20px]">⚠️</span>
+            <p className="text-[12px] font-medium text-[var(--foreground)]">Image generation failed</p>
+            {concept.error && <p className="line-clamp-2 text-[11px] text-[var(--muted)]">{concept.error}</p>}
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[11.5px] font-medium text-[var(--on-accent)] hover:brightness-110"
+              >
+                ↻ Retry
+              </button>
+            )}
+          </div>
+        ) : isRendering ? (
+          <div className="relative h-full w-full">
+            <div className="animate-shimmer h-full w-full" />
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              <p className="text-[12px] font-medium text-white drop-shadow">Generating…</p>
+            </div>
+          </div>
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[12px] text-[var(--muted)]">No image yet</div>
         )}
@@ -123,12 +151,18 @@ export function VisualConceptCard({
           >
             {labelMeta.emoji} {concept.scene_label.replace(/_/g, " ")}
           </span>
+          {isReady && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-transparent bg-[var(--success)] px-2 py-0.5 text-[10px] font-semibold text-white">
+              ✓ Ready
+            </span>
+          )}
         </div>
         <span className="absolute right-2.5 top-2.5 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-[11px] font-semibold text-white backdrop-blur">
           {concept.scene_number}
         </span>
 
-        {/* Hover action row */}
+        {/* Hover action row — only meaningful once there's an actual image to act on */}
+        {isReady && (
         <div className="absolute inset-x-0 bottom-0 flex flex-wrap items-center gap-1 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-2.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
           <HoverButton title="View Fullscreen" onClick={onView}>
             🔍
@@ -147,7 +181,7 @@ export function VisualConceptCard({
                       setDownloadMenuOpen(false);
                       onDownload(fmt);
                     }}
-                    className="block w-full px-3 py-1.5 text-left text-[11.5px] uppercase text-[var(--foreground)] hover:bg-white/[0.08]"
+                    className="block w-full px-3 py-1.5 text-left text-[11.5px] uppercase text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.08]"
                   >
                     {fmt}
                   </button>
@@ -191,7 +225,7 @@ export function VisualConceptCard({
                       setStyleMenuOpen(false);
                       onRegenerate(s.value);
                     }}
-                    className="block w-full px-3 py-1.5 text-left text-[11.5px] text-[var(--foreground)] hover:bg-white/[0.08]"
+                    className="block w-full px-3 py-1.5 text-left text-[11.5px] text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.08]"
                   >
                     {s.label}
                   </button>
@@ -200,6 +234,7 @@ export function VisualConceptCard({
             )}
           </div>
         </div>
+        )}
       </div>
 
       <div className="space-y-2.5 p-3.5">
@@ -207,11 +242,11 @@ export function VisualConceptCard({
           <p className="text-[13px] font-semibold text-[var(--foreground)]">{concept.scene_title}</p>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {concept.creative_angle && (
-              <span className="rounded-full border border-[var(--accent)]/25 bg-white/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--foreground)]">
+              <span className="rounded-full border border-[var(--accent)]/25 bg-[var(--foreground)]/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--foreground)]">
                 {concept.creative_angle}
               </span>
             )}
-            <span className="rounded-full border border-[var(--border-strong)] bg-white/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--muted)]">
+            <span className="rounded-full border border-[var(--border-strong)] bg-[var(--foreground)]/[0.04] px-2 py-0.5 text-[10.5px] text-[var(--muted)]">
               {concept.aspect_ratio}
             </span>
           </div>
@@ -254,7 +289,7 @@ function HoverButton({
 function PromptDisclosure({ prompt }: { prompt: string }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-white/[0.02]">
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--foreground)]/[0.02]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -280,7 +315,7 @@ function MetadataDisclosure({ concept }: { concept: VisualConcept }) {
     { label: "Negative Prompt", value: concept.style_params.negative_prompt || "—" },
   ];
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-white/[0.02]">
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--foreground)]/[0.02]">
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -320,9 +355,9 @@ function ScoreBlock({ scores, loading }: { scores: VisualConceptScores | null; l
         return (
           <div key={key} className="flex items-center gap-2">
             <span className="w-[92px] shrink-0 text-[10.5px] text-[var(--muted)]">{label}</span>
-            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[var(--foreground)]/[0.06]">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-2)]"
+                className="h-full rounded-full bg-[var(--accent)]"
                 style={{ width: `${Math.max(0, Math.min(100, value))}%` }}
               />
             </div>

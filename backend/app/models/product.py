@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -186,6 +186,7 @@ class StorySituationsInput(BaseModel):
     product_category: str = Field(..., min_length=1)
     count: int = 10
     exclude_titles: list[str] = Field(default_factory=list)
+    script_language: ScriptLanguage = ScriptLanguage.hinglish
 
 
 class StorySituationsResult(BaseModel):
@@ -215,6 +216,10 @@ class ScriptGenerationInput(BaseModel):
     # Target video duration bucket (e.g. "30s", "60s"). Empty = derive from
     # selected_situation.estimated_length.
     target_duration: str = ""
+    # A hook line picked from the Hooks library — when set, the script's hook
+    # block should open with (or faithfully adapt) this exact line. Empty = AI
+    # writes its own opening.
+    selected_hook_text: str = Field("", max_length=500)
 
 
 class ScriptLine(BaseModel):
@@ -273,6 +278,10 @@ class ScriptSectionRegenerateInput(BaseModel):
     creative_angle: str = Field("", max_length=300)
     script_language: ScriptLanguage = ScriptLanguage.english
     target_duration: str = ""
+    # See ScriptGenerationInput.selected_hook_text — only meaningful for a
+    # full/fresh regeneration; the frontend omits it for scoped regenerations
+    # (e.g. "CTA only") to avoid contradicting "leave the hook unchanged".
+    selected_hook_text: str = Field("", max_length=500)
     current_script: GeneratedScript
     scope: ScriptRegenerateScope = ScriptRegenerateScope.full
     # Free text appended to the scope's guidance — powers one-click actions like
@@ -425,28 +434,98 @@ class GenerateAlternativesResult(BaseModel):
     alternatives: list[str] = Field(default_factory=list)
 
 
-class ScriptSuggestion(BaseModel):
-    """One AI-generated improvement suggestion for a finished script."""
+class ScriptSuggestionCategory(str, Enum):
+    """The AI-suggestions panel's critique lens — mirrors how a professional
+    short-form script editor actually evaluates a script."""
 
+    hook = "hook"
+    opening_line = "opening_line"
+    emotional_impact = "emotional_impact"
+    clarity = "clarity"
+    flow = "flow"
+    storytelling = "storytelling"
+    product_integration = "product_integration"
+    cta = "cta"
+    repetition = "repetition"
+    length = "length"
+    natural_hinglish = "natural_hinglish"
+    brand_mention = "brand_mention"
+    audience_relevance = "audience_relevance"
+    virality = "virality"
+
+
+class ScriptSuggestionCard(BaseModel):
+    """One concrete, ready-to-apply improvement — grounded in the actual
+    script, not a generic tip. Applying a card is a pure text swap on
+    `line_id` (no further AI call) whenever `current_text`/`suggested_text`
+    are set; `suggested_scope` is only a fallback for the rare suggestion
+    that genuinely needs a whole-section regenerate (e.g. severe pacing
+    mismatch) rather than a single-line fix."""
+
+    id: str
+    category: ScriptSuggestionCategory
+    title: str
+    why: str
     line_id: Optional[str] = None
-    section: Optional[ScriptSection] = None
-    message: str
-    action_label: str
+    current_text: Optional[str] = None
+    suggested_text: Optional[str] = None
     suggested_scope: Optional[ScriptRegenerateScope] = None
+    instruction: Optional[str] = None
 
-    @field_validator("section", "suggested_scope", "line_id", mode="before")
+    @field_validator("line_id", "current_text", "suggested_text", "suggested_scope", "instruction", mode="before")
     @classmethod
     def _blank_to_none(cls, v: object) -> object:
         return v or None
 
 
-class ScriptSuggestionsResult(BaseModel):
-    suggestions: list[ScriptSuggestion] = Field(default_factory=list)
+class SmartScriptSuggestionsResult(BaseModel):
+    """Full AI Suggestions panel payload for one analysis pass."""
+
+    status: Literal["strong", "needs_work"] = "needs_work"
+    headline: str = ""
+    cards: list[ScriptSuggestionCard] = Field(default_factory=list)
+    optional_ideas: list[str] = Field(default_factory=list)
 
 
 class ScriptSuggestionsInput(BaseModel):
     script: GeneratedScript
+    structured_product: Optional[StructuredProduct] = None
     target_duration: str = ""
+
+
+class ScriptCommandSelection(BaseModel):
+    """An explicit user text selection within one line — powers
+    "Improve selection" in the structured whole-script editor."""
+
+    line_id: str
+    selected_text: str = Field(..., min_length=1)
+
+
+class ScriptCommandInput(BaseModel):
+    """A free-form natural-language instruction from the AI Suggestions
+    panel's "Tell AI what you want to change" box — interpreted against the
+    live script and (usually) turned into a single targeted line patch."""
+
+    structured_product: StructuredProduct
+    script: GeneratedScript
+    product_category: str = ""
+    creative_angle: str = ""
+    instruction: str = Field(..., min_length=1, max_length=500)
+    selection: Optional[ScriptCommandSelection] = None
+
+
+class ScriptCommandResult(BaseModel):
+    """A previewable, applicable patch — never silently overwrites the
+    script. The frontend shows before/after and only commits on user
+    confirmation."""
+
+    is_full_rewrite: bool = False
+    title: str
+    why: str
+    line_id: Optional[str] = None
+    current_text: Optional[str] = None
+    suggested_text: Optional[str] = None
+    full_script_after: Optional[GeneratedScript] = None
 
 
 class VisualSceneLabel(str, Enum):
@@ -506,6 +585,13 @@ class VisualConcept(BaseModel):
     resolution: str = ""
     generation_time_seconds: float = 0.0
     used_model: str = ""
+    # "pending" — planned, image not yet requested. "generating" — render in
+    # flight. "completed" — image_path is a real rendered image. "failed" —
+    # see `error`. Defaults to "pending" so forgetting to advance it on a new
+    # code path fails loudly (a stuck "pending" card) rather than silently
+    # claiming a finished image that doesn't exist.
+    status: Literal["pending", "generating", "completed", "failed"] = "pending"
+    error: Optional[str] = None
 
     @field_validator("scene_label", mode="before")
     @classmethod

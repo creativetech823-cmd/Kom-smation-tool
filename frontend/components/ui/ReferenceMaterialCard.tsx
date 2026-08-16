@@ -85,7 +85,7 @@ export function ReferenceMaterialCard({
       className="hover-glow glass-card rounded-xl border border-[var(--border)] px-3.5 py-3"
     >
       <div className="flex items-start gap-2.5">
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-[15px]">
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--foreground)]/[0.05] text-[15px]">
           {KIND_ICON[material.kind]}
         </span>
         <div className="min-w-0 flex-1">
@@ -98,7 +98,7 @@ export function ReferenceMaterialCard({
           type="button"
           onClick={onRemove}
           aria-label="Remove"
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--foreground)]"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-[var(--foreground)]/[0.06] hover:text-[var(--foreground)]"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
             <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />

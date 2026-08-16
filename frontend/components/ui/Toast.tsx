@@ -23,7 +23,7 @@ export function ToastHost({ toast }: { toast: ToastState }) {
             exit={{ opacity: 0, y: 8, scale: 0.96 }}
             transition={{ duration: 0.2 }}
             className={cn(
-              "pointer-events-auto rounded-xl border px-4 py-2.5 text-[13px] font-medium shadow-[0_20px_60px_-20px_rgba(0,0,0,0.8)] backdrop-blur-xl",
+              "pointer-events-auto rounded-xl border px-4 py-2.5 text-[13px] font-medium shadow-[0_8px_24px_-8px_var(--shadow-color)]",
               toneClasses[toast.tone ?? "neutral"]
             )}
           >

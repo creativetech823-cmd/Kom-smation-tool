@@ -30,7 +30,7 @@ export function StagedProgress({ stages, currentIndex }: { stages: ProgressStage
                 </svg>
               </span>
             ) : isCurrent ? (
-              <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-white/20 border-t-[var(--accent)]" />
+              <span className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--foreground)]/20 border-t-[var(--accent)]" />
             ) : (
               <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--border-strong)]" />
             )}

@@ -3,7 +3,7 @@ import json
 from app.config import settings
 from app.models.product import ComplianceCheckInput, ComplianceResult
 from app.services.compliance_rules import rules_for_category
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are an independent compliance auditor for an ad-generation pipeline.
 You did NOT write the script you are reviewing — you have no stake in it being approved.
@@ -47,11 +47,11 @@ def audit_script(payload: ComplianceCheckInput) -> ComplianceResult:
     stronger/thinking-mode model was tried first but was meaningfully more
     expensive per audit for benefit that didn't justify the cost."""
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_SYSTEM_PROMPT,
             contents=[_build_user_message(payload)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=2048,
             json_mode=True,
         ),

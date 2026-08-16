@@ -63,7 +63,7 @@ export function EditableLine({
           <button
             type="button"
             onClick={save}
-            className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[11px] font-medium text-white hover:brightness-110"
+            className="rounded-md bg-[var(--accent)] px-2.5 py-1 text-[11px] font-medium text-[var(--on-accent)] hover:brightness-110"
           >
             Save
           </button>
@@ -95,7 +95,7 @@ export function EditableLine({
           type="button"
           onClick={startEdit}
           title="Edit"
-          className="rounded p-0.5 text-[12px] hover:bg-white/[0.08]"
+          className="rounded p-0.5 text-[12px] hover:bg-[var(--foreground)]/[0.08]"
         >
           ✏️
         </button>

@@ -62,7 +62,7 @@ export function AssetsStep({
                 key={line.id}
                 variants={tileVariants}
                 whileHover={{ y: -4 }}
-                className="group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] transition-shadow hover:shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]"
+                className="group relative overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)] shadow-[0_1px_0_rgba(255,255,255,0.04)_inset] transition-shadow hover:shadow-[0_20px_40px_-20px_var(--shadow-color)]"
               >
                 <div className="relative aspect-[9/16] w-full overflow-hidden bg-black/40">
                   {isLoading ? (

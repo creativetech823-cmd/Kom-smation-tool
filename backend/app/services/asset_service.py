@@ -1,11 +1,10 @@
 import json
 
 import httpx
-from google.genai import types as genai_types
 
 from app.config import settings
 from app.models.product import AssetCandidate, AssetSourcingInput, SelectedAsset
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text, image_part
 
 _BROADEN_SYSTEM_PROMPT = """You broaden an overly specific stock-photo search query into a more
 generic one likely to return results, while staying visually relevant.
@@ -65,11 +64,11 @@ def search_pixabay(query: str, per_page: int = 3) -> list[AssetCandidate]:
 
 
 def broaden_tag(tag: str) -> str:
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_BROADEN_SYSTEM_PROMPT,
             contents=[tag],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=256,
         ),
         label="broaden_tag",
@@ -102,18 +101,18 @@ def rank_with_vision(target_description: str, candidates: list[AssetCandidate]) 
             continue
         media_type, data = downloaded
         content.append(f"Candidate {i}:")
-        content.append(genai_types.Part.from_bytes(data=data, mime_type=media_type))
+        content.append(image_part(data, media_type))
         downloadable_indices.append(i)
 
     if not downloadable_indices:
         return 0, "No candidate images could be downloaded — defaulted to first candidate."
 
     try:
-        text = call_gemini_with_retry(
+        text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_VISION_SYSTEM_PROMPT,
                 contents=content,
-                model=settings.gemini_text_model,
+                model=settings.openrouter_text_model,
                 max_output_tokens=512,
                 json_mode=True,
             ),

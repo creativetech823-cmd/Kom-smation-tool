@@ -89,7 +89,7 @@ export function ReferenceMaterialsPanel({
           <button
             type="submit"
             disabled={!linkValue.trim()}
-            className="h-9 rounded-lg bg-[var(--accent)] px-3 text-[13px] font-medium text-white disabled:opacity-40"
+            className="h-9 rounded-lg bg-[var(--accent)] px-3 text-[13px] font-medium text-[var(--on-accent)] disabled:opacity-40"
           >
             Add
           </button>

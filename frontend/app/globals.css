@@ -1,22 +1,55 @@
 @import "tailwindcss";
 
 :root {
-  --background: #05050a;
-  --surface: #0d0e18;
-  --surface-2: #12131f;
-  --surface-3: #181a2b;
-  --border: rgba(178, 150, 255, 0.1);
-  --border-strong: rgba(178, 150, 255, 0.2);
-  --foreground: #f3f2fb;
-  --muted: #938fb0;
-  --accent: #8b5cf6;
-  --accent-2: #22e8d8;
-  --accent-soft: rgba(139, 92, 246, 0.16);
-  --indigo: #4f46e5;
-  --magenta: #e879f9;
-  --danger: #ff5d7a;
-  --success: #2fd889;
-  --warning: #ffb547;
+  /* Smart Traffic — charcoal/navy dark */
+  --background: #151a24;
+  --surface: #1d2733;
+  --surface-2: #202d3a;
+  --surface-3: #263542;
+  --border: #2b3945;
+  --border-strong: #344552;
+  --foreground: #f4f7f8;
+  --muted: #b8c4cc;
+  --muted-2: #7f8c96;
+  --accent: #4cc9c0;
+  --accent-2: #67d8d0;
+  --accent-soft: #243a40;
+  --on-accent: #10201f;
+  --input-background: #1b2631;
+  --hover-surface: #263542;
+  --indigo: #5b7b99;
+  --magenta: #8a93a6;
+  --danger: #e96a6a;
+  --success: #7ed957;
+  --warning: #f2b84b;
+  --info: #6fa8dc;
+  --shadow-color: rgba(0, 0, 0, 0.4);
+}
+
+:root[data-theme="light"] {
+  /* Smart Traffic — clean light */
+  --background: #f5f7f8;
+  --surface: #ffffff;
+  --surface-2: #f0f4f5;
+  --surface-3: #ffffff;
+  --border: #e4eaed;
+  --border-strong: #d7e0e4;
+  --foreground: #17212b;
+  --muted: #53616c;
+  --muted-2: #7a8790;
+  --accent: #38bfb5;
+  --accent-2: #55ccc4;
+  --accent-soft: #e7f6f5;
+  --on-accent: #ffffff;
+  --input-background: #ffffff;
+  --hover-surface: #f0f4f5;
+  --indigo: #4f7fa3;
+  --magenta: #8a93a6;
+  --danger: #d1554f;
+  --success: #6bbf45;
+  --warning: #d99a2b;
+  --info: #5f97c9;
+  --shadow-color: rgba(23, 33, 43, 0.1);
 }
 
 @property --pct {
@@ -33,6 +66,7 @@
   --color-border: var(--border);
   --color-foreground: var(--foreground);
   --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
   --color-indigo: var(--indigo);
@@ -40,6 +74,7 @@
   --color-danger: var(--danger);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-info: var(--info);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -52,12 +87,12 @@ html {
   color-scheme: dark;
 }
 
+html[data-theme="light"] {
+  color-scheme: light;
+}
+
 body {
-  background: radial-gradient(1200px 600px at 15% -10%, rgba(139, 92, 246, 0.18), transparent 60%),
-    radial-gradient(1000px 500px at 90% 0%, rgba(34, 232, 216, 0.11), transparent 55%),
-    radial-gradient(900px 700px at 50% 110%, rgba(232, 121, 249, 0.09), transparent 60%),
-    var(--background);
-  background-attachment: fixed;
+  background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   min-height: 100vh;
@@ -65,7 +100,7 @@ body {
 
 ::selection {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 
 ::-webkit-scrollbar {
@@ -115,7 +150,7 @@ body {
   background: linear-gradient(
     90deg,
     var(--surface-2) 0%,
-    rgba(255, 255, 255, 0.06) 50%,
+    color-mix(in srgb, var(--foreground) 6%, transparent) 50%,
     var(--surface-2) 100%
   );
   background-size: 800px 100%;
@@ -124,10 +159,10 @@ body {
 
 @keyframes glow {
   0% {
-    box-shadow: 0 0 0 1px rgba(124, 92, 255, 0.55), 0 0 18px 2px rgba(124, 92, 255, 0.35);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
   }
   100% {
-    box-shadow: 0 0 0 1px rgba(124, 92, 255, 0), 0 0 0 0 rgba(124, 92, 255, 0);
+    box-shadow: 0 0 0 1px transparent;
   }
 }
 
@@ -155,33 +190,25 @@ body {
    var(--foo) theme mechanism, no component restructuring required. */
 
 .glass-card {
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+  background: var(--surface);
   border: 1px solid var(--border);
 }
 
 .glow-border {
-  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent),
-    0 0 24px -6px color-mix(in srgb, var(--accent) 55%, transparent);
+  border-color: var(--accent);
 }
 
 .hover-glow {
-  transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .hover-glow:hover {
-  border-color: color-mix(in srgb, var(--accent-2) 45%, transparent);
-  box-shadow: 0 0 24px -8px color-mix(in srgb, var(--accent-2) 60%, transparent);
-  transform: translateY(-1px);
+  border-color: var(--accent);
+  box-shadow: 0 4px 16px -6px var(--shadow-color);
 }
 
 .gradient-text {
-  background: linear-gradient(90deg, var(--accent), var(--accent-2));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--accent);
 }
 
 @keyframes drift {

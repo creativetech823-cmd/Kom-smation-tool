@@ -2,7 +2,7 @@ import json
 
 from app.config import settings
 from app.models.product import GenerateAlternativesResult, RewriteLineInput
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You are a script-line editor for a short-form video ad content factory.
 Given ONE line of dialogue/on-screen text, write 5 genuinely distinct alternative versions of it —
@@ -23,11 +23,11 @@ def _build_user_message(payload: RewriteLineInput) -> str:
 def generate_alternatives(payload: RewriteLineInput) -> GenerateAlternativesResult:
     """AI quick-action — 5 distinct rewrites of one script line, for the user to pick from."""
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_SYSTEM_PROMPT,
             contents=[_build_user_message(payload)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=1536,
             json_mode=True,
         ),

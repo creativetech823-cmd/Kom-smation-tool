@@ -154,7 +154,7 @@ function LiveBadge({ state }: { state: "placeholder" | "loading" | "populated" }
   const dotClass =
     state === "populated" ? "bg-[var(--success)]" : state === "loading" ? "bg-[var(--accent)] animate-pulse-dot" : "bg-[var(--muted)]";
   return (
-    <span className="flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-white/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+    <span className="flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--foreground)]/[0.03] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
       <span className={`h-1.5 w-1.5 rounded-full ${dotClass}`} />
       {label}
     </span>
@@ -164,7 +164,7 @@ function LiveBadge({ state }: { state: "placeholder" | "loading" | "populated" }
 function Row({ icon, label, children }: { icon: React.ReactNode; label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-3.5 py-3">
-      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.05] text-[var(--accent-2)]">
+      <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--foreground)]/[0.05] text-[var(--accent-2)]">
         {icon}
       </span>
       <div className="min-w-0 flex-1">
@@ -182,7 +182,7 @@ function ChipList({ items }: { items: string[] }) {
       {items.map((item) => (
         <span
           key={item}
-          className="rounded-full border border-[var(--border)] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--foreground)]"
+          className="rounded-full border border-[var(--border)] bg-[var(--foreground)]/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--foreground)]"
         >
           {item}
         </span>

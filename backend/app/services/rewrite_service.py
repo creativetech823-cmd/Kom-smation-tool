@@ -1,6 +1,6 @@
 from app.config import settings
 from app.models.product import RewriteDirective, RewriteLineInput, RewriteLineResult, ScriptLanguage
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _DIRECTIVE_GUIDANCE: dict[RewriteDirective, str] = {
     RewriteDirective.improve: "Tighten and sharpen this line — better rhythm, clearer meaning, "
@@ -87,11 +87,11 @@ def rewrite_line(payload: RewriteLineInput) -> RewriteLineResult:
 
     system = _TRANSLATE_SYSTEM_PROMPT if payload.directive == RewriteDirective.translate else _SYSTEM_PROMPT
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=system,
             contents=[_build_user_message(payload)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=512,
         ),
         label="rewrite_line",

@@ -6,7 +6,7 @@ from mutagen.mp3 import MP3
 
 from app.config import settings
 from app.models.product import VoiceoverLine, VoiceoverResult
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _TRANSLATE_SYSTEM_PROMPT = """You convert a short video-ad script line into natural, conversational
 spoken Hindi (Devanagari script) — the way a voiceover artist would actually say it, not a stiff
@@ -21,11 +21,11 @@ def _translate_to_hindi(text: str) -> str:
     # copy) — strip it before translation so the ** characters don't confuse
     # the model or leak into the spoken output.
     plain_text = text.replace("**", "")
-    result = call_gemini_with_retry(
+    result = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_TRANSLATE_SYSTEM_PROMPT,
             contents=[plain_text],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=512,
         ),
         label="translate_to_hindi",

@@ -64,7 +64,7 @@ export function VoiceoverStep({
                   <button
                     onClick={() => onRegenerateLine(line.id)}
                     disabled={isLoading}
-                    className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-white/[0.06] hover:text-[var(--foreground)] disabled:opacity-40"
+                    className="flex h-6 w-6 items-center justify-center rounded-full text-[var(--muted)] transition-colors hover:bg-[var(--foreground)]/[0.06] hover:text-[var(--foreground)] disabled:opacity-40"
                     title="Regenerate this voiceover"
                   >
                     <IconRefresh />

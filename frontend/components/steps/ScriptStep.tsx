@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +11,7 @@ import { RegenerateMenu } from "@/components/ui/RegenerateMenu";
 import { DurationMeter } from "@/components/ui/DurationMeter";
 import { VersionHistoryPanel, type ScriptVersion } from "@/components/ui/VersionHistoryPanel";
 import { EditableLine } from "@/components/ui/EditableLine";
+import { AiSuggestionsPanel, type ApplyPatch } from "@/components/ui/AiSuggestionsPanel";
 import { angleAccent, angleEmoji } from "@/lib/creativeAngles";
 import { renderBold } from "@/lib/renderBold";
 import { durationStatus, estimateSeconds, targetSecondsFor, wordCount } from "@/lib/duration";
@@ -20,9 +21,11 @@ import {
   type FlatLine,
   type GeneratedScript,
   type RewriteDirective,
+  type ScriptCommandResult,
+  type ScriptCommandSelection,
   type ScriptRegenerateScope,
   type ScriptLanguage,
-  type ScriptSuggestion,
+  type SmartScriptSuggestionsResult,
   type StorySituation,
 } from "@/lib/types";
 
@@ -75,13 +78,17 @@ export function ScriptStep({
   onTranslateLine,
   lineLoading,
   recentlyChangedLineIds,
-  onFetchSuggestions,
-  onApplySuggestion,
+  onAnalyzeScript,
+  onRunScriptCommand,
+  onApplyPatch,
+  onEditTitle,
   history,
   historyIndex,
   onUndo,
   onRedo,
   onRestoreVersion,
+  selectedHookText,
+  onChooseHook,
 }: {
   script: GeneratedScript;
   situation: StorySituation;
@@ -102,19 +109,25 @@ export function ScriptStep({
   onTranslateLine: (lineId: string, language: ScriptLanguage) => void;
   lineLoading: Record<string, boolean>;
   recentlyChangedLineIds: Set<string>;
-  onFetchSuggestions: () => Promise<ScriptSuggestion[]>;
-  onApplySuggestion: (s: ScriptSuggestion) => void;
+  onAnalyzeScript: () => Promise<SmartScriptSuggestionsResult>;
+  onRunScriptCommand: (instruction: string, selection?: ScriptCommandSelection) => Promise<ScriptCommandResult>;
+  onApplyPatch: (patch: ApplyPatch) => void;
+  onEditTitle?: (title: string) => void;
   history: ScriptVersion[];
   historyIndex: number;
   onUndo: () => void;
   onRedo: () => void;
   onRestoreVersion: (index: number) => void;
+  selectedHookText?: string;
+  onChooseHook?: () => void;
 }) {
   const lines = flattenScript(script);
   const [view, setView] = useState<"shotlist" | "sheet">("shotlist");
   const [sectionEditing, setSectionEditing] = useState<string | null>(null);
-  const [suggestions, setSuggestions] = useState<ScriptSuggestion[] | null>(null);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<{ instruction: string; selection?: ScriptCommandSelection } | null>(
+    null
+  );
   const [wholeScriptEditing, setWholeScriptEditing] = useState(false);
 
   const bucket = targetDuration || script.target_duration || "30s";
@@ -134,13 +147,9 @@ export function ScriptStep({
     return groups;
   }, [lines]);
 
-  async function handleFetchSuggestionsClick() {
-    setSuggestionsLoading(true);
-    try {
-      setSuggestions(await onFetchSuggestions());
-    } finally {
-      setSuggestionsLoading(false);
-    }
+  function handleImproveSelection(lineId: string, selectedText: string) {
+    setPendingCommand({ instruction: "", selection: { line_id: lineId, selected_text: selectedText } });
+    setSuggestionsOpen(true);
   }
 
   function handleLengthPct(pct: number) {
@@ -185,6 +194,22 @@ export function ScriptStep({
           </button>
         </div>
 
+        {onChooseHook && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <p className="shrink-0 text-[12px] font-medium text-[var(--muted)]">Hook</p>
+              {selectedHookText ? (
+                <span className="truncate text-[12.5px] text-[var(--foreground)]">&ldquo;{selectedHookText}&rdquo;</span>
+              ) : (
+                <span className="text-[12.5px] text-[var(--muted)]">No hook selected — AI writes its own opening.</span>
+              )}
+            </div>
+            <Button variant="secondary" size="sm" onClick={onChooseHook}>
+              Choose Hook
+            </Button>
+          </div>
+        )}
+
         {onScriptLanguageChange && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
@@ -205,7 +230,7 @@ export function ScriptStep({
                   type="button"
                   onClick={() => setView(v)}
                   className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                    view === v ? "bg-[var(--accent)] text-white" : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                    view === v ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
                   }`}
                 >
                   {v === "shotlist" ? "Shot List" : "Script Sheet"}
@@ -219,16 +244,16 @@ export function ScriptStep({
         <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
           <DurationMeter estimatedSeconds={estimated} targetSeconds={targetSeconds} status={status} />
           <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => handleLengthPct(-40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]">
+            <button type="button" onClick={() => handleLengthPct(-40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
               − 40%
             </button>
-            <button type="button" onClick={() => handleLengthPct(-20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]">
+            <button type="button" onClick={() => handleLengthPct(-20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
               − 20%
             </button>
-            <button type="button" onClick={() => handleLengthPct(20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]">
+            <button type="button" onClick={() => handleLengthPct(20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
               + 20%
             </button>
-            <button type="button" onClick={() => handleLengthPct(40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]">
+            <button type="button" onClick={() => handleLengthPct(40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
               + 40%
             </button>
           </div>
@@ -242,7 +267,7 @@ export function ScriptStep({
             <button
               type="button"
               onClick={() => onRegenerateScope("full", { targetWordCount: Math.round((targetSeconds / 60) * 165) })}
-              className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
+              className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--on-accent)] hover:brightness-110"
             >
               Auto-balance
             </button>
@@ -265,7 +290,7 @@ export function ScriptStep({
 
         {/* Suggestions + history toolbar */}
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <Button variant="secondary" size="sm" onClick={handleFetchSuggestionsClick} loading={suggestionsLoading}>
+          <Button variant="secondary" size="sm" onClick={() => setSuggestionsOpen(true)}>
             💡 AI Suggestions
           </Button>
           <div className="flex items-center gap-1.5">
@@ -275,7 +300,7 @@ export function ScriptStep({
               className={`rounded-lg border px-2.5 py-1.5 text-[12px] font-medium transition-colors ${
                 wholeScriptEditing
                   ? "border-[var(--accent)]/50 bg-[var(--accent-soft)] text-[var(--accent)]"
-                  : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--foreground)] hover:bg-white/[0.06]"
+                  : "border-[var(--border-strong)] bg-[var(--surface-2)] text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]"
               }`}
             >
               📝 Edit Whole Script
@@ -284,7 +309,7 @@ export function ScriptStep({
               type="button"
               disabled={historyIndex <= 0}
               onClick={onUndo}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
             >
               ↶ Undo
             </button>
@@ -292,7 +317,7 @@ export function ScriptStep({
               type="button"
               disabled={historyIndex >= history.length - 1}
               onClick={onRedo}
-              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
             >
               ↷ Redo
             </button>
@@ -302,40 +327,28 @@ export function ScriptStep({
 
         {wholeScriptEditing && (
           <WholeScriptEditor
+            title={situation.title}
             lines={lines}
+            onSaveTitle={onEditTitle}
             onSave={(texts) => {
               onEditWholeScript(texts);
               setWholeScriptEditing(false);
             }}
             onClose={() => setWholeScriptEditing(false)}
+            onImproveSelection={handleImproveSelection}
           />
         )}
 
-        {suggestions && (
-          <div className="space-y-1.5">
-            {suggestions.length === 0 ? (
-              <p className="text-[12px] text-[var(--muted)]">No suggestions — this script looks solid.</p>
-            ) : (
-              suggestions.map((s, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] bg-[var(--surface-2)] px-3 py-2"
-                >
-                  <p className="text-[12px] text-[var(--foreground)]">💡 {s.message}</p>
-                  {s.suggested_scope && (
-                    <button
-                      type="button"
-                      onClick={() => onApplySuggestion(s)}
-                      className="shrink-0 rounded-md bg-[var(--accent)] px-2.5 py-1 text-[11px] font-medium text-white hover:brightness-110"
-                    >
-                      {s.action_label || "Fix"}
-                    </button>
-                  )}
-                </div>
-              ))
-            )}
-          </div>
-        )}
+        <AiSuggestionsPanel
+          open={suggestionsOpen}
+          onClose={() => setSuggestionsOpen(false)}
+          script={script}
+          onAnalyze={onAnalyzeScript}
+          onRunCommand={onRunScriptCommand}
+          onApply={onApplyPatch}
+          pendingCommand={pendingCommand}
+          onConsumePendingCommand={() => setPendingCommand(null)}
+        />
 
         <p className="flex items-center gap-2 text-[12px] text-[var(--muted)]">
           <span>🎙</span> Voiceover for every line happens in Stage 9, after Compliance and Assets are locked in.
@@ -358,7 +371,7 @@ export function ScriptStep({
                   </button>
                 </div>
                 <div className="relative">
-                  <div className="pointer-events-none absolute bottom-2 left-[15px] top-2 w-px bg-gradient-to-b from-[var(--accent)] via-[var(--border-strong)] to-[var(--accent-2)]" />
+                  <div className="pointer-events-none absolute bottom-2 left-[15px] top-2 w-px bg-[var(--border-strong)]" />
                   <div className="space-y-3">
                     {group.lines.map((line) => (
                       <TimelineNode
@@ -411,53 +424,112 @@ export function ScriptStep({
 }
 
 function WholeScriptEditor({
+  title,
   lines,
+  onSaveTitle,
   onSave,
   onClose,
+  onImproveSelection,
 }: {
+  title: string;
   lines: FlatLine[];
+  onSaveTitle?: (title: string) => void;
   onSave: (texts: string[]) => void;
   onClose: () => void;
+  onImproveSelection: (lineId: string, selectedText: string) => void;
 }) {
-  const [draft, setDraft] = useState(lines.map((l) => l.text).join("\n"));
-  const [error, setError] = useState<string | null>(null);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const [draftMap, setDraftMap] = useState<Record<string, string>>(() =>
+    Object.fromEntries(lines.map((l) => [l.id, l.text]))
+  );
+  const signature = lines.map((l) => `${l.id}:${l.text}`).join("|");
+  const prevSignatureRef = useRef(signature);
 
-  function handleSave() {
-    const rows = draft.split("\n").map((r) => r.trim());
-    while (rows.length && rows[0] === "") rows.shift();
-    while (rows.length && rows[rows.length - 1] === "") rows.pop();
-    if (rows.length !== lines.length) {
-      setError(
-        `This script has ${lines.length} lines — you currently have ${rows.length}. Add or remove lines to match (one per line), then save.`
-      );
-      return;
+  useEffect(() => {
+    if (prevSignatureRef.current !== signature) {
+      prevSignatureRef.current = signature;
+      setDraftMap(Object.fromEntries(lines.map((l) => [l.id, l.text])));
     }
-    onSave(rows);
+  }, [signature, lines]);
+
+  useEffect(() => {
+    setTitleDraft(title);
+  }, [title]);
+
+  function setLineDraft(id: string, value: string) {
+    setDraftMap((prev) => ({ ...prev, [id]: value }));
   }
 
+  function handleSave() {
+    onSaveTitle?.(titleDraft.trim());
+    onSave(lines.map((l) => draftMap[l.id] ?? l.text));
+  }
+
+  const hookLine = lines.find((l) => l.role === "hook");
+  const bodyLines = lines.filter((l) => l.role === "body");
+  const ctaLine = lines.find((l) => l.role === "cta");
+
   return (
-    <div className="space-y-2 rounded-xl border border-[var(--accent)]/30 bg-[var(--surface-2)] p-3.5">
+    <div className="space-y-3.5 rounded-xl border border-[var(--accent)]/30 bg-[var(--surface-2)] p-3.5">
       <p className="text-[12px] text-[var(--muted)]">
-        One line per script block ({lines.length} total, in order: {lines.map((l) => l.scene_label || l.role).join(" → ")}) — edit
-        any line&rsquo;s text, just don&rsquo;t add or remove lines.
+        Edit any field directly, or select text within a field and click ✨ Improve selection.
       </p>
-      <textarea
-        value={draft}
-        onChange={(e) => {
-          setDraft(e.target.value);
-          setError(null);
-        }}
-        rows={Math.min(22, lines.length + 2)}
-        className="w-full resize-y rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
-      />
-      {error && <p className="text-[12px] text-[var(--danger)]">{error}</p>}
-      <div className="flex gap-2">
+
+      {onSaveTitle && (
+        <div>
+          <label className="mb-1 block text-[10.5px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Title
+          </label>
+          <input
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-[14px] font-medium text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+          />
+        </div>
+      )}
+
+      {hookLine && (
+        <EditorField
+          label="Hook"
+          value={draftMap[hookLine.id] ?? hookLine.text}
+          onChange={(v) => setLineDraft(hookLine.id, v)}
+          onImproveSelection={(sel) => onImproveSelection(hookLine.id, sel)}
+        />
+      )}
+
+      {bodyLines.length > 0 && (
+        <div className="space-y-2.5">
+          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--muted)]">Body</p>
+          <div className="space-y-2.5 border-l border-[var(--border)] pl-3">
+            {bodyLines.map((line, i) => (
+              <EditorField
+                key={line.id}
+                label={line.scene_label || `Line ${i + 1}`}
+                value={draftMap[line.id] ?? line.text}
+                onChange={(v) => setLineDraft(line.id, v)}
+                onImproveSelection={(sel) => onImproveSelection(line.id, sel)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {ctaLine && (
+        <EditorField
+          label="CTA"
+          value={draftMap[ctaLine.id] ?? ctaLine.text}
+          onChange={(v) => setLineDraft(ctaLine.id, v)}
+          onImproveSelection={(sel) => onImproveSelection(ctaLine.id, sel)}
+        />
+      )}
+
+      <div className="flex gap-2 pt-1">
         <button
           type="button"
           onClick={handleSave}
-          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
+          className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--on-accent)] hover:brightness-110"
         >
-          Save Whole Script
+          Save Changes
         </button>
         <button
           type="button"
@@ -467,6 +539,57 @@ function WholeScriptEditor({
           Cancel
         </button>
       </div>
+    </div>
+  );
+}
+
+function EditorField({
+  label,
+  value,
+  onChange,
+  onImproveSelection,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onImproveSelection?: (selectedText: string) => void;
+}) {
+  const [selection, setSelection] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+
+  function handleSelect() {
+    const el = ref.current;
+    if (!el) return;
+    setSelection(el.value.slice(el.selectionStart, el.selectionEnd));
+  }
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <label className="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--muted)]">{label}</label>
+        {onImproveSelection && selection.trim().length > 1 && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              onImproveSelection(selection);
+              setSelection("");
+            }}
+            className="text-[11px] font-medium text-[var(--accent-2)] hover:underline"
+          >
+            ✨ Improve selection
+          </button>
+        )}
+      </div>
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onSelect={handleSelect}
+        onBlur={() => setTimeout(() => setSelection(""), 150)}
+        rows={2}
+        className="w-full resize-y rounded-lg border border-[var(--border-strong)] bg-[var(--surface)] px-3 py-2 text-[13px] leading-relaxed text-[var(--foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/40"
+      />
     </div>
   );
 }
@@ -569,7 +692,7 @@ function InlineField({
         setEditing(true);
       }}
       title="Click to edit"
-      className={cn("cursor-text rounded px-0.5 text-left hover:bg-white/[0.06]", className)}
+      className={cn("cursor-text rounded px-0.5 text-left hover:bg-[var(--foreground)]/[0.06]", className)}
     >
       {value || <span className="italic text-[var(--muted)]">{placeholder ?? "—"}</span>}
     </button>
@@ -621,7 +744,7 @@ function InlineTagsField({ values, onSave, emoji }: { values: string[]; onSave: 
     >
       {values.length ? (
         values.map((tag) => (
-          <span key={tag} className="rounded-full border border-[var(--border)] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
+          <span key={tag} className="rounded-full border border-[var(--border)] bg-[var(--foreground)]/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
             {emoji} {tag}
           </span>
         ))
@@ -753,7 +876,7 @@ function TimelineNode({
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border border-[var(--accent)]/25 bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-[var(--foreground)]">
+    <span className="rounded-full border border-[var(--accent)]/25 bg-[var(--foreground)]/[0.04] px-2.5 py-0.5 text-[11px] text-[var(--foreground)]">
       {children}
     </span>
   );
@@ -761,7 +884,7 @@ function Chip({ children }: { children: React.ReactNode }) {
 
 function MetaChip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border border-[var(--border-strong)] bg-white/[0.04] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
+    <span className="rounded-full border border-[var(--border-strong)] bg-[var(--foreground)]/[0.04] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
       {children}
     </span>
   );

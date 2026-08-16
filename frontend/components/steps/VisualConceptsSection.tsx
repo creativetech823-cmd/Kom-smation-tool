@@ -8,15 +8,7 @@ import { Lightbox } from "@/components/ui/Lightbox";
 import { ApiError, getVisualConceptDebugInfo, testVisualConceptImage, visualFileUrl } from "@/lib/api";
 import type { VisualConcept, VisualConceptDebugInfo, VisualConceptStyleParams, VisualVariationStyle } from "@/lib/types";
 
-const LOADING_STAGES = [
-  "Preparing Prompt…",
-  "Understanding Story…",
-  "Generating Concept 1…",
-  "Generating Concept 2…",
-  "Generating Concept 3…",
-  "Upscaling…",
-  "Done",
-];
+const LOADING_STAGES = ["Preparing Prompt…", "Understanding Story…", "Planning 3 Concepts…", "Done"];
 
 export function VisualConceptsSection({
   concepts,
@@ -31,6 +23,7 @@ export function VisualConceptsSection({
   onDownload,
   onToggleFavorite,
   onRetry,
+  onRetryOne,
 }: {
   concepts: VisualConcept[];
   loading: boolean;
@@ -44,6 +37,7 @@ export function VisualConceptsSection({
   onDownload: (id: string, format: "png" | "jpeg" | "webp") => void;
   onToggleFavorite: (id: string) => void;
   onRetry: () => void;
+  onRetryOne: (id: string) => void;
 }) {
   const [viewingId, setViewingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -71,6 +65,8 @@ export function VisualConceptsSection({
 
   const viewingConcept = concepts.find((c) => c.id === viewingId);
   const editingConcept = concepts.find((c) => c.id === editingId);
+  const completedCount = concepts.filter((c) => c.status === "completed").length;
+  const failedCount = concepts.filter((c) => c.status === "failed").length;
 
   async function handleTestImage() {
     setTestState("loading");
@@ -105,14 +101,14 @@ export function VisualConceptsSection({
     <Card glow>
       <CardHeader
         title="AI Visual Concepts"
-        subtitle="3 premium storyboard stills generated from your script — hook, emotional turn, and transformation."
+        subtitle="3 ready-to-publish ad creatives generated from your script — hook, emotional turn, and transformation — headline, copy, and CTA rendered directly in the image."
         icon={<IconImage />}
         right={
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleToggleDebug}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]"
               title="Config + connectivity diagnostics"
             >
               🔧 Debug Info
@@ -121,11 +117,11 @@ export function VisualConceptsSection({
               type="button"
               onClick={handleTestImage}
               disabled={testState === "loading"}
-              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--foreground)] hover:bg-white/[0.06] disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[11.5px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06] disabled:opacity-50"
               title="Isolates whether a failure is in the image pipeline itself"
             >
               {testState === "loading" ? (
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-[var(--accent)]" />
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--foreground)]/30 border-t-[var(--accent)]" />
               ) : (
                 "🧪"
               )}
@@ -135,40 +131,57 @@ export function VisualConceptsSection({
         }
       />
       <CardBody className="space-y-4">
-        {debugOpen && (
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/50 px-3.5 py-3 text-[12px] sm:grid-cols-3">
-            {debugLoading || !debugInfo ? (
-              <p className="col-span-full text-[var(--muted)]">{debugLoading ? "Loading debug info…" : "Debug info unavailable."}</p>
-            ) : (
-              <>
-                <DebugField label="API Key Loaded" value={debugInfo.api_key_loaded ? "YES" : "NO"} good={debugInfo.api_key_loaded} />
-                <DebugField label="Model" value={debugInfo.model} />
-                <DebugField label="API URL" value={debugInfo.api_url} />
-                <DebugField label="Internet Access" value={debugInfo.internet_access ? "OK" : "UNREACHABLE"} good={debugInfo.internet_access} />
-              </>
-            )}
+        {concepts.length > 0 && (
+          <div className="flex items-center gap-2 text-[12px] text-[var(--muted)]">
+            <span className={failedCount > 0 ? "text-[var(--danger)]" : completedCount === concepts.length ? "text-[var(--success)]" : ""}>
+              {completedCount === concepts.length
+                ? `✓ Production assets: ${completedCount}/${concepts.length} generated`
+                : `Production assets: ${completedCount}/${concepts.length} generated${failedCount > 0 ? ` · ${failedCount} failed` : ""}`}
+            </span>
           </div>
         )}
 
-        {testState !== "idle" && (
-          <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/50 px-3.5 py-3">
-            {testState === "loading" && <p className="text-[12px] text-[var(--muted)]">Generating test image…</p>}
-            {testState === "success" && testImagePath && (
-              <div className="flex items-center gap-3">
-                <img src={visualFileUrl(testImagePath)} alt="Test render" className="h-20 w-20 rounded-lg object-cover" />
-                <div>
-                  <p className="text-[12px] text-[var(--success)]">
-                    ✅ Test image generated successfully — the Gemini pipeline is working.
-                  </p>
-                  {testMeta && (
-                    <p className="mt-0.5 text-[11px] text-[var(--muted)]">
-                      Model: {testMeta.used_model} · Generation time: {testMeta.elapsed_seconds}s
-                    </p>
-                  )}
-                </div>
+        {(debugOpen || testState !== "idle") && (
+          <div className="space-y-3 rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--surface-2)]/30 px-3.5 py-3">
+            <p className="text-[10.5px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+              Developer Debug — not a production asset
+            </p>
+            {debugOpen && (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[12px] sm:grid-cols-3">
+                {debugLoading || !debugInfo ? (
+                  <p className="col-span-full text-[var(--muted)]">{debugLoading ? "Loading debug info…" : "Debug info unavailable."}</p>
+                ) : (
+                  <>
+                    <DebugField label="API Key Loaded" value={debugInfo.api_key_loaded ? "YES" : "NO"} good={debugInfo.api_key_loaded} />
+                    <DebugField label="Model" value={debugInfo.model} />
+                    <DebugField label="API URL" value={debugInfo.api_url} />
+                    <DebugField label="Internet Access" value={debugInfo.internet_access ? "OK" : "UNREACHABLE"} good={debugInfo.internet_access} />
+                  </>
+                )}
               </div>
             )}
-            {testState === "error" && <p className="text-[12px] text-[var(--danger)]">❌ Test failed: {testError}</p>}
+            {testState !== "idle" && (
+              <div className="border-t border-[var(--border)] pt-3">
+                {testState === "loading" && <p className="text-[12px] text-[var(--muted)]">Generating test image…</p>}
+                {testState === "success" && testImagePath && (
+                  <div className="flex items-center gap-3">
+                    <img src={visualFileUrl(testImagePath)} alt="Test render" className="h-20 w-20 rounded-lg object-cover" />
+                    <div>
+                      <p className="text-[12px] text-[var(--success)]">
+                        ✅ Test image generated successfully — the image generation pipeline is working. This is a
+                        diagnostic image only, not one of the 3 production assets above.
+                      </p>
+                      {testMeta && (
+                        <p className="mt-0.5 text-[11px] text-[var(--muted)]">
+                          Model: {testMeta.used_model} · Generation time: {testMeta.elapsed_seconds}s
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {testState === "error" && <p className="text-[12px] text-[var(--danger)]">❌ Test failed: {testError}</p>}
+              </div>
+            )}
           </div>
         )}
 
@@ -179,7 +192,7 @@ export function VisualConceptsSection({
             <button
               type="button"
               onClick={onRetry}
-              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[12.5px] font-medium text-white hover:brightness-110"
+              className="rounded-lg bg-[var(--accent)] px-4 py-2 text-[12.5px] font-medium text-[var(--on-accent)] hover:brightness-110"
             >
               ↻ Retry
             </button>
@@ -187,7 +200,7 @@ export function VisualConceptsSection({
         ) : loading && concepts.length === 0 ? (
           <div className="space-y-3">
             <p className="flex items-center gap-2 text-[12.5px] text-[var(--muted)]">
-              <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-[var(--accent)]" />
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--foreground)]/20 border-t-[var(--accent)]" />
               {LOADING_STAGES[loadingStage]}
             </p>
             <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
@@ -211,6 +224,7 @@ export function VisualConceptsSection({
                 onRegenerate={(variationStyle) => onRegenerate(concept.id, variationStyle)}
                 onGenerateVariation={(variationStyle) => onGenerateVariation(concept.id, variationStyle)}
                 onToggleFavorite={() => onToggleFavorite(concept.id)}
+                onRetry={() => onRetryOne(concept.id)}
               />
             ))}
           </div>

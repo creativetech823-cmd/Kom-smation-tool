@@ -2,7 +2,7 @@ import json
 
 from app.config import settings
 from app.models.product import AutoFillInput, AutoFillSuggestion
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 _SYSTEM_PROMPT = """You extract a first-draft product profile from raw scraped/extracted content
 (a fetched webpage, an uploaded document, etc.) BEFORE the user has entered anything about the
@@ -38,7 +38,7 @@ def suggest_product_fields(payload: AutoFillInput) -> AutoFillSuggestion:
     fields from raw extracted text, run before product_name/target_audience
     exist (structure_product requires those, so it can't do this job)."""
 
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_SYSTEM_PROMPT,
             # Kept well under large-request capacity tiers — big payloads
@@ -46,7 +46,7 @@ def suggest_product_fields(payload: AutoFillInput) -> AutoFillSuggestion:
             # errors during demand spikes that smaller requests sailed
             # through, even with retries.
             contents=[payload.raw_text[:20_000]],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=1536,
             json_mode=True,
         ),

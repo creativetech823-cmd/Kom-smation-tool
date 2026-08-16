@@ -3,15 +3,13 @@ import io
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Callable
 
 import requests
-from google.genai import errors as genai_errors
-from google.genai import types as genai_types
 from PIL import Image
 
 from app.config import settings
@@ -26,12 +24,11 @@ from app.models.product import (
     VisualConceptStyleParams,
 )
 from app.services.compliance_rules import rules_for_category
-from app.services.gemini_utils import (
-    call_gemini_with_retry,
-    classify_error,
+from app.services.openrouter_utils import (
+    call_openrouter_with_retry,
+    generate_image,
     generate_text,
-    get_gemini_client,
-    reset_gemini_client,
+    image_part,
 )
 
 logger = logging.getLogger("visual_concept_service")
@@ -47,7 +44,7 @@ def _4k_canvas_for(aspect_ratio: str) -> tuple[int, int]:
     resolution mechanism — a resize only happens if the native output doesn't
     already land exactly on this canvas."""
     try:
-        w_ratio, h_ratio = (int(x) for x in aspect_ratio.split(":"))
+        w_ratio, h_ratio = (float(x) for x in aspect_ratio.split(":"))
     except ValueError:
         w_ratio, h_ratio = 9, 16
     if w_ratio >= h_ratio:
@@ -85,36 +82,123 @@ _VARIATION_STYLE_DIRECTIVES: dict[str, str] = {
     "different_angle": "the exact same scene and subject, shot from a different camera angle and framing",
 }
 
-_SCENE_PLAN_SYSTEM_PROMPT = """You are an award-winning advertising creative director storyboarding
-a premium ad campaign — the visual quality bar of Apple, Nike, Coca-Cola, A24, Netflix, or Google
-Pixel campaigns. You are given a finished short-form ad script (hook, body, CTA), its persona,
-emotion, creative angle, target duration, target audience, brand tone, and category compliance
-rules. Create exactly 3 completely different image concepts for this campaign, in this order:
+_REALISM_DIRECTIVE = """REALISM & INDIAN CONTEXT (mandatory, applies to every generated image):
+- If a person appears, they must look realistically Indian — natural Indian facial features, skin
+  tones, hair, and body proportions — unless the concept explicitly calls for a different
+  nationality. Never stereotypical or exaggerated "Indian" features. People must look like real
+  photographs of real Indian people, NOT AI-generated characters: natural expressions, realistic
+  skin texture and visible pores, natural hair, hands, eyes, and anatomy. Avoid plastic-looking
+  skin, overly perfect symmetrical faces, distorted or extra-fingered hands, unnatural eyes, or
+  artificial proportions.
+- If the scene has a location (home, street, workplace, college, hospital, restaurant, shop, family
+  setting), make it authentically and contemporarily Indian where appropriate — realistic Indian
+  architecture, interiors, streets, vehicles, clothing, signage, and everyday objects, kept
+  believable and current rather than stereotypical.
+- Prioritize photorealism: this must look like professionally photographed commercial advertising
+  photography — realistic lighting, natural shadows, real depth of field, believable reflections and
+  materials, natural color grading. Never an illustration, 3D render, cartoon, CGI, or generic
+  AI-art look. Avoid excessive cinematic effects, glowing edges, neon lighting, unrealistic bokeh, or
+  artificial HDR unless explicitly requested.
+- If a product is shown, its shape, packaging, branding, logo, typography, colors, and proportions
+  must stay accurate to what's described or referenced — never invent or redesign the packaging;
+  product placement should look natural and premium.
+- If text is required in the image, it must be clean, correctly spelled, professionally positioned,
+  and visually integrated, with a clear hierarchy between headline, supporting copy, CTA, and
+  branding — never gibberish.
+- Avoid: cartoon, illustration, 3D render, CGI, plastic skin, deformed or extra-fingered hands,
+  warped anatomy, unnatural eyes, watermark, oversaturated colors, generic AI-art look.
+The final image should look like something a professional Indian advertising agency could actually
+publish directly in a social-media ad — photorealistic Indian commercial advertising photography,
+premium brand design, natural human appearance, authentic Indian context, professional art
+direction."""
 
-1. HOOK — the opening 3 seconds. Highest attention, scroll-stopping, cinematic lighting. Grounded
-   in the actual hook line and persona given below.
-2. MAIN SCENE — shows the product story and human emotion at the heart of the script's body.
-   Grounded in the actual body of the script. Real, specific facial expressions and body language.
-3. CTA — the product hero shot. Premium advertisement styling, brand colors, grounded in the
-   script's CTA/resolution. Hopeful, bright, premium.
+_AD_CREATIVE_DIRECTIVE = """FINAL AD CREATIVE MODE (mandatory — never a plain photograph):
+This request is for a finished advertisement, not a photograph. NEVER return a plain cinematic
+photograph, plain lifestyle photograph, plain product photograph, generic portrait, generic UGC
+photo, or any cinematic scene with no advertising design on it — a subject simply standing in an
+environment with no ad layout is a FAILED result, no matter how well-lit or photorealistic. If a
+design reference is supplied, treat it as the AD LAYOUT BLUEPRINT (headline placement, typography,
+CTA placement/styling, logo/badge placement, color palette, spacing, card/container treatment) —
+reproduce that design system around the new content, not just its photographic mood.
+Render any headline, supporting message, CTA, or branding called for directly INSIDE the image,
+using a real advertising hierarchy (brand/logo -> headline -> supporting message -> subject/
+product -> benefit -> CTA, using only the layers this concept actually needs). All on-image text
+must be exactly the real, correctly spelled copy specified in the prompt — never gibberish,
+placeholder text, or duplicated text — legible, high-contrast, properly spaced, and kept clear of
+faces, hands, and product labels.
+The result must look like a professionally designed paid-social advertisement that could be
+downloaded and posted directly to Instagram, Facebook, or Reels right now, with no further editing
+needed in Canva or Figma. Photorealism alone is not the goal — a beautiful photograph integrated
+into a finished, text-and-branding-complete advertising creative is the goal."""
+
+_SCENE_PLAN_SYSTEM_PROMPT = """You are an award-winning advertising creative director producing
+FINAL, COMPLETE, READY-TO-PUBLISH STATIC AD CREATIVES — the visual and design quality bar of
+Apple, Nike, Coca-Cola, A24, Netflix, or Google Pixel paid-social campaigns. You are given a
+finished short-form ad script (hook, body, CTA), its persona, emotion, creative angle, target
+duration, target audience, brand tone, product info, script language, and category compliance
+rules. Create exactly 3 completely different FINISHED AD CREATIVES for this campaign, in this
+order — NOT 5, exactly 3:
+
+1. HOOK / PROBLEM — the opening 3 seconds. Highest attention, scroll-stopping. Grounded in the
+   actual hook line and persona given below — the relatable situation/problem the script opens on.
+2. TURNING POINT / PRODUCT — the product story and human emotion at the heart of the script's
+   body: the moment the product enters the person's situation. Grounded in the actual body of the
+   script. Real, specific facial expressions and body language.
+3. OUTCOME / CTA — the product hero moment. Premium advertisement styling, brand colors, grounded
+   in the script's CTA/resolution. Hopeful, bright, premium.
+
+CRITICAL RULE — NEVER a plain photograph: each of the 3 is a COMPLETE AD CREATIVE, not a bare
+cinematic/lifestyle/product photograph. A beautiful photograph with no advertising design on it is
+a FAILED output, no matter how well-lit or well-composed it is. Every concept must read as a
+finished advertisement someone could download and post directly to Instagram/Facebook/Reels right
+now — headline, supporting copy, and CTA rendered directly inside the image using a real
+advertising hierarchy, not left for the user to add in Canva/Figma afterward. Not every concept
+needs every layer (brand/logo, headline, supporting message, CTA), but every concept must feel
+intentionally designed as an ad, never as a raw scene.
+
+AD COPY SOURCE (critical): the actual on-image headline/supporting-line/CTA wording you specify in
+each "prompt" must be adapted from the REAL script lines and product info given below — never
+invented generic ad-speak. Keep it short and punchy (a headline is a few words, not a sentence).
+Write this on-image copy in the script's actual language (see "Script language" below) — if it is
+Hinglish, write natural spoken Hinglish in Roman script (Hindi sentence structure, natural
+English code-switching, e.g. "Exam kal hai. Aaj raat sleep compromise mat karo." — never a stiff
+mechanical translation); if Hindi, natural Devanagari; if English, natural native-level English.
+
+REFERENCE-DESIGN NOTE: when reference images are supplied at generation time, they define the ad's
+LAYOUT and DESIGN SYSTEM (headline placement, typography, CTA styling, badge/logo placement,
+color palette, spacing, card treatment) — so write each "prompt" assuming that design language will
+be applied, describing WHAT text/copy/branding this specific concept needs and where it belongs in
+the hierarchy (brand/logo -> headline -> supporting message -> subject/product -> benefit -> CTA),
+not a from-scratch layout invention.
 
 For each of the 3, write:
 - "scene_title": a short evocative title
 - "scene_label": exactly "hook", "emotional", or "transformation" respectively (internal labels —
-  "emotional" means Main Scene, "transformation" means CTA/product hero shot)
-- "prompt": ONE rich, specific, photorealistic-commercial-ad prompt (120-200 words) built from ALL
-  of: the product, the target audience, the story, the selected creative angle, the script content,
-  brand tone, scene/setting, lighting, camera (lens/shot type), mood, color grading, composition,
-  and advertising style. Literally describe the subject(s), their expression/action, the setting/
-  props, and the shot itself. Concrete photography/production-quality language: cinematic lighting,
-  shallow depth of field, 85mm lens, studio color grading, ultra photorealistic, sharp focus,
-  natural skin texture, subtle film grain, premium commercial advertising photography, award-
-  winning commercial photography, ultra detailed. Must comply with the category compliance rules
-  given below — never depict anything those rules prohibit. Ground every detail in the ACTUAL
-  script, persona, and product given below — never generic stock-photo phrasing, never mention
-  text/logos/watermarks appearing in the image itself.
-- "negative_prompt": comma-separated list of things to avoid, e.g. "cartoon, illustration, plastic
-  skin, deformed hands, extra fingers, low quality, blurry, watermark, text, logo, oversaturated"
+  "hook" means Hook/Problem, "emotional" means Turning Point/Product, "transformation" means
+  Outcome/CTA)
+- "prompt": ONE rich, specific ad-creative prompt (120-220 words), detailed enough to hand directly
+  to an image-generation model with zero further interpretation, describing BOTH the photography
+  (subject(s) and their specific expression/action, props, lighting, camera/lens, mood, color
+  grading, composition) AND the advertising design layer (the exact headline text, supporting
+  copy, CTA text, and branding to render inside the image, and where each belongs). Concrete
+  photography/production-quality language: cinematic lighting, shallow depth of field, 85mm lens,
+  studio color grading, ultra photorealistic, sharp focus, natural skin texture, subtle film grain,
+  premium commercial advertising photography, ultra detailed — combined with concrete graphic-
+  design language: headline typography, CTA button/badge styling, logo placement, negative space,
+  text-to-image ratio. Must comply with the category compliance rules given below — never depict
+  or claim anything those rules prohibit. Ground every detail in the ACTUAL script, persona, and
+  product given below — never generic stock-photo phrasing (e.g. not "student studying", but the
+  specific late-night scene the script actually describes) and never gibberish/placeholder text —
+  every word of on-image copy must be real, spelled correctly, and mean something. Keep any
+  specified text placement away from faces, hands, and product labels. If the concept includes a
+  person, describe them as realistically Indian (natural Indian features, skin tone, hair, and
+  clothing appropriate to the context — never stereotypical) unless the product/brief genuinely
+  calls for a different nationality; if the concept includes a location, ground it in an authentic,
+  contemporary Indian setting (home, street, workplace, shop, etc.) with real Indian architecture,
+  interiors, and everyday detail, unless the brief says otherwise.
+- "negative_prompt": comma-separated list of things to avoid, e.g. "plain photograph with no ad
+  design, cartoon, illustration, plastic skin, deformed hands, extra fingers, low quality, blurry,
+  watermark, gibberish text, misspelled text, oversaturated"
 - "style", "lighting", "camera", "mood", "background", "characters", "composition": short (3-8
   word) fragments breaking the prompt's key creative choices into separate fields, for later manual
   re-editing by the user.
@@ -192,11 +276,13 @@ def _build_full_prompt(concept: VisualConcept) -> str:
     }
     extras = ". ".join(f"{k}: {v.strip()}" for k, v in extra_fields.items() if v.strip())
     base = concept.prompt.strip().rstrip(".")
-    return f"{base}. {extras}." if extras else f"{base}."
+    full = f"{base}. {extras}." if extras else f"{base}."
+    negative = sp.negative_prompt.strip()
+    return f"{full} Avoid: {negative}." if negative else full
 
 
 # ---------------------------------------------------------------------------
-# Gemini calls
+# OpenRouter calls
 # ---------------------------------------------------------------------------
 
 _image_cache: dict[str, tuple[bytes, str, float]] = {}
@@ -207,27 +293,137 @@ def _cache_key(mode: str, prompt_or_instruction: str, aspect_ratio: str, seed: i
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _extract_image_bytes(response: genai_types.GenerateContentResponse) -> bytes:
-    for candidate in response.candidates or []:
-        content = getattr(candidate, "content", None)
-        parts = getattr(content, "parts", None) if content else None
-        for part in parts or []:
-            inline = getattr(part, "inline_data", None)
-            if inline is not None and inline.data:
-                return inline.data
-    raise RuntimeError("Invalid response — Gemini didn't return an image (no inline image data in any candidate).")
+# ---------------------------------------------------------------------------
+# Reference-image conditioning — every fresh generation is grounded in
+# whatever image(s) sit in settings.references_dir (see references/README.md),
+# sent to Gemini as actual image input alongside the prompt, not just
+# described in text.
+# ---------------------------------------------------------------------------
+
+_REFERENCE_IMAGE_EXTENSIONS = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+
+
+def _references_dir() -> Path:
+    d = Path(settings.references_dir).resolve()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _natural_sort_key(path: Path) -> list:
+    """Numeric-aware sort so `i2.jpeg` sorts before `i11.jpeg` (plain string
+    sort would put i10-i19 before i2-i9)."""
+    return [int(chunk) if chunk.isdigit() else chunk.lower() for chunk in re.split(r"(\d+)", path.stem)]
+
+
+def _reference_paths() -> list[Path]:
+    """Filename sort order determines primary (first) vs. supporting
+    references — e.g. `01-hero.jpg`, `02-detail.jpg`."""
+    files = (p for p in _references_dir().iterdir() if p.is_file() and p.suffix.lower() in _REFERENCE_IMAGE_EXTENSIONS)
+    return sorted(files, key=_natural_sort_key)
+
+
+def _load_reference_images() -> list[bytes]:
+    return [p.read_bytes() for p in _reference_paths()]
+
+
+def _references_signature() -> str:
+    """Cheap fingerprint (paths + mtimes, no content hashing) of the
+    references folder's current contents, so swapping reference images
+    invalidates the image cache instead of silently reusing a stale render."""
+    sig = "|".join(f"{p.name}:{p.stat().st_mtime_ns}" for p in _reference_paths())
+    return hashlib.sha256(sig.encode("utf-8")).hexdigest()[:16]
+
+
+def _build_reference_conditioned_prompt(new_request: str, reference_count: int) -> str:
+    multi_note = (
+        "\nMultiple reference images are attached — use the first as the primary reference for "
+        "layout and overall design direction; treat the rest as supporting references for specific "
+        "characteristics only. Do not randomly mix unrelated elements between them."
+        if reference_count > 1
+        else ""
+    )
+    return f"""REFERENCE IMAGE — DESIGN BLUEPRINT (not just photographic inspiration):
+The attached image is the primary design reference. Analyze it carefully before generating the
+image.{multi_note}
+
+The reference(s) are finished advertising creatives. They define the expected FINAL OUTPUT FORMAT,
+DESIGN LANGUAGE, COMPOSITION, TYPOGRAPHY, INFORMATION HIERARCHY, AND AD STRUCTURE for the new
+image — not merely a photographic mood board. Do NOT simply copy the reference's photographic
+subject (its specific people, product, or scene). DO reproduce its design system on the NEW
+story/product content described in NEW REQUEST below.
+
+EXTRACT AND REPRODUCE from the reference:
+Overall advertising layout, text placement, headline hierarchy, typography style, CTA placement
+and styling, brand/logo placement, badges, labels, visual hierarchy, image-to-text ratio, negative
+space, card/container treatment, borders, shadows, gradients, color palette, composition, spacing,
+and the general premium social-media-ad structure.
+
+If the reference is a finished static advertisement containing IMAGE + HEADLINE + SUPPORTING TEXT
++ CTA + BRANDING, the generated result must also contain IMAGE + HEADLINE + SUPPORTING TEXT + CTA
++ BRANDING, applied to the new concept — it must NOT collapse down to just a bare image with no ad
+design on it. Any on-image text must be exactly the wording specified in NEW REQUEST — real,
+correctly spelled advertising copy, never gibberish, placeholder text, or a copy of the reference's
+own wording.
+
+NEW REQUEST:
+{new_request}
+
+MODIFICATIONS:
+Apply the new story/product content and any copy specified above within the reference's design
+system. Keep the layout, typography, and structural design language consistent with the reference
+wherever this new concept's content allows.
+
+VISUAL CONSISTENCY:
+The final image should look as if it was designed by the same art director / ad agency that
+created the reference image — same design system, new campaign content.
+
+QUALITY:
+Generate a highly detailed, polished, photorealistic, commercially usable finished advertisement
+with realistic lighting, natural materials, accurate proportions, clean edges, high-quality
+textures, and legible, correctly spelled, well-hierarchized typography.
+
+IMPORTANT:
+Do not output a plain photograph with no advertising design on it — that is a failed result
+regardless of photographic quality. Do not ignore the reference's design system. Do not
+unnecessarily change the layout, typography treatment, or overall design language it establishes."""
+
+
+def _aspect_instruction(aspect_ratio: str, image_size: str) -> str:
+    """OpenRouter's chat-completions image endpoint has no dedicated aspect
+    ratio / resolution config (unlike Gemini's native ImageConfig) — folded
+    into the prompt text instead."""
+    resolution = (
+        "the highest available native resolution — target 4K, at least 3840px on the long edge"
+        if image_size == _IMAGE_SIZE_DOWNLOAD
+        else "high native resolution"
+    )
+    return (
+        f"\n\nRender this image in a strict {aspect_ratio} aspect ratio, at {resolution}. Fill "
+        "the entire frame — no borders, letterboxing, or padding."
+    )
 
 
 def _generate_image(prompt: str, aspect_ratio: str, seed: int | None = None, image_size: str = _IMAGE_SIZE_PREVIEW) -> tuple[bytes, str, float]:
     t0 = time.time()
-    config = genai_types.GenerateContentConfig(
-        response_modalities=["IMAGE"],
-        image_config=genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
-        seed=seed,
+    reference_images = _load_reference_images()
+    base_prompt = (
+        _build_reference_conditioned_prompt(prompt, len(reference_images)) if reference_images else prompt
     )
-    response = get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=[prompt], config=config)
-    data = _extract_image_bytes(response)
-    return data, settings.gemini_image_model, time.time() - t0
+    full_prompt = (
+        base_prompt
+        + _aspect_instruction(aspect_ratio, image_size)
+        + "\n\n"
+        + _AD_CREATIVE_DIRECTIVE
+        + "\n\n"
+        + _REALISM_DIRECTIVE
+    )
+    data = generate_image(
+        full_prompt,
+        model=settings.openrouter_image_model,
+        seed=seed,
+        reference_images=reference_images or None,
+    )
+    return data, settings.openrouter_image_model, time.time() - t0
 
 
 def _edit_image(image_bytes: bytes, instruction: str, aspect_ratio: str, image_size: str = _IMAGE_SIZE_PREVIEW) -> tuple[bytes, str, float]:
@@ -236,59 +432,25 @@ def _edit_image(image_bytes: bytes, instruction: str, aspect_ratio: str, image_s
     Generate Different Angle, so edits actually preserve the rest of the
     scene instead of regenerating a whole new one from scratch."""
     t0 = time.time()
-    config = genai_types.GenerateContentConfig(
-        response_modalities=["IMAGE"],
-        image_config=genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size),
+    full_instruction = (
+        instruction
+        + _aspect_instruction(aspect_ratio, image_size)
+        + "\n\n"
+        + _AD_CREATIVE_DIRECTIVE
+        + "\n\n"
+        + _REALISM_DIRECTIVE
     )
-    contents = [instruction, genai_types.Part.from_bytes(data=image_bytes, mime_type="image/png")]
-    response = get_gemini_client().models.generate_content(model=settings.gemini_image_model, contents=contents, config=config)
-    data = _extract_image_bytes(response)
-    return data, settings.gemini_image_model, time.time() - t0
-
-
-def _call_with_retry(fn: Callable[[], tuple[bytes, str, float]], *, label: str, max_attempts: int = 3) -> tuple[bytes, str, float]:
-    """Retries transient failures (quota/server/timeout) with backoff before
-    giving up. The user only ever sees an error after every attempt fails."""
-    last_error: Exception | None = None
-    t_start = time.time()
-    attempt = 0
-    for attempt in range(1, max_attempts + 1):
-        logger.info("[%s] Calling Gemini (attempt %d/%d) model=%s", label, attempt, max_attempts, settings.gemini_image_model)
-        t0 = time.time()
-        try:
-            data, model, _elapsed = fn()
-            logger.info("[%s] Status: success — model=%s bytes=%d response_time=%.1fs", label, model, len(data), time.time() - t0)
-            return data, model, time.time() - t_start
-        except Exception as e:
-            last_error = e
-            code = getattr(e, "code", None)
-            logger.warning(
-                "[%s] Status: failed — attempt=%d code=%s response_time=%.1fs error=%s",
-                label, attempt, code, time.time() - t0, e,
-            )
-            message = str(e).lower()
-            client_closed = "client has been closed" in message
-            transient = code in (429, 500, 502, 503) or "timeout" in message or client_closed
-            if not transient or attempt == max_attempts:
-                break
-            if client_closed:
-                reset_gemini_client()
-            time.sleep(min(2**attempt, 8))
-
-    reason = classify_error(last_error)
-    if attempt > 1:
-        reason = f"Retry failed after {attempt} attempts. {reason}"
-    logger.error("[%s] All attempts failed. Final reason: %s", label, reason)
-    raise RuntimeError(reason)
+    data = generate_image(full_instruction, model=settings.openrouter_image_model, reference_images=[image_bytes])
+    return data, settings.openrouter_image_model, time.time() - t0
 
 
 def _generate_cached(prompt: str, aspect_ratio: str, seed: int | None, label: str) -> tuple[bytes, str, float]:
-    key = _cache_key("gen", prompt, aspect_ratio, seed)
+    key = _cache_key("gen", prompt, aspect_ratio, seed, _references_signature())
     cached = _image_cache.get(key)
     if cached:
-        logger.info("[%s] Cache hit — reusing existing image, no Gemini call.", label)
+        logger.info("[%s] Cache hit — reusing existing image, no OpenRouter call.", label)
         return cached
-    result = _call_with_retry(lambda: _generate_image(prompt, aspect_ratio, seed), label=label)
+    result = call_openrouter_with_retry(lambda: _generate_image(prompt, aspect_ratio, seed), label=label)
     _image_cache[key] = result
     return result
 
@@ -298,9 +460,9 @@ def _edit_cached(image_bytes: bytes, instruction: str, aspect_ratio: str, label:
     key = _cache_key("edit", instruction, aspect_ratio, None, image_hash)
     cached = _image_cache.get(key)
     if cached:
-        logger.info("[%s] Cache hit — reusing existing image, no Gemini call.", label)
+        logger.info("[%s] Cache hit — reusing existing image, no OpenRouter call.", label)
         return cached
-    result = _call_with_retry(lambda: _edit_image(image_bytes, instruction, aspect_ratio), label=label)
+    result = call_openrouter_with_retry(lambda: _edit_image(image_bytes, instruction, aspect_ratio), label=label)
     _image_cache[key] = result
     return result
 
@@ -321,26 +483,30 @@ def _build_plan_user_message(payload: VisualConceptsInput) -> str:
     rules = rules_for_category(payload.product_category or p.industry or "general")
     rules_block = "\n".join(f"- {r}" for r in rules)
     return (
-        f"Product: {p.product_name}\n"
+        f"Product / brand name: {p.product_name}\n"
         f"USP: {p.usp or 'unknown'}\n"
+        f"Key benefits: {', '.join(p.key_benefits) or 'unknown'}\n"
         f"Target audience: {p.target_audience}\n"
         f"Brand tone: {p.tone or 'unspecified'}\n"
         f"Story persona: {s.persona}\n"
         f"Emotion: {s.emotion}\n"
         f"Creative angle: {payload.creative_angle or 'none specified'}\n"
-        f"Target duration: {payload.script.target_duration or s.estimated_length or 'unspecified'}\n\n"
-        f"Category compliance rules (do not depict anything these prohibit):\n{rules_block}\n\n"
-        f"Full script:\n{_flatten_script_text(payload.script)}"
+        f"Target duration: {payload.script.target_duration or s.estimated_length or 'unspecified'}\n"
+        f"Script language (write all on-image ad copy natively in this register): "
+        f"{payload.script.script_language.value}\n\n"
+        f"Category compliance rules (do not depict or claim anything these prohibit):\n{rules_block}\n\n"
+        f"Full script (source the on-image headline/copy/CTA wording from these actual lines, "
+        f"adapted and shortened for an image, not invented):\n{_flatten_script_text(payload.script)}"
     )
 
 
 def plan_visual_concepts(payload: VisualConceptsInput) -> list[VisualConcept]:
     logger.info("Preparing prompt... understanding story — product=%s situation=%s", payload.structured_product.product_name, payload.situation.title)
-    text = call_gemini_with_retry(
+    text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_SCENE_PLAN_SYSTEM_PROMPT,
             contents=[_build_plan_user_message(payload)],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=6144,
             json_mode=True,
         ),
@@ -394,13 +560,16 @@ def _render_concept(concept: VisualConcept) -> VisualConcept:
     concept.resolution = _image_dims(data)
     concept.generation_time_seconds = round(elapsed, 1)
     concept.used_model = model
+    concept.status = "completed"
+    concept.error = None
     logger.info("[%s] Saved successfully. -> %s", label, concept.image_path)
     return concept
 
 
 def generate_visual_concepts(payload: VisualConceptsInput) -> VisualConceptsResult:
     """Storyboard section — plan 3 distinct scene concepts from the finished
-    script, then render all 3 concurrently (each Gemini call is blocking)."""
+    script, then render all 3 concurrently (each OpenRouter call is
+    blocking)."""
     concepts = plan_visual_concepts(payload)
     with ThreadPoolExecutor(max_workers=3) as executor:
         rendered = list(executor.map(_render_concept, concepts))
@@ -441,6 +610,8 @@ def regenerate_visual_concept(payload: VisualConceptRegenerateInput) -> VisualCo
     concept.generation_time_seconds = round(elapsed, 1)
     concept.used_model = model
     concept.scores = None
+    concept.status = "completed"
+    concept.error = None
     if payload.as_new_variation:
         concept.id = uuid.uuid4().hex[:10]
     logger.info("[%s] Saved successfully. -> %s", label, concept.image_path)
@@ -457,14 +628,14 @@ def score_visual_concept(payload: VisualConceptScoreInput) -> VisualConceptScore
     media_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
 
     try:
-        text = call_gemini_with_retry(
+        text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_SCORE_SYSTEM_PROMPT,
                 contents=[
                     f"Intended prompt: {concept.prompt}",
-                    genai_types.Part.from_bytes(data=path.read_bytes(), mime_type=media_type),
+                    image_part(path.read_bytes(), media_type),
                 ],
-                model=settings.gemini_text_model,
+                model=settings.openrouter_text_model,
                 max_output_tokens=1024,
                 json_mode=True,
             ),
@@ -482,7 +653,7 @@ def render_download(payload: VisualConceptDownloadInput) -> str:
     native output doesn't already land exactly on the target canvas."""
     concept = payload.concept
     prompt = _build_full_prompt(concept)
-    data, _model, _elapsed = _call_with_retry(
+    data, _model, _elapsed = call_openrouter_with_retry(
         lambda: _generate_image(prompt, concept.aspect_ratio, seed=concept.seed, image_size=_IMAGE_SIZE_DOWNLOAD),
         label="download",
     )
@@ -500,16 +671,16 @@ def render_download(payload: VisualConceptDownloadInput) -> str:
 
 
 def generate_test_image() -> dict:
-    """Diagnostic — isolates whether a failure is in the Gemini pipeline
-    itself or in the script-to-image flow around it. Fixed, simple prompt so
-    results are comparable across runs."""
+    """Diagnostic — isolates whether a failure is in the OpenRouter image
+    pipeline itself or in the script-to-image flow around it. Fixed, simple
+    prompt so results are comparable across runs."""
     prompt = "A photorealistic apple on a wooden table, cinematic lighting."
     logger.info(
         "[test] API Key Loaded: %s | Model: %s",
-        "YES" if settings.gemini_api_key else "NO",
-        settings.gemini_image_model,
+        "YES" if settings.openrouter_api_key else "NO",
+        settings.openrouter_image_model,
     )
-    data, model, elapsed = _call_with_retry(lambda: _generate_image(prompt, "1:1"), label="test")
+    data, model, elapsed = call_openrouter_with_retry(lambda: _generate_image(prompt, "1:1"), label="test")
     path = _save_bytes(data)
     logger.info("[test] Saved successfully. -> %s", path)
     return {"image_path": path, "used_model": model, "elapsed_seconds": round(elapsed, 1)}
@@ -517,16 +688,16 @@ def generate_test_image() -> dict:
 
 def get_debug_info() -> dict:
     """Static config + a real connectivity check — fast, no image generation."""
-    api_key_loaded = bool(settings.gemini_api_key)
+    api_key_loaded = bool(settings.openrouter_api_key)
     internet_access = False
     try:
-        resp = requests.head("https://generativelanguage.googleapis.com", timeout=5)
+        resp = requests.head("https://openrouter.ai/api/v1/models", timeout=5)
         internet_access = resp.status_code < 500
     except Exception as e:
         logger.warning("[debug] Connectivity check failed: %s", e)
     return {
         "api_key_loaded": api_key_loaded,
-        "model": settings.gemini_image_model,
-        "api_url": "https://generativelanguage.googleapis.com",
+        "model": settings.openrouter_image_model,
+        "api_url": "https://openrouter.ai/api/v1",
         "internet_access": internet_access,
     }

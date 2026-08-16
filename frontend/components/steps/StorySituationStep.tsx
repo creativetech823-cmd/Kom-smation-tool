@@ -318,7 +318,7 @@ function SituationCard({
       variants={cardVariants}
       exit="exit"
       className={cn(
-        "relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)]/80 p-4 backdrop-blur-xl transition-colors",
+        "relative overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 transition-colors",
         isCardActive ? "border-[var(--accent)] bg-[var(--accent-soft)]" : "hover:border-[var(--accent)]/40",
         isDisabled && "pointer-events-none opacity-50"
       )}
@@ -360,12 +360,12 @@ function SituationCard({
                 onClick={() => onSelectAngle(situation, angle)}
                 className={cn(
                   "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed",
-                  chipActive ? "scale-105 border-transparent text-white" : "border-[var(--border-strong)] bg-white/[0.03] hover:border-current"
+                  chipActive ? "scale-105 border-transparent text-white" : "border-[var(--border-strong)] bg-[var(--foreground)]/[0.03] hover:border-current"
                 )}
                 style={chipActive ? { background: accent } : { color: accent }}
               >
                 {chipActive ? (
-                  <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-[var(--on-accent)]/40 border-t-[var(--on-accent)]" />
                 ) : (
                   <span>{angleEmoji(angle)}</span>
                 )}
@@ -408,10 +408,10 @@ function SituationCard({
             <button
               type="submit"
               disabled={!customText.trim() || isDisabled}
-              className="flex h-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-3 text-[12px] font-medium text-white disabled:opacity-40"
+              className="flex h-8 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] px-3 text-[12px] font-medium text-[var(--on-accent)] disabled:opacity-40"
             >
               {isCustomActive ? (
-                <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--on-accent)]/40 border-t-[var(--on-accent)]" />
               ) : (
                 "Generate"
               )}
@@ -425,7 +425,7 @@ function SituationCard({
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="rounded-full border border-[var(--border)] bg-white/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
+    <span className="rounded-full border border-[var(--border)] bg-[var(--foreground)]/[0.03] px-2.5 py-0.5 text-[11px] text-[var(--muted)]">
       {children}
     </span>
   );

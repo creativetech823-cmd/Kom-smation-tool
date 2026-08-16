@@ -107,17 +107,17 @@ export function AiRewriteMenu({
         onClick={() => setOpen((o) => !o)}
         title="AI rewrite"
         disabled={loading}
-        className="rounded p-0.5 text-[12px] hover:bg-white/[0.08] disabled:opacity-40"
+        className="rounded p-0.5 text-[12px] hover:bg-[var(--foreground)]/[0.08] disabled:opacity-40"
       >
         {loading ? (
-          <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/30 border-t-[var(--accent)]" />
+          <span className="inline-block h-2.5 w-2.5 animate-spin rounded-full border-2 border-[var(--foreground)]/30 border-t-[var(--accent)]" />
         ) : (
           "✨"
         )}
       </button>
 
       {open && (
-        <div className="absolute left-0 top-full z-30 mt-1.5 max-h-80 w-60 overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]">
+        <div className="absolute left-0 top-full z-30 mt-1.5 max-h-80 w-60 overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_var(--shadow-color)]">
           {view === "menu" && (
             <>
               {CATEGORIES.map((cat) => (
@@ -133,7 +133,7 @@ export function AiRewriteMenu({
                         setOpen(false);
                         onApplyDirective?.(item.directive);
                       }}
-                      className="block w-full px-3 py-1.5 text-left text-[12px] text-[var(--foreground)] transition-colors hover:bg-white/[0.06]"
+                      className="block w-full px-3 py-1.5 text-left text-[12px] text-[var(--foreground)] transition-colors hover:bg-[var(--foreground)]/[0.06]"
                     >
                       {item.label}
                     </button>
@@ -144,7 +144,7 @@ export function AiRewriteMenu({
                 <button
                   type="button"
                   onClick={handleGenerateAlternatives}
-                  className="block w-full border-b border-[var(--border)] px-3 py-2 text-left text-[12px] font-medium text-[var(--accent-2)] hover:bg-white/[0.06]"
+                  className="block w-full border-b border-[var(--border)] px-3 py-2 text-left text-[12px] font-medium text-[var(--accent-2)] hover:bg-[var(--foreground)]/[0.06]"
                 >
                   🎲 Generate 5 Alternatives
                 </button>
@@ -153,7 +153,7 @@ export function AiRewriteMenu({
                 <button
                   type="button"
                   onClick={() => setView("translate")}
-                  className="block w-full px-3 py-2 text-left text-[12px] font-medium text-[var(--accent-2)] hover:bg-white/[0.06]"
+                  className="block w-full px-3 py-2 text-left text-[12px] font-medium text-[var(--accent-2)] hover:bg-[var(--foreground)]/[0.06]"
                 >
                   🌐 Translate
                 </button>
@@ -172,7 +172,7 @@ export function AiRewriteMenu({
               </button>
               {altLoading ? (
                 <div className="flex items-center gap-2 px-1 py-3 text-[12px] text-[var(--muted)]">
-                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-[var(--accent)]" />
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--foreground)]/30 border-t-[var(--accent)]" />
                   Generating…
                 </div>
               ) : (
@@ -186,7 +186,7 @@ export function AiRewriteMenu({
                         setView("menu");
                         onSelectAlternative?.(alt);
                       }}
-                      className="block w-full rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-left text-[11.5px] text-[var(--foreground)] hover:border-[var(--accent)]/40 hover:bg-white/[0.05]"
+                      className="block w-full rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-left text-[11.5px] text-[var(--foreground)] hover:border-[var(--accent)]/40 hover:bg-[var(--foreground)]/[0.05]"
                     >
                       {alt}
                     </button>
@@ -215,7 +215,7 @@ export function AiRewriteMenu({
                       setView("menu");
                       onTranslate?.(lang);
                     }}
-                    className="block w-full rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-left text-[12px] text-[var(--foreground)] hover:border-[var(--accent)]/40 hover:bg-white/[0.05]"
+                    className="block w-full rounded-lg border border-[var(--border)] px-2.5 py-1.5 text-left text-[12px] text-[var(--foreground)] hover:border-[var(--accent)]/40 hover:bg-[var(--foreground)]/[0.05]"
                   >
                     {LANGUAGE_LABEL[lang]}
                   </button>

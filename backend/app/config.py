@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     gemini_text_model: str = "gemini-flash-latest"
     visuals_output_dir: str = "./visuals"
 
+    openrouter_api_key: str = ""
+    openrouter_text_model: str = ""
+    openrouter_image_model: str = ""
+    references_dir: str = "./references"
+
     max_reference_upload_mb: int = 30
     jina_reader_timeout_seconds: int = 25
 

@@ -14,7 +14,7 @@ from app.models.product import (
 )
 from app.services import script_length
 from app.services.compliance_rules import rules_for_category
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
 logger = logging.getLogger("script_service")
 
@@ -24,7 +24,10 @@ _SECTION_PROSE: dict[str, str] = {
     "hook": (
         'Hook ("hook" field, section "hook") — a very strong attention-grabbing open: a question, '
         "a shocking fact, a fear, a POV moment, a snippet of conversation, curiosity, or a "
-        "contradiction."
+        "contradiction. It must be SPECIFIC to this exact situation/persona, never a generic "
+        'template opener — avoid worn-out openers like "Are you tired of...", "Introducing...", '
+        '"Did you know...", "In today\'s world..." unless you can make the specific wording genuinely '
+        "surprising. A real viewer should not be able to guess what ad this hook is for."
     ),
     "problem": (
         'Problem (section "problem") — the user\'s pain, in their own words/frame. Do not mention '
@@ -118,6 +121,29 @@ fields:
 Also produce one top-level "bgm_suggestion": a short direction for background music (mood/genre/
 tempo) that fits the situation's emotional arc across the whole ad."""
 
+_CORE_PRINCIPLES_BLOCK = """CORE WRITING PRINCIPLES (non-negotiable):
+- Write like a human copywriter who actually gets this audience, not like an AI. Never use
+  corporate/AI-ish filler ("in today's fast-paced world", "unlock the power of", "game-changer",
+  "revolutionize", "elevate your", "unleash", "seamlessly", "journey to a better you"). If a line
+  could appear in literally any ad for any product, rewrite it until it couldn't.
+- Follow a real narrative arc for this exact story situation — do NOT default to a generic
+  Problem -> Product -> Benefits -> CTA template. Let the persona, emotion, and marketing angle
+  given to you dictate the actual shape of the story; some situations open mid-scene, some open on
+  a feeling, some open on someone else's voice. The structure beats above are the scaffolding, not
+  a fill-in-the-blanks form.
+- Use ONLY the product info you were actually given below (ingredients, doses, USP, benefits). Never
+  invent a certification, clinical study, statistic, doctor endorsement, or ingredient/dose that
+  wasn't provided — if something is missing, write around it generically instead of making it up.
+- Write specifically for the given target audience — their real vocabulary, daily context, and
+  concerns — not a generic "everyone" voice.
+- Stay strictly inside the given persona, emotion, and marketing angle of the chosen story situation
+  throughout every beat; don't let the script drift into a different, more generic angle halfway
+  through.
+- Make every visual beat concrete and photographable (a real scene, action, or object), never an
+  abstract mood description that a camera or an image generator couldn't actually shoot.
+Before finalizing, silently check your own output against every rule above and the language rule
+below — fix anything that fails before returning."""
+
 _JSON_SAFETY_BLOCK = """JSON SAFETY (strictly enforced): return ONLY a single valid JSON object, no
 prose before or after, no markdown code fences. Every string value must have its double quotes
 escaped as \\" and its line breaks escaped as \\n — never emit a raw, unescaped newline or double
@@ -146,6 +172,8 @@ def _system_prompt(bucket: str) -> str:
         + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
         "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
         "write generically rather than inventing specifics.\n\n"
+        + _CORE_PRINCIPLES_BLOCK
+        + "\n\n"
         + _JSON_SAFETY_BLOCK
         + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
         + _SCRIPT_JSON_SHAPE
@@ -227,6 +255,8 @@ def _regen_system_prompt(scope: ScriptRegenerateScope, custom_instruction: str =
         + "\n\n"
         + _FIELDS_BLOCK
         + "\n\n"
+        + _CORE_PRINCIPLES_BLOCK
+        + "\n\n"
         + _JSON_SAFETY_BLOCK
         + "\n\nReturn the COMPLETE script (all blocks, changed and unchanged) as ONE valid JSON "
         "object, matching this exact shape:\n"
@@ -257,6 +287,16 @@ def _angle_block(creative_angle: str) -> str:
     )
 
 
+def _hook_block(selected_hook_text: str) -> str:
+    if not selected_hook_text:
+        return ""
+    return (
+        f"\nSELECTED HOOK LINE (mandatory) — open the \"hook\" block with this exact line, or a "
+        f"light, faithful adaptation of it (translated/localized into the script's language if "
+        f"needed) that keeps its core wording and structure: \"{selected_hook_text}\"\n"
+    )
+
+
 _VOICE_STRUCTURE_GUIDE = """
 Write like a native Hindi-speaking D2C copywriter, not a translator — the way real ad scripts for
 brands like this actually sound. Structurally (regardless of script):
@@ -271,6 +311,13 @@ brands like this actually sound. Structurally (regardless of script):
   than a generic "buy now."
 """
 
+_NO_TRANSLATION_NOTE = (
+    "Write directly and natively in this language/register from the first draft — do NOT compose the "
+    "script in English and then translate it. A translated line always reads stiff and gives itself "
+    "away; a native line uses the sentence rhythm, idiom, and word choices a real Indian speaker of "
+    "this register would reach for unprompted.\n"
+)
+
 _LANGUAGE_BLOCKS: dict[ScriptLanguage, str] = {
     ScriptLanguage.english: "",
     ScriptLanguage.hindi: (
@@ -282,16 +329,24 @@ _LANGUAGE_BLOCKS: dict[ScriptLanguage, str] = {
         "natural conversational spoken Hindi a voiceover artist would say, not a stiff formal "
         "translation. Example of the register (not the content) — a line should look like this shape: "
         "\"क्या आपको भी लगता है कि यह सिर्फ एक ट्रेंड है?\" and an ingredient beat like "
-        "\"**अश्वगंधा — 250 mg**, जो तनाव को नियंत्रित करने में मदद करता है।\"\n" + _VOICE_STRUCTURE_GUIDE
+        "\"**अश्वगंधा — 250 mg**, जो तनाव को नियंत्रित करने में मदद करता है।\"\n"
+        + _NO_TRANSLATION_NOTE
+        + _VOICE_STRUCTURE_GUIDE
     ),
     ScriptLanguage.hinglish: (
-        "\nSCRIPT LANGUAGE (mandatory): Write every \"text\" field in natural spoken Hinglish — Hindi "
-        "sentence structure and vocabulary in ROMAN (Latin) script, code-switching to English for words "
-        "that Indian audiences naturally say in English (e.g. \"stress\", \"routine\", \"habit\", "
-        "\"cycle\", \"support\"). This is NOT English text with a few Hindi words sprinkled in — the "
-        "sentence structure itself must be Hindi. Example of the register (not the content): \"Kabhi "
-        "socha hai ki yeh sirf ek trend hai?\" and an ingredient beat like \"**Ashwagandha — 250 mg**, "
-        "jo stress ko manage karne mein support karta hai.\"\n" + _VOICE_STRUCTURE_GUIDE
+        "\nSCRIPT LANGUAGE (mandatory — this is the default voice of the whole pipeline): Write every "
+        "\"text\" field in natural spoken Hinglish, the way an urban Indian actually talks day to day — "
+        "Hindi sentence structure and vocabulary in ROMAN (Latin) script, code-switching to English for "
+        "words that Indian audiences naturally say in English (e.g. \"stress\", \"routine\", \"habit\", "
+        "\"cycle\", \"support\", \"confidence\"). This is NOT English text with a few Hindi words "
+        "sprinkled in — the sentence structure itself must be Hindi. There is no fixed ratio of "
+        "Hindi-to-English words — let it land wherever sounds natural for this specific line, the same "
+        "way a real person code-switches without thinking about it; some lines may lean almost fully "
+        "Hindi, others may lean more English, and that variation is correct, not a mistake. Example of "
+        "the register (not the content): \"Kabhi socha hai ki yeh sirf ek trend hai?\" and an ingredient "
+        "beat like \"**Ashwagandha — 250 mg**, jo stress ko manage karne mein support karta hai.\"\n"
+        + _NO_TRANSLATION_NOTE
+        + _VOICE_STRUCTURE_GUIDE
     ),
 }
 
@@ -332,6 +387,7 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         f"Persona: {s.persona}\n"
         f"Marketing angle: {s.marketing_angle}\n"
         f"Category: {s.category}\n"
+        f"{_hook_block(getattr(payload, 'selected_hook_text', ''))}"
         f"{_angle_block(payload.creative_angle)}"
         f"{_language_block(payload.script_language)}\n"
         f"{script_length.length_directive(target_duration, target_word_count, current_word_count)}"
@@ -350,11 +406,11 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
 
 
 def _call_llm(system: str, user_message: str, max_tokens: int) -> str:
-    return call_gemini_with_retry(
+    return call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=system,
             contents=[user_message],
-            model=settings.gemini_text_model,
+            model=settings.openrouter_text_model,
             max_output_tokens=max_tokens,
             json_mode=True,
         ),

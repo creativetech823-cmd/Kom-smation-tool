@@ -24,11 +24,13 @@ from app.models.product import (
     RenderResult,
     RewriteLineInput,
     RewriteLineResult,
+    ScriptCommandInput,
+    ScriptCommandResult,
     ScriptGenerationInput,
     ScriptSectionRegenerateInput,
     ScriptSuggestionsInput,
-    ScriptSuggestionsResult,
     SelectedAsset,
+    SmartScriptSuggestionsResult,
     SourceType,
     StorySituationsInput,
     StorySituationsResult,
@@ -59,6 +61,7 @@ from app.services.motion_service import generate_motion_clip
 from app.services.render_service import render_video
 from app.services.rewrite_service import rewrite_line
 from app.services.script_alternatives_service import generate_alternatives
+from app.services.script_command_service import run_script_command
 from app.services.script_service import generate_script, regenerate_script_section
 from app.services.script_suggestions_service import suggest_script_improvements
 from app.services.story_situation_service import generate_situations
@@ -67,6 +70,7 @@ from app.services.visual_concept_service import (
     generate_test_image,
     generate_visual_concepts,
     get_debug_info,
+    plan_visual_concepts,
     regenerate_visual_concept,
     render_download,
     score_visual_concept,
@@ -274,25 +278,56 @@ def generate_alternatives_endpoint(payload: RewriteLineInput) -> GenerateAlterna
         raise HTTPException(502, f"Couldn't generate alternatives: {e}")
 
 
-@router.post("/script-suggestions", response_model=ScriptSuggestionsResult)
-def script_suggestions_endpoint(payload: ScriptSuggestionsInput) -> ScriptSuggestionsResult:
-    """On-demand AI critique pass — a handful of concrete improvement suggestions."""
+@router.post("/script-suggestions", response_model=SmartScriptSuggestionsResult)
+def script_suggestions_endpoint(payload: ScriptSuggestionsInput) -> SmartScriptSuggestionsResult:
+    """AI Suggestions panel — a handful of concrete, ready-to-apply improvement cards, grounded in
+    the actual script."""
     try:
-        return suggest_script_improvements(payload.script, payload.target_duration)
+        return suggest_script_improvements(payload.script, payload.target_duration, payload.structured_product)
     except Exception as e:
         logger.exception("Unhandled error in suggest_script_improvements")
         raise HTTPException(502, f"Couldn't get suggestions: {e}")
 
 
+@router.post("/script-command", response_model=ScriptCommandResult)
+def script_command_endpoint(payload: ScriptCommandInput) -> ScriptCommandResult:
+    """AI Suggestions panel — "Tell AI what you want to change" free-form instruction (or an
+    explicit "Improve selection"), returned as a previewable patch, never applied silently."""
+    try:
+        return run_script_command(payload)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        logger.exception("Unhandled error in run_script_command")
+        raise HTTPException(502, f"Couldn't process that instruction: {e}")
+
+
 @router.post("/visual-concepts", response_model=VisualConceptsResult)
 def visual_concepts(payload: VisualConceptsInput) -> VisualConceptsResult:
     """AI Visual Concepts — 3 distinct storyboard-quality stills (hook,
-    emotional, transformation) rendered from the finished script."""
+    emotional, transformation) rendered from the finished script. Blocking —
+    kept for internal/future bulk use; the frontend uses /plan +
+    per-concept /regenerate instead so each image can stream in and persist
+    independently (see visual_concept_service.plan_visual_concepts)."""
     try:
         return generate_visual_concepts(payload)
     except Exception as e:
         logger.exception("Unhandled error in generate_visual_concepts")
         raise HTTPException(502, f"Couldn't generate visual concepts: {e}")
+
+
+@router.post("/visual-concepts/plan", response_model=VisualConceptsResult)
+def visual_concepts_plan(payload: VisualConceptsInput) -> VisualConceptsResult:
+    """Fast text-only step — plans exactly 3 concepts (hook/emotional/
+    transformation) as "pending", with no image rendering yet. The frontend
+    then renders each one independently via /visual-concepts/regenerate so
+    generation is async, streams in per-image, and survives a refresh."""
+    try:
+        concepts = plan_visual_concepts(payload)
+        return VisualConceptsResult(concepts=concepts)
+    except Exception as e:
+        logger.exception("Unhandled error in plan_visual_concepts")
+        raise HTTPException(502, f"Couldn't plan visual concepts: {e}")
 
 
 @router.post("/visual-concepts/regenerate", response_model=VisualConcept)

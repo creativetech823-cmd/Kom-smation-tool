@@ -46,7 +46,7 @@ export function KnowledgeSourcesChecklist({
                 ? "border-[var(--success)]/30 bg-[var(--success)]/10 text-[var(--success)]"
                 : row.state === "pending"
                 ? "border-[var(--warning)]/30 bg-[var(--warning)]/10 text-[var(--warning)]"
-                : "border-[var(--border)] bg-white/[0.02] text-[var(--muted)]"
+                : "border-[var(--border)] bg-[var(--foreground)]/[0.02] text-[var(--muted)]"
             }`}
           >
             {row.state === "active" ? "✓" : row.state === "pending" ? "⋯" : "○"} {row.label}

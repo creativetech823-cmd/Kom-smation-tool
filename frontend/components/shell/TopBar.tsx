@@ -1,22 +1,18 @@
 "use client";
 
-import { Button } from "@/components/ui/Button";
+import Link from "next/link";
+import { useActiveProject } from "@/lib/project-context";
+import { ThemeToggle } from "@/components/shell/ThemeToggle";
 
-export function TopBar({
-  onSaveDraft,
-  draftAvailable,
-  onRestoreDraft,
-}: {
-  onSaveDraft: () => void;
-  draftAvailable: boolean;
-  onRestoreDraft: () => void;
-}) {
+export function TopBar() {
+  const { activeProjectId, activeProjectName } = useActiveProject();
+
   return (
-    <header className="flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--surface)]/60 px-6 py-4 backdrop-blur-xl">
+    <header className="flex items-center justify-between gap-4 border-b border-[var(--border)] bg-[var(--surface)] px-6 py-4">
       <div className="flex items-center gap-3">
-        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-[var(--accent)] to-[var(--accent-2)] text-white shadow-lg shadow-[var(--accent)]/20">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[var(--accent)] text-[var(--on-accent)]">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2l1.8 5.6L19 9.5l-5.2 1.9L12 17l-1.8-5.6L5 9.5l5.2-1.9L12 2z" fill="white" />
+            <path d="M12 2l1.8 5.6L19 9.5l-5.2 1.9L12 17l-1.8-5.6L5 9.5l5.2-1.9L12 2z" fill="currentColor" />
           </svg>
         </div>
         <div>
@@ -26,19 +22,17 @@ export function TopBar({
       </div>
 
       <div className="flex items-center gap-3">
-        {draftAvailable && (
-          <button
-            type="button"
-            onClick={onRestoreDraft}
-            className="rounded-full border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)]/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+        {activeProjectId && activeProjectName && (
+          <Link
+            href={`/projects/${activeProjectId}`}
+            className="flex items-center gap-1.5 rounded-full border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-3 py-1.5 text-[12px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)]/80"
           >
-            Draft available — Restore
-          </button>
+            <IconFolder />
+            <span className="max-w-[160px] truncate">{activeProjectName}</span>
+          </Link>
         )}
-        <Button variant="secondary" size="sm" onClick={onSaveDraft}>
-          <IconSave /> Save Draft
-        </Button>
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border-strong)] bg-gradient-to-br from-[var(--surface-2)] to-[var(--surface-3)] text-[12px] font-semibold text-[var(--foreground)]">
+        <ThemeToggle />
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--surface-3)] text-[12px] font-semibold text-[var(--foreground)]">
           U
         </div>
       </div>
@@ -46,11 +40,15 @@ export function TopBar({
   );
 }
 
-function IconSave() {
+function IconFolder() {
   return (
-    <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-      <path d="M5 4h11l3 3v13H5V4z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-      <path d="M8 4v6h8V4M8 14h8v6H8v-6z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

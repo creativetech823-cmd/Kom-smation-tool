@@ -11,13 +11,12 @@ import openpyxl
 import pypdf
 from docx import Document as DocxDocument
 from fastapi import UploadFile
-from google.genai import types as genai_types
 from pptx import Presentation
 from youtube_transcript_api import YouTubeTranscriptApi
 
 from app.config import settings
 from app.models.product import ReferenceAnalysis, ReferenceKind, ReferenceMaterial
-from app.services.gemini_utils import call_gemini_with_retry, generate_text
+from app.services.openrouter_utils import call_openrouter_with_retry, generate_text, image_part
 
 _CHUNK_SIZE = 1024 * 1024
 _MAX_DOC_BYTES = settings.max_reference_upload_mb * 1024 * 1024
@@ -96,11 +95,11 @@ def _describe_image_with_gemini(data: bytes, media_type: str) -> str:
     """Never raises — a failed vision call just yields an empty description
     rather than blocking the whole upload."""
     try:
-        text = call_gemini_with_retry(
+        text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_IMAGE_DESCRIBE_SYSTEM_PROMPT,
-                contents=[genai_types.Part.from_bytes(data=data, mime_type=media_type), "Describe this image."],
-                model=settings.gemini_text_model,
+                contents=[image_part(data, media_type), "Describe this image."],
+                model=settings.openrouter_text_model,
                 max_output_tokens=512,
             ),
             label="describe_image",

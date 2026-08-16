@@ -55,13 +55,13 @@ export function VersionHistoryPanel({
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-white/[0.06]"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1.5 text-[12px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]"
       >
         🕓 History ({entries.length})
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1.5 max-h-96 w-80 overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_rgba(0,0,0,0.7)]">
+        <div className="absolute right-0 top-full z-20 mt-1.5 max-h-96 w-80 overflow-y-auto rounded-xl border border-[var(--border-strong)] bg-[var(--surface)] shadow-[0_20px_40px_-20px_var(--shadow-color)]">
           <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
             <p className="text-[11px] font-medium text-[var(--muted)]">
               {compareA !== null || compareB !== null ? "Click two versions to compare" : "Click a version to restore it"}
@@ -80,7 +80,7 @@ export function VersionHistoryPanel({
                   key={i}
                   className={cn(
                     "flex items-center gap-2 border-b border-[var(--border)] px-3 py-2 last:border-b-0",
-                    active && "bg-white/[0.04]",
+                    active && "bg-[var(--foreground)]/[0.04]",
                     selected && "bg-[var(--accent-soft)]"
                   )}
                 >
