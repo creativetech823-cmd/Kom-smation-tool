@@ -670,6 +670,18 @@ def render_download(payload: VisualConceptDownloadInput) -> str:
     return path
 
 
+def generate_static_visual(prompt: str, aspect_ratio: str = "1:1") -> dict:
+    """One-off image render for a static creative's ai_image_prompt — reuses
+    the same generation/quality pipeline as a video VisualConcept (reference
+    conditioning, ad-creative/realism directives, retry) without the scene
+    planning, scoring, or style-param editing machinery those carry."""
+    seed = random.randint(1, 2_000_000_000)
+    data, model, elapsed = _generate_cached(prompt, aspect_ratio, seed, "static_visual")
+    path = _save_bytes(data)
+    logger.info("[static_visual] Saved successfully. -> %s", path)
+    return {"image_path": path, "used_model": model, "elapsed_seconds": round(elapsed, 1), "seed": seed}
+
+
 def generate_test_image() -> dict:
     """Diagnostic — isolates whether a failure is in the OpenRouter image
     pipeline itself or in the script-to-image flow around it. Fixed, simple

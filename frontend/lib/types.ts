@@ -1,5 +1,47 @@
 export type SourceType = "url" | "description" | "none";
 
+export type ContentType = "video" | "static";
+
+export type VideoFormat =
+  | "podcast"
+  | "whiteboard"
+  | "animation"
+  | "video_ad"
+  | "ugc_talking_head"
+  | "explainer"
+  | "cinematic"
+  | "product_showcase"
+  | "educational_video"
+  | "social_media_reel"
+  | "storytelling"
+  | "custom";
+
+export type StaticFormat =
+  | "instagram_post"
+  | "instagram_story"
+  | "carousel"
+  | "banner_ad"
+  | "product_advertisement"
+  | "infographic"
+  | "quote_graphic"
+  | "educational_graphic"
+  | "promotional_creative"
+  | "thumbnail"
+  | "product_feature"
+  | "custom";
+
+export type ScriptTone =
+  | "Professional"
+  | "Casual"
+  | "Conversational"
+  | "Educational"
+  | "Emotional"
+  | "Bold"
+  | "Funny"
+  | "Premium"
+  | "Persuasive"
+  | "Storytelling";
+
 export type ReferenceKind =
   | "pdf"
   | "docx"
@@ -114,7 +156,8 @@ export type ScriptRegenerateScope =
   | "story"
   | "product_explanation"
   | "emotional_tone"
-  | "length";
+  | "length"
+  | "specific_scene";
 
 export type ScriptLine = {
   text: string;
@@ -169,6 +212,10 @@ export type GeneratedScript = {
   script_language?: ScriptLanguage;
   target_duration?: string;
   estimated_duration_seconds?: number;
+  content_type?: ContentType;
+  format?: string;
+  format_description?: string;
+  tone?: string;
 };
 
 export type ScriptSuggestionCategory =
@@ -353,6 +400,21 @@ export type VisualConceptDebugInfo = {
   model: string;
   api_url: string;
   internet_access: boolean;
+};
+
+export type StaticVisualResult = {
+  image_path: string;
+  used_model: string;
+  elapsed_seconds: number;
+  seed: number | null;
+};
+
+export type StaticImageStatus = "pending" | "generating" | "completed" | "failed";
+
+export type StaticImageState = {
+  status: StaticImageStatus;
+  imagePath: string | null;
+  error: string | null;
 };
 
 export type VisualConceptStatus = "pending" | "generating" | "completed" | "failed";

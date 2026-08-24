@@ -3,6 +3,7 @@ import type {
   ComplianceResult,
   ContentAsset,
   ContentAssetType,
+  ContentType,
   FetchUrlResult,
   GeneratedScript,
   HistoryEvent,
@@ -22,6 +23,7 @@ import type {
   ScriptRegenerateScope,
   SelectedAsset,
   SmartScriptSuggestionsResult,
+  StaticVisualResult,
   StorySituation,
   StructuredProduct,
   Template,
@@ -196,6 +198,10 @@ export function generateScript(payload: {
   script_language?: ScriptLanguage;
   target_duration?: string;
   selected_hook_text?: string;
+  content_type?: ContentType;
+  format?: string;
+  format_description?: string;
+  tone?: string;
 }) {
   return post<GeneratedScript>("/pipeline/generate-script", payload);
 }
@@ -214,6 +220,11 @@ export function regenerateScriptSection(payload: {
   custom_instruction?: string;
   target_word_count?: number;
   selected_hook_text?: string;
+  content_type?: ContentType;
+  format?: string;
+  format_description?: string;
+  tone?: string;
+  target_scene_label?: string;
 }) {
   return post<GeneratedScript>("/pipeline/regenerate-script-section", payload);
 }
@@ -296,6 +307,10 @@ export function motionFileUrl(videoPath: string): string {
 export function visualFileUrl(imagePath: string): string {
   const filename = imagePath.split(/[\\/]/).pop();
   return `${API_BASE}/visuals/${filename}`;
+}
+
+export function generateStaticVisual(payload: { prompt: string; aspect_ratio?: string }) {
+  return post<StaticVisualResult>("/pipeline/static-visual/generate", payload);
 }
 
 export function generateVisualConcepts(payload: {

@@ -9,10 +9,13 @@ import { PipelineSubHeader } from "@/components/shell/PipelineSubHeader";
 import { useToast } from "@/components/shell/ToastProvider";
 import { useActiveProject } from "@/lib/project-context";
 import { ACTIVE_TEMPLATE_KEY, type ActiveTemplateHint } from "@/lib/constants";
+import { staticAspectRatio } from "@/lib/contentFormats";
 import { HookPickerModal } from "@/components/library/HookPickerModal";
 import { ProductWorkspaceStep } from "@/components/steps/ProductWorkspaceStep";
 import type { ActivityEntry } from "@/components/steps/AiUnderstandingPanel";
 import { StorySituationStep } from "@/components/steps/StorySituationStep";
+import { ContentTypeStep } from "@/components/steps/ContentTypeStep";
+import { FormatStep } from "@/components/steps/FormatStep";
 import { ScriptStep } from "@/components/steps/ScriptStep";
 import { VisualConceptsSection } from "@/components/steps/VisualConceptsSection";
 import { ComplianceStep } from "@/components/steps/ComplianceStep";
@@ -30,6 +33,7 @@ import {
   generateAlternatives,
   generateMotion,
   generateScript,
+  generateStaticVisual,
   generateStorySituations,
   planVisualConcepts,
   generateVoiceover,
@@ -56,6 +60,7 @@ import type { RegenerateOptions } from "@/components/steps/ScriptStep";
 import {
   flattenScript,
   type ComplianceResult,
+  type ContentType,
   type GeneratedScript,
   type Hook,
   type MotionGenerationResult,
@@ -71,6 +76,7 @@ import {
   type ScriptRegenerateScope,
   type SelectedAsset,
   type SmartScriptSuggestionsResult,
+  type StaticImageState,
   type StorySituation,
   type StructuredProduct,
   type VisualConcept,
@@ -112,6 +118,10 @@ type RestoredPipelineState = {
   situations: StorySituation[] | null;
   selectedSituation: StorySituation | null;
   selectedAngle: string | null;
+  contentType: ContentType | null;
+  selectedFormat: string | null;
+  formatDescription: string | null;
+  scriptTone: string | null;
   scriptLanguage: ScriptLanguage | null;
   targetDuration: string | null;
   script: GeneratedScript | null;
@@ -119,6 +129,7 @@ type RestoredPipelineState = {
   scriptHistoryIndex: number | null;
   visualConcepts: VisualConcept[] | null;
   visualAssetIdByConceptId: Record<string, string> | null;
+  staticImages: Record<string, StaticImageState> | null;
   scriptAssetId: string | null;
   compliance: ComplianceResult | null;
   assets: Record<string, SelectedAsset | undefined> | null;
@@ -142,6 +153,10 @@ function restorePipelineState(project: Project | null): RestoredPipelineState {
     situations: (raw.situations as StorySituation[] | undefined) ?? null,
     selectedSituation: (raw.selectedSituation as StorySituation | undefined) ?? null,
     selectedAngle: (raw.selectedAngle as string | undefined) ?? null,
+    contentType: (raw.contentType as ContentType | undefined) ?? null,
+    selectedFormat: typeof raw.selectedFormat === "string" ? raw.selectedFormat : null,
+    formatDescription: typeof raw.formatDescription === "string" ? raw.formatDescription : null,
+    scriptTone: typeof raw.scriptTone === "string" ? raw.scriptTone : null,
     scriptLanguage: (raw.scriptLanguage as ScriptLanguage | undefined) ?? null,
     targetDuration: typeof raw.targetDuration === "string" ? raw.targetDuration : null,
     script: (raw.script as GeneratedScript | undefined) ?? null,
@@ -149,6 +164,7 @@ function restorePipelineState(project: Project | null): RestoredPipelineState {
     scriptHistoryIndex: typeof raw.scriptHistoryIndex === "number" ? raw.scriptHistoryIndex : null,
     visualConcepts: (raw.visualConcepts as VisualConcept[] | undefined) ?? null,
     visualAssetIdByConceptId: (raw.visualAssetIdByConceptId as Record<string, string> | undefined) ?? null,
+    staticImages: (raw.staticImages as Record<string, StaticImageState> | undefined) ?? null,
     scriptAssetId: (raw.scriptAssetId as string | undefined) ?? null,
     compliance: (raw.compliance as ComplianceResult | undefined) ?? null,
     assets: (raw.assets as Record<string, SelectedAsset | undefined> | undefined) ?? null,
@@ -223,6 +239,7 @@ const REGEN_SCOPE_LABEL: Record<ScriptRegenerateScope, string> = {
   product_explanation: "Product explanation",
   emotional_tone: "Emotional tone",
   length: "Made longer",
+  specific_scene: "Scene regenerated",
 };
 
 export type PipelineAppProps = {
@@ -254,10 +271,22 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const [situations, setSituations] = useState<StorySituation[]>(() => restored.situations ?? []);
   const [selectedSituation, setSelectedSituation] = useState<StorySituation | null>(() => restored.selectedSituation);
   const [selectedAngle, setSelectedAngle] = useState<string | null>(() => restored.selectedAngle);
+  const [contentType, setContentType] = useState<ContentType>(() => restored.contentType ?? "video");
+  const [selectedFormat, setSelectedFormat] = useState(() => restored.selectedFormat ?? "");
+  const [formatDescription, setFormatDescription] = useState(() => restored.formatDescription ?? "");
+  const [scriptTone, setScriptTone] = useState(() => restored.scriptTone ?? "");
+  // Sub-flow shown in place of the situation grid between picking an angle and
+  // actually generating — never persisted (a refresh mid-selection just drops
+  // back to the situation grid, same as situationSelectingKey today).
+  const [scriptSetupPhase, setScriptSetupPhase] = useState<"content_type" | "format" | null>(null);
+  const [pendingAngleSelection, setPendingAngleSelection] = useState<{ situation: StorySituation; angle: string } | null>(
+    null
+  );
   const [scriptLanguage, setScriptLanguage] = useState<ScriptLanguage>(() => restored.scriptLanguage ?? "hinglish");
   const [targetDuration, setTargetDuration] = useState(() => restored.targetDuration ?? "30s");
   const [script, setScript] = useState<GeneratedScript | null>(() => restored.script);
   const [visualConcepts, setVisualConcepts] = useState<VisualConcept[]>(() => restored.visualConcepts ?? []);
+  const [staticImages, setStaticImages] = useState<Record<string, StaticImageState>>(() => restored.staticImages ?? {});
   const [visualConceptsLoading, setVisualConceptsLoading] = useState(false);
   const [visualConceptsError, setVisualConceptsError] = useState<string | null>(null);
   const [visualConceptScoring, setVisualConceptScoring] = useState<Record<string, boolean>>({});
@@ -278,10 +307,8 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const [improvingDescription, setImprovingDescription] = useState(false);
   const [situationsLoading, setSituationsLoading] = useState(false);
   const [situationsGenMoreLoading, setSituationsGenMoreLoading] = useState(false);
-  const [situationSelectingKey, setSituationSelectingKey] = useState<{ situationId: string; angle: string } | null>(
-    null
-  );
   const [scriptRegenLoading, setScriptRegenLoading] = useState(false);
+  const [formatGenerating, setFormatGenerating] = useState(false);
   const [lineLoading, setLineLoading] = useState<Record<string, boolean>>({});
   const [scriptHistory, setScriptHistory] = useState<ScriptVersion[]>(() => restored.scriptHistory ?? []);
   const [scriptHistoryIndex, setScriptHistoryIndex] = useState(() => restored.scriptHistoryIndex ?? -1);
@@ -398,6 +425,10 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       situations,
       selectedSituation,
       selectedAngle,
+      contentType,
+      selectedFormat,
+      formatDescription,
+      scriptTone,
       scriptLanguage,
       targetDuration,
       script,
@@ -405,6 +436,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       scriptHistoryIndex,
       visualConcepts,
       visualAssetIdByConceptId,
+      staticImages,
       scriptAssetId,
       compliance,
       assets,
@@ -424,6 +456,10 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       situations,
       selectedSituation,
       selectedAngle,
+      contentType,
+      selectedFormat,
+      formatDescription,
+      scriptTone,
       scriptLanguage,
       targetDuration,
       script,
@@ -431,6 +467,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       scriptHistoryIndex,
       visualConcepts,
       visualAssetIdByConceptId,
+      staticImages,
       scriptAssetId,
       compliance,
       assets,
@@ -780,6 +817,55 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     void renderOneVisualConcept(concept, structured, script, selectedSituation, selectedAngle ?? "");
   }
 
+  async function generateOneStaticImage(lineId: string, prompt: string, aspectRatio: string) {
+    setStaticImages((prev) => ({ ...prev, [lineId]: { status: "generating", imagePath: null, error: null } }));
+    try {
+      const result = await generateStaticVisual({ prompt, aspect_ratio: aspectRatio });
+      setStaticImages((prev) => ({
+        ...prev,
+        [lineId]: { status: "completed", imagePath: result.image_path, error: null },
+      }));
+      createAsset({
+        project_id: activeProjectId ?? undefined,
+        asset_type: "image",
+        title: `Static visual — ${lineId}`,
+        product_name: structured?.product_name ?? "",
+        file_path: result.image_path,
+        model_used: result.used_model,
+      })
+        .then((asset) => {
+          void logHistoryEvent({
+            event_type: "generated_image",
+            summary: "Generated static creative image",
+            project_id: activeProjectId ?? undefined,
+            asset_id: asset.id,
+          }).catch(() => {});
+        })
+        .catch(() => {});
+    } catch (e) {
+      const message = e instanceof ApiError ? e.message : "Couldn't generate that image.";
+      setStaticImages((prev) => ({ ...prev, [lineId]: { status: "failed", imagePath: null, error: message } }));
+    }
+  }
+
+  // Static creative's equivalent of handleGenerateVisualConcepts — one image
+  // per body/hook/cta block that carries an ai_image_prompt, rendered
+  // directly (no scene-planning pass needed, the prompts already exist).
+  function handleGenerateStaticVisuals(generatedScript: GeneratedScript, format: string) {
+    const lines = flattenScript(generatedScript).filter((l) => l.ai_image_prompt);
+    setStaticImages(
+      Object.fromEntries(lines.map((l) => [l.id, { status: "pending" as const, imagePath: null, error: null }]))
+    );
+    const aspectRatio = staticAspectRatio(format);
+    lines.forEach((l) => {
+      void generateOneStaticImage(l.id, l.ai_image_prompt ?? "", aspectRatio);
+    });
+  }
+
+  function handleRetryStaticImage(lineId: string, prompt: string) {
+    void generateOneStaticImage(lineId, prompt, staticAspectRatio(selectedFormat));
+  }
+
   // Resume in-flight generations after a refresh — a restored concept whose
   // last known status is "pending"/"generating" never got a completed image
   // persisted, so its own request is gone (the reload killed it). Re-fire
@@ -799,8 +885,16 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   }, []);
 
   const runScriptGeneration = useCallback(
-    async (situation: StorySituation, angle: string, setLoading: (v: boolean) => void): Promise<boolean> => {
+    async (
+      situation: StorySituation,
+      angle: string,
+      setLoading: (v: boolean) => void,
+      overrides?: { format?: string; formatDescription?: string; tone?: string }
+    ): Promise<boolean> => {
       if (!structured) return false;
+      const formatValue = overrides?.format ?? selectedFormat;
+      const formatDescriptionValue = overrides?.formatDescription ?? formatDescription;
+      const toneValue = overrides?.tone ?? scriptTone;
       setLoading(true);
       setGlobalError(null);
       try {
@@ -812,10 +906,19 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
           script_language: scriptLanguage,
           target_duration: targetDuration,
           selected_hook_text: selectedHookText || undefined,
+          content_type: contentType,
+          format: formatValue,
+          format_description: formatDescriptionValue,
+          tone: toneValue,
         });
         setScript(result);
         setSelectedSituation(situation);
         setSelectedAngle(angle);
+        if (overrides) {
+          setSelectedFormat(formatValue);
+          setFormatDescription(formatDescriptionValue);
+          setScriptTone(toneValue);
+        }
         resetScriptHistory(result, "Generated");
         // Any previous assets/voiceovers/render are stale once the script changes.
         setAssets({});
@@ -841,7 +944,13 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
             }).catch(() => {});
           })
           .catch(() => {});
-        void handleGenerateVisualConcepts(structured, result, situation, angle);
+        if (contentType === "video") {
+          setStaticImages({});
+          void handleGenerateVisualConcepts(structured, result, situation, angle);
+        } else {
+          setVisualConcepts([]);
+          handleGenerateStaticVisuals(result, formatValue);
+        }
         return true;
       } catch (e) {
         setGlobalError(e instanceof ApiError ? e.message : "Script generation failed.");
@@ -850,21 +959,66 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         setLoading(false);
       }
     },
-    [structured, category, scriptLanguage, targetDuration, selectedHookText, activeProjectId]
+    [
+      structured,
+      category,
+      scriptLanguage,
+      targetDuration,
+      selectedHookText,
+      activeProjectId,
+      contentType,
+      selectedFormat,
+      formatDescription,
+      scriptTone,
+    ]
   );
 
-  async function handleSelectAngle(situation: StorySituation, angle: string) {
-    setSituationSelectingKey({ situationId: situation.id, angle });
-    const ok = await runScriptGeneration(situation, angle, () => {});
-    setSituationSelectingKey(null);
-    // Stay on Story (with the error already surfaced via globalError) if
-    // generation failed — never navigate to Script without a real script.
-    if (ok) goTo(2);
+  function handleSelectAngle(situation: StorySituation, angle: string) {
+    // Don't generate yet — surface Content Type -> Format -> Configure first;
+    // runScriptGeneration only fires once the user finishes that sub-flow
+    // (see handleGenerateFromFormat below).
+    setPendingAngleSelection({ situation, angle });
+    setScriptSetupPhase("content_type");
+  }
+
+  function handleSelectContentType(type: ContentType) {
+    setContentType(type);
+    setScriptSetupPhase("format");
+  }
+
+  function handleContentTypeBack() {
+    setScriptSetupPhase(null);
+    setPendingAngleSelection(null);
+  }
+
+  function handleFormatBack() {
+    setScriptSetupPhase("content_type");
+  }
+
+  async function handleGenerateFromFormat(selection: { format: string; formatDescription: string; tone: string }) {
+    if (!pendingAngleSelection) return;
+    const { situation, angle } = pendingAngleSelection;
+    const ok = await runScriptGeneration(situation, angle, setFormatGenerating, selection);
+    // Stay on the format step (with the error already surfaced via
+    // globalError) if generation failed — never navigate to Script without a
+    // real script.
+    if (ok) {
+      setScriptSetupPhase(null);
+      setPendingAngleSelection(null);
+      goTo(2);
+    }
   }
 
   async function handleRegenerateScript() {
     if (!selectedSituation || !selectedAngle) return;
     await runScriptGeneration(selectedSituation, selectedAngle, setScriptRegenLoading);
+  }
+
+  function handleChangeFormatFromScript() {
+    if (!selectedSituation || !selectedAngle) return;
+    setPendingAngleSelection({ situation: selectedSituation, angle: selectedAngle });
+    setScriptSetupPhase("format");
+    goTo(1);
   }
 
   async function handleRegenerateScope(scope: ScriptRegenerateScope, options?: RegenerateOptions) {
@@ -889,11 +1043,21 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         custom_instruction: options?.customInstruction,
         target_word_count: options?.targetWordCount,
         selected_hook_text: scope === "full" ? selectedHookText || undefined : undefined,
+        content_type: contentType,
+        format: selectedFormat,
+        format_description: formatDescription,
+        tone: options?.tone ?? scriptTone,
+        target_scene_label: options?.targetSceneLabel,
       });
       setScript(result);
-      const label = options?.targetWordCount
-        ? `Length adjust — ~${options.targetWordCount}w`
-        : `AI: ${REGEN_SCOPE_LABEL[scope] ?? scope}`;
+      if (options?.tone) setScriptTone(options.tone);
+      const label = options?.targetSceneLabel
+        ? `AI: Regenerated "${options.targetSceneLabel}"`
+        : options?.tone
+          ? `AI: Tone → ${options.tone}`
+          : options?.targetWordCount
+            ? `Length adjust — ~${options.targetWordCount}w`
+            : `AI: ${REGEN_SCOPE_LABEL[scope] ?? scope}`;
       pushScriptHistory(result, label);
       markLinesChanged(changedLineIds(before, result));
       // Any previous assets/voiceovers/render are stale once the script changes.
@@ -1502,12 +1666,12 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                   />
                 )}
 
-                {stepIndex === 1 && (
+                {stepIndex === 1 && scriptSetupPhase === null && (
                   <StorySituationStep
                     situations={situations}
                     loading={situationsLoading}
                     generatingMore={situationsGenMoreLoading}
-                    selectingKey={situationSelectingKey}
+                    selectingKey={null}
                     onSelectAngle={handleSelectAngle}
                     onGenerateMore={handleGenerateMoreSituations}
                     onBack={() => goTo(0)}
@@ -1515,6 +1679,28 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                     onScriptLanguageChange={setScriptLanguage}
                     targetDuration={targetDuration}
                     onTargetDurationChange={setTargetDuration}
+                  />
+                )}
+
+                {stepIndex === 1 && scriptSetupPhase === "content_type" && pendingAngleSelection && (
+                  <ContentTypeStep
+                    situation={pendingAngleSelection.situation}
+                    angle={pendingAngleSelection.angle}
+                    onSelect={handleSelectContentType}
+                    onBack={handleContentTypeBack}
+                  />
+                )}
+
+                {stepIndex === 1 && scriptSetupPhase === "format" && pendingAngleSelection && (
+                  <FormatStep
+                    situation={pendingAngleSelection.situation}
+                    angle={pendingAngleSelection.angle}
+                    contentType={contentType}
+                    targetDuration={targetDuration}
+                    onTargetDurationChange={setTargetDuration}
+                    onBack={handleFormatBack}
+                    onGenerate={handleGenerateFromFormat}
+                    generating={formatGenerating}
                   />
                 )}
 
@@ -1533,6 +1719,9 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                       regenerating={scriptRegenLoading}
                       selectedHookText={selectedHookText}
                       onChooseHook={() => setHookPickerOpen(true)}
+                      onChangeFormat={handleChangeFormatFromScript}
+                      staticImages={staticImages}
+                      onGenerateStaticImage={handleRetryStaticImage}
                       onEditLine={handleEditLine}
                       onEditLineField={handleEditLineField}
                       onEditWholeScript={handleEditWholeScript}
@@ -1553,21 +1742,23 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                       onRestoreVersion={handleRestoreScriptVersion}
                     />
 
-                    <VisualConceptsSection
-                      concepts={visualConcepts}
-                      loading={visualConceptsLoading}
-                      error={visualConceptsError}
-                      scoring={visualConceptScoring}
-                      regenerating={visualConceptRegenLoading}
-                      downloading={visualConceptDownloading}
-                      onRegenerate={handleRegenerateVisualConcept}
-                      onGenerateVariation={handleGenerateVisualVariation}
-                      onEditPrompt={handleEditVisualConceptPrompt}
-                      onDownload={handleDownloadVisualConcept}
-                      onToggleFavorite={handleToggleFavoriteVisualConcept}
-                      onRetry={handleRetryVisualConcepts}
-                      onRetryOne={handleRetryOneVisualConcept}
-                    />
+                    {(script.content_type ?? "video") === "video" && (
+                      <VisualConceptsSection
+                        concepts={visualConcepts}
+                        loading={visualConceptsLoading}
+                        error={visualConceptsError}
+                        scoring={visualConceptScoring}
+                        regenerating={visualConceptRegenLoading}
+                        downloading={visualConceptDownloading}
+                        onRegenerate={handleRegenerateVisualConcept}
+                        onGenerateVariation={handleGenerateVisualVariation}
+                        onEditPrompt={handleEditVisualConceptPrompt}
+                        onDownload={handleDownloadVisualConcept}
+                        onToggleFavorite={handleToggleFavoriteVisualConcept}
+                        onRetry={handleRetryVisualConcepts}
+                        onRetryOne={handleRetryOneVisualConcept}
+                      />
+                    )}
 
                     <div className="flex justify-between pt-2">
                       <Button variant="ghost" onClick={() => goTo(1)}>
@@ -1582,22 +1773,13 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
 
                 {stepIndex === 2 && (!script || !selectedSituation) && (
                   <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-6 py-14 text-center">
-                    {situationSelectingKey ? (
-                      <>
-                        <span className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--foreground)]/20 border-t-[var(--accent)]" />
-                        <p className="text-[13.5px] text-[var(--foreground)]">Writing your script…</p>
-                      </>
-                    ) : (
-                      <>
-                        <p className="text-[14px] font-medium text-[var(--foreground)]">Select a story angle to continue</p>
-                        <p className="max-w-sm text-[12.5px] text-[var(--muted)]">
-                          No script has been generated for this project yet — pick a story and angle first.
-                        </p>
-                        <Button variant="secondary" onClick={() => goTo(1)}>
-                          ← Back to Story
-                        </Button>
-                      </>
-                    )}
+                    <p className="text-[14px] font-medium text-[var(--foreground)]">Select a story angle to continue</p>
+                    <p className="max-w-sm text-[12.5px] text-[var(--muted)]">
+                      No script has been generated for this project yet — pick a story and angle first.
+                    </p>
+                    <Button variant="secondary" onClick={() => goTo(1)}>
+                      ← Back to Story
+                    </Button>
                   </div>
                 )}
 
@@ -1627,7 +1809,22 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                   />
                 )}
 
-                {stepIndex === 5 && script && (
+                {stepIndex === 5 && script && (script.content_type ?? "video") === "static" && (
+                  <div className="flex flex-col items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] px-6 py-14 text-center">
+                    <p className="text-[14px] font-medium text-[var(--foreground)]">Voiceover isn&#39;t applicable</p>
+                    <p className="max-w-sm text-[12.5px] text-[var(--muted)]">
+                      This is static creative — there&#39;s no spoken line to narrate, so this stage is skipped.
+                    </p>
+                    <div className="flex gap-2 pt-1">
+                      <Button variant="ghost" onClick={() => goTo(4)}>
+                        ← Back
+                      </Button>
+                      <Button onClick={handleEnterRenderStep}>Continue to Render →</Button>
+                    </div>
+                  </div>
+                )}
+
+                {stepIndex === 5 && script && (script.content_type ?? "video") !== "static" && (
                   <VoiceoverStep
                     lines={scriptLines}
                     voiceovers={voiceovers}

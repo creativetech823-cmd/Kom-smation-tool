@@ -6,13 +6,14 @@ from pydantic import ValidationError
 
 from app.config import settings
 from app.models.product import (
+    ContentType,
     GeneratedScript,
     ScriptGenerationInput,
     ScriptLanguage,
     ScriptRegenerateScope,
     ScriptSectionRegenerateInput,
 )
-from app.services import script_length
+from app.services import content_formats, script_length
 from app.services.compliance_rules import rules_for_category
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
@@ -157,22 +158,68 @@ _SCRIPT_JSON_SHAPE = """{
   "bgm_suggestion": string
 }"""
 
-def _system_prompt(bucket: str) -> str:
+def _tone_block(tone: str) -> str:
+    if not tone:
+        return ""
+    return (
+        f'\nTONE (mandatory): write in a "{tone}" voice — let this genuinely shape word choice, '
+        f"sentence rhythm, and register throughout every block, not just the adjectives used to "
+        f"describe the product.\n"
+    )
+
+
+def _video_structure(bucket: str, format_value: str, format_description: str) -> str:
+    """The default Video Ad structure unless a different video format was
+    requested — "video_ad" itself and an empty/unrecognized format both fall
+    through to the original duration-quota ad structure unchanged."""
+    if format_value and format_value != "video_ad":
+        structure = content_formats.video_structure_block(format_value, format_description)
+        if structure:
+            return structure
+    return _structure_block(bucket)
+
+
+def _system_prompt(bucket: str, format_value: str = "", format_description: str = "", tone: str = "") -> str:
     return (
         "You are a senior short-form video ad copywriter/director for a content factory pipeline, "
         "writing scripts as sharp and professional as a real D2C ad agency's shooting scripts, "
         "sized EXACTLY to fit the target duration below — never longer. You do NOT invent the "
         "creative — you are given ONE specific, already-chosen story situation (a persona, a "
-        "conflict, an emotional arc) and your job is to write the complete cinematic script that "
-        "brings that exact situation to life, at the correct length for its runtime. Stay faithful "
-        "to the given persona, emotion, and marketing angle throughout.\n\n"
-        + _structure_block(bucket)
+        "conflict, an emotional arc) and your job is to write the complete script, in the requested "
+        "format, that brings that exact situation to life, at the correct length for its runtime. "
+        "Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
+        + _video_structure(bucket, format_value, format_description)
         + "\n\n"
         + _FIELDS_BLOCK
         + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
         "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
         "write generically rather than inventing specifics.\n\n"
         + _CORE_PRINCIPLES_BLOCK
+        + _tone_block(tone)
+        + "\n\n"
+        + _JSON_SAFETY_BLOCK
+        + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
+        + _SCRIPT_JSON_SHAPE
+    )
+
+
+def _static_system_prompt(format_value: str, format_description: str, tone: str) -> str:
+    return (
+        "You are a senior creative copywriter/art director for a content factory pipeline, writing "
+        "static ad creative (a single graphic or a short slide set), as sharp and professional as a "
+        "real D2C brand's in-house creative team — not a video script, no voiceover or camera work. "
+        "You do NOT invent the creative — you are given ONE specific, already-chosen story situation "
+        "(a persona, a conflict, an emotional arc) and your job is to distill it into the requested "
+        "static format's copy plus a detailed image-generation prompt. Stay faithful to the given "
+        "persona, emotion, and marketing angle throughout.\n\n"
+        + content_formats.static_structure_block(format_value, format_description)
+        + "\n\n"
+        + content_formats.STATIC_FIELDS_BLOCK
+        + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
+        "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
+        "write generically rather than inventing specifics.\n\n"
+        + _CORE_PRINCIPLES_BLOCK
+        + _tone_block(tone)
         + "\n\n"
         + _JSON_SAFETY_BLOCK
         + "\n\nReturn ONLY valid JSON, no prose, no markdown fences, matching this exact shape:\n"
@@ -242,20 +289,36 @@ _SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
 }
 
 
-def _regen_system_prompt(scope: ScriptRegenerateScope, custom_instruction: str = "") -> str:
-    task = _SCOPE_GUIDANCE[scope]
+def _regen_system_prompt(
+    scope: ScriptRegenerateScope,
+    custom_instruction: str = "",
+    content_type: ContentType = ContentType.video,
+    tone: str = "",
+    target_scene_label: str = "",
+) -> str:
+    if scope == ScriptRegenerateScope.specific_scene:
+        label = target_scene_label or "the requested scene"
+        task = (
+            f'TASK: regenerate ONLY the body block whose "scene_label" is exactly "{label}" — a fresh '
+            f"take on that one scene/beat. Leave the hook, cta, and every other body block completely "
+            f"unchanged, including their scene_label values."
+        )
+    else:
+        task = _SCOPE_GUIDANCE[scope]
     if custom_instruction:
         task += f"\nADDITIONAL INSTRUCTION: {custom_instruction}"
     is_full_rewrite = scope in (ScriptRegenerateScope.full, ScriptRegenerateScope.length)
     prefix = _FULL_REWRITE_PREFIX if is_full_rewrite else _REGEN_SYSTEM_PROMPT_PREFIX
+    fields_block = content_formats.STATIC_FIELDS_BLOCK if content_type == ContentType.static else _FIELDS_BLOCK
     return (
         prefix
         + "\n\n"
         + task
         + "\n\n"
-        + _FIELDS_BLOCK
+        + fields_block
         + "\n\n"
         + _CORE_PRINCIPLES_BLOCK
+        + _tone_block(tone)
         + "\n\n"
         + _JSON_SAFETY_BLOCK
         + "\n\nReturn the COMPLETE script (all blocks, changed and unchanged) as ONE valid JSON "
@@ -379,6 +442,14 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         else None
     )
 
+    format_label = payload.format.replace("_", " ").title() if payload.format else "default"
+    format_desc_note = f' — "{payload.format_description}"' if payload.format == "custom" and payload.format_description else ""
+    length_line = (
+        ""
+        if payload.content_type == ContentType.static
+        else script_length.length_directive(target_duration, target_word_count, current_word_count)
+    )
+
     return (
         f"Chosen story situation (the creative brief — bring THIS to life):\n"
         f"Title: {s.title}\n"
@@ -387,10 +458,12 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         f"Persona: {s.persona}\n"
         f"Marketing angle: {s.marketing_angle}\n"
         f"Category: {s.category}\n"
+        f"Content type: {payload.content_type.value}\n"
+        f"Format: {format_label}{format_desc_note}\n"
         f"{_hook_block(getattr(payload, 'selected_hook_text', ''))}"
         f"{_angle_block(payload.creative_angle)}"
         f"{_language_block(payload.script_language)}\n"
-        f"{script_length.length_directive(target_duration, target_word_count, current_word_count)}"
+        f"{length_line}"
         f"Platform: {payload.platform}\n"
         f"Max characters per line: {payload.max_line_chars}\n\n"
         f"Product: {p.product_name}\n"
@@ -446,6 +519,7 @@ def _generate_with_recovery(
     max_tokens: int,
     target_duration: str,
     target_word_count: int | None = None,
+    content_type: ContentType = ContentType.video,
 ) -> dict:
     """Attempt 1 -> silent retry (attempt 2) -> repair pass -> only then raise.
     The caller (and therefore the user) only ever sees an error if all three
@@ -475,6 +549,12 @@ def _generate_with_recovery(
                 "Gemini returned malformed JSON while writing the script, even after an automatic "
                 "retry and repair pass. Please try again in a moment."
             ) from e
+
+    # Static creative has its own tight, format-specific word ceilings baked into
+    # content_formats.py's structure prompts, not the video WPM/duration-bucket
+    # system — skip the video length-correction pass entirely for it.
+    if content_type == ContentType.static:
+        return data
 
     if target_word_count:
         # A precise numeric target (length-adjustment controls) — tolerance is
@@ -519,6 +599,10 @@ def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
         script_language=payload.script_language,
         target_duration=target_duration,
         estimated_duration_seconds=script_length.estimate_seconds(script_length.count_words(data)),
+        content_type=payload.content_type,
+        format=payload.format,
+        format_description=payload.format_description,
+        tone=payload.tone,
     )
 
 
@@ -531,18 +615,25 @@ def _generate_full_script(
     user_message = _context_block(payload, target_duration, target_word_count)
     if custom_instruction:
         user_message += f"\n\nADDITIONAL INSTRUCTION: {custom_instruction}\n"
+    if payload.content_type == ContentType.static:
+        system = _static_system_prompt(payload.format, payload.format_description, payload.tone)
+    else:
+        system = _system_prompt(target_duration, payload.format, payload.format_description, payload.tone)
     data = _generate_with_recovery(
-        _system_prompt(target_duration), user_message, _MAX_TOKENS, target_duration, target_word_count
+        system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type
     )
     return _finish(data, payload, target_duration)
 
 
 def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
-    """Stage 6 — chosen story situation (+ optional creative execution angle)
-    -> full cinematic script + visual search tags, sized to the target duration."""
+    """Stage 6 — chosen story situation (+ optional creative execution angle,
+    content type, format, and tone) -> a full structured script or static
+    creative, sized to the target duration (video) or format (static)."""
 
-    target_duration = script_length.resolve_target_duration(
-        payload.selected_situation.estimated_length, payload.target_duration
+    target_duration = (
+        ""
+        if payload.content_type == ContentType.static
+        else script_length.resolve_target_duration(payload.selected_situation.estimated_length, payload.target_duration)
     )
     return _generate_full_script(payload, target_duration)
 
@@ -551,8 +642,10 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
     """Targeted regeneration — rewrite only the requested part of an
     already-generated script, leaving every other block untouched."""
 
-    target_duration = script_length.resolve_target_duration(
-        payload.selected_situation.estimated_length, payload.target_duration
+    target_duration = (
+        ""
+        if payload.content_type == ContentType.static
+        else script_length.resolve_target_duration(payload.selected_situation.estimated_length, payload.target_duration)
     )
 
     # A "pure" full regenerate (no explicit length/instruction override — the
@@ -580,7 +673,11 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
         f"Current script (JSON) — this is what exists right now; follow the TASK above to update "
         f"it:\n{current_script_json}"
     )
-    system = _regen_system_prompt(payload.scope, payload.custom_instruction)
-    data = _generate_with_recovery(system, user_message, _MAX_TOKENS, length_target, payload.target_word_count)
+    system = _regen_system_prompt(
+        payload.scope, payload.custom_instruction, payload.content_type, payload.tone, payload.target_scene_label
+    )
+    data = _generate_with_recovery(
+        system, user_message, _MAX_TOKENS, length_target, payload.target_word_count, payload.content_type
+    )
 
     return _finish(data, payload, length_target)

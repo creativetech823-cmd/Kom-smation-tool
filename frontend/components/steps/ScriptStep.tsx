@@ -13,6 +13,9 @@ import { VersionHistoryPanel, type ScriptVersion } from "@/components/ui/Version
 import { EditableLine } from "@/components/ui/EditableLine";
 import { AiSuggestionsPanel, type ApplyPatch } from "@/components/ui/AiSuggestionsPanel";
 import { angleAccent, angleEmoji } from "@/lib/creativeAngles";
+import { formatLabel } from "@/lib/contentFormats";
+import { ToneMenu } from "@/components/ui/ToneMenu";
+import { visualFileUrl } from "@/lib/api";
 import { renderBold } from "@/lib/renderBold";
 import { durationStatus, estimateSeconds, targetSecondsFor, wordCount } from "@/lib/duration";
 import { cn } from "@/lib/utils";
@@ -26,6 +29,7 @@ import {
   type ScriptRegenerateScope,
   type ScriptLanguage,
   type SmartScriptSuggestionsResult,
+  type StaticImageState,
   type StorySituation,
 } from "@/lib/types";
 
@@ -45,6 +49,9 @@ const SECTION_LABEL: Record<string, string> = {
 };
 
 const ONE_CLICK_ACTIONS: { label: string; scope: ScriptRegenerateScope; instruction: string }[] = [
+  { label: "Improve Script", scope: "full", instruction: "Improve overall quality — hook strength, natural language, pacing, and specificity — while preserving the same structure and story." },
+  { label: "Make More Engaging", scope: "full", instruction: "Make the script noticeably more engaging and attention-holding throughout, without changing its structure." },
+  { label: "Make More Professional", scope: "full", instruction: "Rewrite in a more professional, polished register throughout, without changing its structure." },
   { label: "Add More Science", scope: "science", instruction: "Expand this section with more scientific/psychological depth and credibility." },
   { label: "Add More Emotion", scope: "emotional_tone", instruction: "" },
   { label: "Add More Storytelling", scope: "story", instruction: "Expand the narrative/emotional story beat with more depth." },
@@ -56,7 +63,16 @@ const ONE_CLICK_ACTIONS: { label: string; scope: ScriptRegenerateScope; instruct
   { label: "Improve Ending", scope: "cta", instruction: "Make the ending land harder — a more memorable, resonant close." },
 ];
 
-export type RegenerateOptions = { customInstruction?: string; targetWordCount?: number };
+// These reference beats ("science"/"story"/"emotional_tone") that only exist
+// in the default 9-part Video Ad structure — hidden for every other format.
+const AD_STRUCTURE_ONLY_ACTIONS = new Set(["Add More Science", "Add More Emotion", "Add More Storytelling"]);
+
+export type RegenerateOptions = {
+  customInstruction?: string;
+  targetWordCount?: number;
+  tone?: string;
+  targetSceneLabel?: string;
+};
 
 export function ScriptStep({
   script,
@@ -89,10 +105,16 @@ export function ScriptStep({
   onRestoreVersion,
   selectedHookText,
   onChooseHook,
+  onChangeFormat,
+  staticImages,
+  onGenerateStaticImage,
 }: {
   script: GeneratedScript;
   situation: StorySituation;
   creativeAngle?: string;
+  onChangeFormat?: () => void;
+  staticImages?: Record<string, StaticImageState>;
+  onGenerateStaticImage?: (lineId: string, prompt: string) => void;
   scriptLanguage?: ScriptLanguage;
   onScriptLanguageChange?: (language: ScriptLanguage) => void;
   targetDuration?: string;
@@ -122,6 +144,14 @@ export function ScriptStep({
   onChooseHook?: () => void;
 }) {
   const lines = flattenScript(script);
+  const contentType = script.content_type ?? "video";
+  const format = script.format ?? "";
+  const isStatic = contentType === "static";
+  // The classic Video Ad structure (or no format at all — pre-existing
+  // scripts) is the only shape written to "section"; every other format
+  // groups by scene_label instead (Host/Guest, Scene N, Slide N, Headline...).
+  const usesSectionGrouping = !isStatic && (format === "" || format === "video_ad");
+
   const [view, setView] = useState<"shotlist" | "sheet">("shotlist");
   const [sectionEditing, setSectionEditing] = useState<string | null>(null);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -139,13 +169,13 @@ export function ScriptStep({
   const grouped = useMemo(() => {
     const groups: { section: string; lines: FlatLine[] }[] = [];
     for (const line of lines) {
-      const key = line.section ?? "other";
+      const key = usesSectionGrouping ? line.section ?? "other" : line.scene_label || line.role;
       const last = groups[groups.length - 1];
       if (last && last.section === key) last.lines.push(line);
       else groups.push({ section: key, lines: [line] });
     }
     return groups;
-  }, [lines]);
+  }, [lines, usesSectionGrouping]);
 
   function handleImproveSelection(lineId: string, selectedText: string) {
     setPendingCommand({ instruction: "", selection: { line_id: lineId, selected_text: selectedText } });
@@ -160,10 +190,28 @@ export function ScriptStep({
   return (
     <Card glow>
       <CardHeader
-        title="Cinematic Script"
-        subtitle="Full cinematic script for your chosen story — plus literal search tags for Stage 8."
+        title="AI Script Generator"
+        subtitle={
+          isStatic
+            ? "Structured static creative for your chosen story — plus a ready-to-use image prompt."
+            : "Full structured script for your chosen story — plus literal search tags and visual prompts."
+        }
         icon={<IconPen />}
-        right={<RegenerateMenu onSelect={(scope) => onRegenerateScope(scope)} loading={regenerating} />}
+        right={
+          <div className="flex items-center gap-2">
+            <ToneMenu
+              currentTone={script.tone}
+              onSelect={(tone) =>
+                onRegenerateScope("full", {
+                  tone,
+                  customInstruction: `Rewrite the entire script in a ${tone.toLowerCase()} tone — shift the voice and word choice throughout while keeping the same story, structure, and beats.`,
+                })
+              }
+              loading={regenerating}
+            />
+            <RegenerateMenu onSelect={(scope) => onRegenerateScope(scope)} loading={regenerating} />
+          </div>
+        }
       />
       <CardBody className="space-y-4">
         <div className="flex items-start justify-between gap-3 rounded-xl border border-[var(--accent)]/20 bg-[var(--accent-soft)] px-4 py-3">
@@ -183,15 +231,29 @@ export function ScriptStep({
                   {angleEmoji(creativeAngle)} {creativeAngle}
                 </span>
               )}
+              <Chip>{isStatic ? "\u{1F5BC}\u{FE0F} Static" : "\u{1F3A5} Video"}</Chip>
+              {format && <Chip>{formatLabel(isStatic ? "static" : "video", format)}</Chip>}
+              {script.tone && <Chip>🎭 {script.tone}</Chip>}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onBack}
-            className="shrink-0 whitespace-nowrap text-[12px] font-medium text-[var(--accent-2)] hover:underline"
-          >
-            Different angle
-          </button>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            {onChangeFormat && (
+              <button
+                type="button"
+                onClick={onChangeFormat}
+                className="whitespace-nowrap text-[12px] font-medium text-[var(--accent-2)] hover:underline"
+              >
+                Change format
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onBack}
+              className="whitespace-nowrap text-[12px] font-medium text-[var(--muted)] hover:text-[var(--foreground)] hover:underline"
+            >
+              Different angle
+            </button>
+          </div>
         </div>
 
         {onChooseHook && (
@@ -215,7 +277,7 @@ export function ScriptStep({
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-[12px] font-medium text-[var(--muted)]">Language</p>
               <LanguageSelector value={scriptLanguage ?? "english"} onChange={onScriptLanguageChange} />
-              {onTargetDurationChange && (
+              {onTargetDurationChange && !isStatic && (
                 <>
                   <p className="ml-1 text-[12px] font-medium text-[var(--muted)]">Duration</p>
                   <DurationSelector value={bucket} onChange={onTargetDurationChange} />
@@ -223,43 +285,47 @@ export function ScriptStep({
               )}
               <span className="text-[11px] text-[var(--muted)]">— change, then Regenerate</span>
             </div>
-            <div className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
-              {(["shotlist", "sheet"] as const).map((v) => (
-                <button
-                  key={v}
-                  type="button"
-                  onClick={() => setView(v)}
-                  className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                    view === v ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
-                  }`}
-                >
-                  {v === "shotlist" ? "Shot List" : "Script Sheet"}
-                </button>
-              ))}
+            {!isStatic && (
+              <div className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
+                {(["shotlist", "sheet"] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setView(v)}
+                    className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                      view === v ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {v === "shotlist" ? "Shot List" : "Script Sheet"}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Duration meter + length controls — video only, static has no spoken runtime */}
+        {!isStatic && (
+          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
+            <DurationMeter estimatedSeconds={estimated} targetSeconds={targetSeconds} status={status} />
+            <div className="flex items-center gap-1.5">
+              <button type="button" onClick={() => handleLengthPct(-40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
+                − 40%
+              </button>
+              <button type="button" onClick={() => handleLengthPct(-20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
+                − 20%
+              </button>
+              <button type="button" onClick={() => handleLengthPct(20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
+                + 20%
+              </button>
+              <button type="button" onClick={() => handleLengthPct(40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
+                + 40%
+              </button>
             </div>
           </div>
         )}
 
-        {/* Duration meter + length controls */}
-        <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
-          <DurationMeter estimatedSeconds={estimated} targetSeconds={targetSeconds} status={status} />
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => handleLengthPct(-40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-              − 40%
-            </button>
-            <button type="button" onClick={() => handleLengthPct(-20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-              − 20%
-            </button>
-            <button type="button" onClick={() => handleLengthPct(20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-              + 20%
-            </button>
-            <button type="button" onClick={() => handleLengthPct(40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-              + 40%
-            </button>
-          </div>
-        </div>
-
-        {status === "bad" && (
+        {!isStatic && status === "bad" && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--danger)]/30 bg-[var(--danger)]/10 px-4 py-2.5">
             <p className="text-[12.5px] text-[var(--foreground)]">
               ⚠️ Script is ~{estimated}s — target is {targetSeconds}s.
@@ -274,18 +340,21 @@ export function ScriptStep({
           </div>
         )}
 
-        {/* One-click actions */}
+        {/* One-click actions — the ad-structure-specific ones (Science/Story/
+            Emotion beats) only make sense for the default Video Ad structure */}
         <div className="flex flex-wrap gap-1.5">
-          {ONE_CLICK_ACTIONS.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              onClick={() => onRegenerateScope(action.scope, { customInstruction: action.instruction })}
-              className="rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[11px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)]/50 hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
-            >
-              {action.label}
-            </button>
-          ))}
+          {ONE_CLICK_ACTIONS.filter((action) => usesSectionGrouping || !AD_STRUCTURE_ONLY_ACTIONS.has(action.label)).map(
+            (action) => (
+              <button
+                key={action.label}
+                type="button"
+                onClick={() => onRegenerateScope(action.scope, { customInstruction: action.instruction })}
+                className="rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-1 text-[11px] font-medium text-[var(--foreground)] transition-colors hover:border-[var(--accent)]/50 hover:bg-[var(--accent-soft)] hover:text-[var(--accent)]"
+              >
+                {action.label}
+              </button>
+            )
+          )}
         </div>
 
         {/* Suggestions + history toolbar */}
@@ -351,16 +420,40 @@ export function ScriptStep({
         />
 
         <p className="flex items-center gap-2 text-[12px] text-[var(--muted)]">
-          <span>🎙</span> Voiceover for every line happens in Stage 9, after Compliance and Assets are locked in.
+          {isStatic ? (
+            <>
+              <span>🖼️</span> This creative is ready for image generation — static content has no
+              voiceover, so it skips straight from Compliance to Assets.
+            </>
+          ) : (
+            <>
+              <span>🎙</span> Voiceover for every line happens in Stage 9, after Compliance and Assets are locked in.
+            </>
+          )}
         </p>
 
-        {view === "shotlist" ? (
+        {isStatic ? (
+          <StaticCreativeWorkspace
+            lines={lines}
+            onEditLine={onEditLine}
+            onEditField={onEditLineField}
+            onApplyDirective={onApplyDirective}
+            onGenerateAlternatives={onGenerateAlternatives}
+            onSelectAlternative={onSelectAlternative}
+            onTranslate={onTranslateLine}
+            currentLanguage={scriptLanguage}
+            lineLoading={lineLoading}
+            recentlyChangedLineIds={recentlyChangedLineIds}
+            imageResults={staticImages ?? {}}
+            onGenerateImage={onGenerateStaticImage}
+          />
+        ) : view === "shotlist" ? (
           <div className="space-y-5">
             {grouped.map((group, gi) => (
               <div key={gi}>
                 <div className="mb-1.5 flex items-center gap-2">
                   <span className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
-                    {SECTION_LABEL[group.section] ?? group.section}
+                    {usesSectionGrouping ? SECTION_LABEL[group.section] ?? group.section : group.section}
                   </span>
                   <button
                     type="button"
@@ -385,6 +478,11 @@ export function ScriptStep({
                         onGenerateAlternatives={() => onGenerateAlternatives(line.id)}
                         onSelectAlternative={(text) => onSelectAlternative(line.id, text)}
                         onTranslate={(language) => onTranslateLine(line.id, language)}
+                        onRegenerateScene={
+                          line.role === "body" && line.scene_label
+                            ? () => onRegenerateScope("specific_scene", { targetSceneLabel: line.scene_label })
+                            : undefined
+                        }
                         currentLanguage={scriptLanguage}
                         aiLoading={Boolean(lineLoading[line.id])}
                         glow={recentlyChangedLineIds.has(line.id)}
@@ -646,6 +744,172 @@ function ScriptSheet({
   );
 }
 
+/** Static creative (Instagram Post, Carousel, Banner, ...) rendered as
+ * labeled cards instead of a video timeline — each block's own scene_label
+ * ("Headline", "Primary Copy", "Slide 2 — Problem", ...) is the card title,
+ * since it's already format-specific from the generation prompt. Blocks that
+ * carry an ai_image_prompt get their own prompt card on the right so it's
+ * immediately usable for the next image-generation stage. */
+function StaticCreativeWorkspace({
+  lines,
+  onEditLine,
+  onEditField,
+  onApplyDirective,
+  onGenerateAlternatives,
+  onSelectAlternative,
+  onTranslate,
+  currentLanguage,
+  lineLoading,
+  recentlyChangedLineIds,
+  imageResults,
+  onGenerateImage,
+}: {
+  lines: FlatLine[];
+  onEditLine: (lineId: string, text: string) => void;
+  onEditField: (lineId: string, field: string, value: string | string[]) => void;
+  onApplyDirective: (lineId: string, directive: RewriteDirective) => void;
+  onGenerateAlternatives: (lineId: string) => Promise<string[]>;
+  onSelectAlternative: (lineId: string, text: string) => void;
+  onTranslate: (lineId: string, language: ScriptLanguage) => void;
+  currentLanguage?: ScriptLanguage;
+  lineLoading: Record<string, boolean>;
+  recentlyChangedLineIds: Set<string>;
+  imageResults: Record<string, StaticImageState>;
+  onGenerateImage?: (lineId: string, prompt: string) => void;
+}) {
+  const imagePromptLines = lines.filter((l) => l.ai_image_prompt);
+
+  return (
+    <div className="grid grid-cols-1 gap-3.5 lg:grid-cols-[1.3fr_1fr]">
+      <div className="space-y-3.5">
+        {lines.map((line) => {
+          if (!line.text && !line.ai_image_prompt) return null;
+          const isCta = line.role === "cta";
+          return (
+            <div
+              key={line.id}
+              className={cn(
+                "rounded-xl border p-4",
+                isCta ? "border-[var(--accent)]/40 bg-[var(--accent-soft)]" : "border-[var(--border)] bg-[var(--surface-2)]"
+              )}
+            >
+              <Badge tone={ROLE_TONE[line.role]}>{line.scene_label || ROLE_LABEL[line.role]}</Badge>
+              {line.text && (
+                <div className="mt-2">
+                  <EditableLine
+                    text={line.text}
+                    onSave={(text) => onEditLine(line.id, text)}
+                    renderText={renderBold}
+                    textClassName={
+                      line.role === "hook"
+                        ? "text-[18px] font-semibold leading-snug text-[var(--foreground)]"
+                        : isCta
+                          ? "text-[15px] font-semibold text-[var(--accent)]"
+                          : "text-[14px] leading-relaxed text-[var(--foreground)]/90"
+                    }
+                    onApplyDirective={(d) => onApplyDirective(line.id, d)}
+                    onGenerateAlternatives={() => onGenerateAlternatives(line.id)}
+                    onSelectAlternative={(text) => onSelectAlternative(line.id, text)}
+                    onTranslate={(lang) => onTranslate(line.id, lang)}
+                    currentLanguage={currentLanguage}
+                    aiLoading={Boolean(lineLoading[line.id])}
+                    glow={recentlyChangedLineIds.has(line.id)}
+                  />
+                </div>
+              )}
+              {line.visual_direction && (
+                <div className="mt-2 flex items-start gap-1.5 text-[12px] text-[var(--muted)]">
+                  <span className="shrink-0">🎨 Design:</span>
+                  <InlineField value={line.visual_direction} onSave={(v) => onEditField(line.id, "visual_direction", v)} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="space-y-3.5">
+        {imagePromptLines.map((line) => {
+          const result = imageResults[line.id];
+          const prompt = line.ai_image_prompt ?? "";
+          return (
+            <div key={`${line.id}-image`} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/60">
+              <div className="flex items-center justify-between px-4 pt-3.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+                  🖼️ {line.scene_label || ROLE_LABEL[line.role]}
+                </p>
+                {onGenerateImage && result && result.status !== "generating" && result.status !== "pending" && (
+                  <button
+                    type="button"
+                    onClick={() => onGenerateImage(line.id, prompt)}
+                    className="text-[11px] font-medium text-[var(--accent-2)] hover:underline"
+                  >
+                    🔄 Regenerate
+                  </button>
+                )}
+              </div>
+
+              <div className="mt-2.5 px-4">
+                {result?.status === "completed" && result.imagePath ? (
+                  <img
+                    src={visualFileUrl(result.imagePath)}
+                    alt={line.scene_label || "Static creative visual"}
+                    className="w-full rounded-lg border border-[var(--border)] object-cover"
+                  />
+                ) : result?.status === "failed" ? (
+                  <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--danger)]/40 bg-[var(--danger)]/5 px-4 py-8 text-center">
+                    <p className="text-[12px] text-[var(--danger)]">{result.error || "Image generation failed."}</p>
+                    {onGenerateImage && (
+                      <button
+                        type="button"
+                        onClick={() => onGenerateImage(line.id, prompt)}
+                        className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--on-accent)] hover:brightness-110"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </div>
+                ) : result?.status === "generating" || result?.status === "pending" ? (
+                  <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-10 text-center">
+                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-[var(--foreground)]/20 border-t-[var(--accent)]" />
+                    <p className="text-[12px] text-[var(--muted)]">Generating…</p>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border-strong)] bg-[var(--surface)] px-4 py-10 text-center">
+                    <p className="text-[12px] text-[var(--muted)]">Not generated yet</p>
+                    {onGenerateImage && (
+                      <button
+                        type="button"
+                        onClick={() => onGenerateImage(line.id, prompt)}
+                        className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-[12px] font-medium text-[var(--on-accent)] hover:brightness-110"
+                      >
+                        Generate Image
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="px-4 pb-3.5 pt-2">
+                <InlineField
+                  value={line.ai_image_prompt ?? ""}
+                  onSave={(v) => onEditField(line.id, "ai_image_prompt", v)}
+                  className="text-[11.5px] italic text-[var(--muted)]"
+                />
+              </div>
+            </div>
+          );
+        })}
+        {imagePromptLines.length === 0 && (
+          <div className="rounded-xl border border-dashed border-[var(--border)] px-4 py-6 text-center text-[12px] text-[var(--muted)]">
+            No image prompts yet — regenerate to fill this in.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InlineField({
   value,
   placeholder,
@@ -765,6 +1029,7 @@ function TimelineNode({
   onGenerateAlternatives,
   onSelectAlternative,
   onTranslate,
+  onRegenerateScene,
   currentLanguage,
   aiLoading,
   glow,
@@ -778,6 +1043,7 @@ function TimelineNode({
   onGenerateAlternatives: () => Promise<string[]>;
   onSelectAlternative: (text: string) => void;
   onTranslate: (language: ScriptLanguage) => void;
+  onRegenerateScene?: () => void;
   currentLanguage?: ScriptLanguage;
   aiLoading: boolean;
   glow: boolean;
@@ -864,6 +1130,17 @@ function TimelineNode({
 
                 {line.transition_note && (
                   <p className="text-[12px] text-[var(--muted)]">↳ {line.transition_note}</p>
+                )}
+
+                {onRegenerateScene && (
+                  <button
+                    type="button"
+                    onClick={onRegenerateScene}
+                    disabled={aiLoading}
+                    className="inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--accent-2)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    🔄 Regenerate this scene
+                  </button>
                 )}
               </div>
             </motion.div>

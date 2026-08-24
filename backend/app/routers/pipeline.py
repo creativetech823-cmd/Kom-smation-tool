@@ -32,6 +32,8 @@ from app.models.product import (
     SelectedAsset,
     SmartScriptSuggestionsResult,
     SourceType,
+    StaticVisualInput,
+    StaticVisualResult,
     StorySituationsInput,
     StorySituationsResult,
     StructuredProduct,
@@ -67,6 +69,7 @@ from app.services.script_suggestions_service import suggest_script_improvements
 from app.services.story_situation_service import generate_situations
 from app.services.tts_service import synthesize_voiceover
 from app.services.visual_concept_service import (
+    generate_static_visual,
     generate_test_image,
     generate_visual_concepts,
     get_debug_info,
@@ -363,6 +366,19 @@ def visual_concepts_download(payload: VisualConceptDownloadInput) -> FileRespons
     media_types = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
     ext = Path(path).suffix.lstrip(".").lower()
     return FileResponse(path, media_type=media_types.get(ext, "image/png"), filename=Path(path).name)
+
+
+@router.post("/static-visual/generate", response_model=StaticVisualResult)
+def static_visual_generate(payload: StaticVisualInput) -> StaticVisualResult:
+    """Static creative — render one ai_image_prompt into an actual image, the
+    static-content equivalent of a video VisualConcept (no scene planning/
+    scoring/style-param editing needed, just the rendered image)."""
+    try:
+        result = generate_static_visual(payload.prompt, payload.aspect_ratio)
+    except Exception as e:
+        logger.exception("Unhandled error in generate_static_visual")
+        raise HTTPException(502, f"Couldn't generate that image: {e}")
+    return StaticVisualResult(**result)
 
 
 @router.post("/visual-concepts/test", response_model=TestImageResult)

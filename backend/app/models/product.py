@@ -30,6 +30,14 @@ class ScriptSection(str, Enum):
     cta = "cta"
 
 
+class ContentType(str, Enum):
+    """What kind of creative is being produced — determines which format
+    catalog applies and which downstream pipeline stages are relevant."""
+
+    video = "video"
+    static = "static"
+
+
 class ScriptRegenerateScope(str, Enum):
     """Which part of an already-generated script a regeneration request targets."""
 
@@ -41,6 +49,7 @@ class ScriptRegenerateScope(str, Enum):
     product_explanation = "product_explanation"
     emotional_tone = "emotional_tone"
     length = "length"
+    specific_scene = "specific_scene"
 
 
 class ReferenceKind(str, Enum):
@@ -220,6 +229,17 @@ class ScriptGenerationInput(BaseModel):
     # block should open with (or faithfully adapt) this exact line. Empty = AI
     # writes its own opening.
     selected_hook_text: str = Field("", max_length=500)
+    # What's being produced (video vs. static creative) and in what format
+    # (a content_formats.py catalog value, or a free label when the user
+    # picked "Custom") — together these pick the beat structure the model
+    # writes to. Empty format = the original default Video Ad structure.
+    content_type: ContentType = ContentType.video
+    format: str = Field("", max_length=100)
+    format_description: str = Field("", max_length=500)
+    # The requested voice/register (e.g. "Conversational", "Bold") — a free
+    # label from the frontend's tone catalog, same free-string pattern as
+    # creative_angle. Empty = no specific tone requested.
+    tone: str = Field("", max_length=100)
 
 
 class ScriptLine(BaseModel):
@@ -242,9 +262,15 @@ class ScriptLine(BaseModel):
     @field_validator("section", mode="before")
     @classmethod
     def _blank_section_to_none(cls, v: object) -> object:
-        """Gemini occasionally emits "" instead of omitting the field — treat
-        that the same as not tagging a section rather than a validation error."""
-        return v or None
+        """The model occasionally emits "" instead of omitting the field, or —
+        for formats other than the default Video Ad structure, where it's
+        told to leave this empty — invents an ad-structure-ish word anyway
+        (e.g. "banter", "narration") that isn't a real ScriptSection value.
+        Treat both the same as not tagging a section, rather than a
+        validation error that would trigger a repair pass or fail outright."""
+        if not v or (isinstance(v, str) and v not in {e.value for e in ScriptSection}):
+            return None
+        return v
 
 
 class GeneratedScript(BaseModel):
@@ -259,6 +285,10 @@ class GeneratedScript(BaseModel):
     script_language: ScriptLanguage = ScriptLanguage.english
     target_duration: str = ""
     estimated_duration_seconds: float = 0.0
+    content_type: ContentType = ContentType.video
+    format: str = ""
+    format_description: str = ""
+    tone: str = ""
 
     @property
     def full_text(self) -> str:
@@ -290,6 +320,14 @@ class ScriptSectionRegenerateInput(BaseModel):
     # Precise numeric word-count target — used by Shorten/Extend/slider controls
     # to override the bucket's normal range with an exact goal.
     target_word_count: Optional[int] = None
+    content_type: ContentType = ContentType.video
+    format: str = Field("", max_length=100)
+    format_description: str = Field("", max_length=500)
+    tone: str = Field("", max_length=100)
+    # Only used when scope == specific_scene — the exact scene_label of the
+    # single body block to regenerate; every other block (including hook/cta)
+    # is left untouched.
+    target_scene_label: str = Field("", max_length=100)
 
 
 class AssetSourcingInput(BaseModel):
@@ -650,3 +688,19 @@ class VisualConceptDebugInfo(BaseModel):
     model: str
     api_url: str
     internet_access: bool
+
+
+class StaticVisualInput(BaseModel):
+    """One-off image render for a static creative's ai_image_prompt — the
+    static-content equivalent of a video VisualConcept, without the scene
+    planning/scoring/style-param editing machinery those carry."""
+
+    prompt: str = Field(..., min_length=1)
+    aspect_ratio: str = "1:1"
+
+
+class StaticVisualResult(BaseModel):
+    image_path: str
+    used_model: str = ""
+    elapsed_seconds: float = 0.0
+    seed: Optional[int] = None
