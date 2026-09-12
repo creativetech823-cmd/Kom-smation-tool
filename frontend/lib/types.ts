@@ -14,6 +14,8 @@ export type VideoFormat =
   | "educational_video"
   | "social_media_reel"
   | "storytelling"
+  | "testimonial"
+  | "product_demo"
   | "custom";
 
 export type StaticFormat =
@@ -200,7 +202,18 @@ export type RewriteDirective =
   | "meta_glasses_pov"
   | "translate";
 
-export type ScriptLanguage = "english" | "hindi" | "hinglish";
+export type ScriptLanguage =
+  | "english"
+  | "hindi"
+  | "hinglish"
+  | "marathi"
+  | "gujarati"
+  | "tamil"
+  | "telugu"
+  | "bengali"
+  | "kannada"
+  | "malayalam"
+  | "custom";
 
 export type GeneratedScript = {
   hook: ScriptLine;
@@ -210,6 +223,7 @@ export type GeneratedScript = {
   bgm_suggestion?: string;
   creative_angle?: string;
   script_language?: ScriptLanguage;
+  custom_language?: string;
   target_duration?: string;
   estimated_duration_seconds?: number;
   content_type?: ContentType;

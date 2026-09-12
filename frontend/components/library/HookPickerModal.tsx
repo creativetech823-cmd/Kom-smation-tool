@@ -6,19 +6,7 @@ import { listHooks, toggleHookFavorite, ApiError } from "@/lib/api";
 import type { Hook } from "@/lib/types";
 import { HookCard } from "@/components/library/HookCard";
 import { LibraryFilterBar } from "@/components/library/LibraryFilterBar";
-
-const CATEGORIES = [
-  "Curiosity",
-  "Problem",
-  "Question",
-  "Educational",
-  "Storytelling",
-  "Controversial",
-  "FOMO",
-  "Product",
-  "Emotional",
-  "Trending",
-];
+import { HOOK_CATEGORIES } from "@/lib/constants";
 
 const PAGE_SIZE = 12;
 
@@ -114,7 +102,7 @@ export function HookPickerModal({
                 setPage(1);
               }}
               searchPlaceholder="Search hooks…"
-              chips={CATEGORIES}
+              chips={HOOK_CATEGORIES}
               activeChip={category}
               onChipChange={(c) => {
                 setCategory(c);

@@ -260,12 +260,18 @@ def get_hook(db: Session, hook_id: str) -> Optional[Hook]:
     return db.get(Hook, hook_id)
 
 
-def update_hook(db: Session, hook_id: str, is_favorite: Optional[bool]) -> Optional[Hook]:
+def update_hook(db: Session, hook_id: str, fields: dict) -> Optional[Hook]:
     hook = db.get(Hook, hook_id)
     if hook is None:
         return None
-    if is_favorite is not None:
-        hook.is_favorite = is_favorite
+    if "text" in fields:
+        stripped = (fields["text"] or "").strip()
+        if not stripped:
+            raise ValueError("Hook text cannot be empty")
+        hook.text = stripped
+    for key in ("category", "platform", "tone", "is_favorite"):
+        if fields.get(key) is not None:
+            setattr(hook, key, fields[key])
     db.commit()
     db.refresh(hook)
     return hook

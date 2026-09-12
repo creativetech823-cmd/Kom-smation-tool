@@ -21,6 +21,8 @@ VIDEO_FORMATS: list[dict[str, str]] = [
     {"value": "educational_video", "label": "Educational Video"},
     {"value": "social_media_reel", "label": "Social Media Reel"},
     {"value": "storytelling", "label": "Storytelling"},
+    {"value": "testimonial", "label": "Testimonial"},
+    {"value": "product_demo", "label": "Product Demo"},
 ]
 
 STATIC_FORMATS: list[dict[str, str]] = [
@@ -110,6 +112,24 @@ _VIDEO_STRUCTURE_PROMPTS: dict[str, str] = {
         "with the product woven into the resolution, not bolted onto the end. Lean fully into "
         "storytelling technique (specific sensory detail, a real character, a real stake) rather than "
         "summarizing the story in the abstract. " + _NO_SECTION_NOTE
+    ),
+    "testimonial": (
+        'STRUCTURE — a real-customer testimonial: mostly one continuous voice (don\'t invent a second '
+        'speaker) speaking in first person about their own genuine experience with the product, broken '
+        'into short "scene_label" beats ("Scene 1", "Scene 2", ...) only where the framing/setting '
+        "genuinely changes. Write it the way a real customer actually talks — specific, personal, a "
+        "little imperfect — not polished ad copy in disguise; never invent specific clinical/medical "
+        "results the product profile doesn't support. \"camera_angle\" should reflect an unpolished, "
+        'handheld or simple sit-down setup, never a studio production. ' + _NO_SECTION_NOTE
+    ),
+    "product_demo": (
+        'STRUCTURE — a feature-by-feature product demo (distinct from Product Showcase\'s broader '
+        'lifestyle/angle spotlighting: this is a literal, step-by-step walkthrough of how the product '
+        'is used): number each beat "Scene 1", "Scene 2", ... in "scene_label", each one showing a '
+        'single concrete step or feature in the order a real user would actually encounter it (unbox/'
+        'setup -> core use -> secondary features -> result). "visual_direction" should describe exactly '
+        "what hands/product are doing on screen in that step, concrete enough to shoot or generate an "
+        "image from. " + _NO_SECTION_NOTE
     ),
 }
 

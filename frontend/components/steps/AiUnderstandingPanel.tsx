@@ -51,12 +51,14 @@ export function AiUnderstandingPanel({
   onContinue,
   continueLoading,
   activityLog = [],
+  continueLabel = "Generate story ideas",
 }: {
   data: StructuredProduct | null;
   loading: boolean;
   onContinue: () => void;
   continueLoading: boolean;
   activityLog?: ActivityEntry[];
+  continueLabel?: string;
 }) {
   const state: "placeholder" | "loading" | "populated" = loading ? "loading" : data ? "populated" : "placeholder";
 
@@ -138,7 +140,7 @@ export function AiUnderstandingPanel({
 
             <div className="flex justify-end pt-2">
               <Button onClick={onContinue} loading={continueLoading}>
-                Generate story ideas
+                {continueLabel}
                 <IconArrow />
               </Button>
             </div>

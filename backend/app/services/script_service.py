@@ -381,6 +381,20 @@ _NO_TRANSLATION_NOTE = (
     "this register would reach for unprompted.\n"
 )
 
+def _native_script_block(language_label: str, script_name: str, example: str) -> str:
+    return (
+        f"\nSCRIPT LANGUAGE (mandatory, strictly enforced): Write every \"text\" field ENTIRELY in "
+        f"native {script_name} script — every word, not just some. Do NOT write in Roman/Latin "
+        f"letters, even for common code-switched words — transliterate them into {script_name} too. "
+        f"The only exception is the product/brand name itself, which may stay in Roman script if "
+        f"that's how it's branded. This must read like natural conversational spoken {language_label} "
+        f"a voiceover artist would say, not a stiff formal translation. Example of the register (not "
+        f"the content): \"{example}\"\n"
+        + _NO_TRANSLATION_NOTE
+        + _VOICE_STRUCTURE_GUIDE
+    )
+
+
 _LANGUAGE_BLOCKS: dict[ScriptLanguage, str] = {
     ScriptLanguage.english: "",
     ScriptLanguage.hindi: (
@@ -411,11 +425,29 @@ _LANGUAGE_BLOCKS: dict[ScriptLanguage, str] = {
         + _NO_TRANSLATION_NOTE
         + _VOICE_STRUCTURE_GUIDE
     ),
+    ScriptLanguage.marathi: _native_script_block("Marathi", "Devanagari", "तुला पण असंच वाटतं का की हा फक्त एक ट्रेंड आहे?"),
+    ScriptLanguage.gujarati: _native_script_block("Gujarati", "Gujarati", "શું તમને પણ લાગે છે કે આ ફક્ત એક ટ્રેન્ડ છે?"),
+    ScriptLanguage.tamil: _native_script_block("Tamil", "Tamil", "இது ஒரு ட்ரெண்ட் மட்டும்தான் என்று உங்களுக்கும் தோன்றுகிறதா?"),
+    ScriptLanguage.telugu: _native_script_block("Telugu", "Telugu", "ఇది కేవలం ఒక ట్రెండ్ అని మీకు కూడా అనిపిస్తుందా?"),
+    ScriptLanguage.bengali: _native_script_block("Bengali", "Bengali", "তোমারও কি মনে হয় এটা শুধু একটা ট্রেন্ড?"),
+    ScriptLanguage.kannada: _native_script_block("Kannada", "Kannada", "ಇದು ಕೇವಲ ಒಂದು ಟ್ರೆಂಡ್ ಅಂತ ನಿಮಗೂ ಅನಿಸುತ್ತಾ?"),
+    ScriptLanguage.malayalam: _native_script_block("Malayalam", "Malayalam", "ഇത് വെറും ഒരു ട്രെൻഡ് ആണെന്ന് നിങ്ങൾക്കും തോന്നുന്നുണ്ടോ?"),
 }
 
 
 def _language_block(language: ScriptLanguage) -> str:
     return _LANGUAGE_BLOCKS.get(language, "")
+
+
+def _custom_language_block(custom_language: str) -> str:
+    if not custom_language:
+        return ""
+    return (
+        f"\nSCRIPT LANGUAGE (mandatory): Write every \"text\" field natively in {custom_language} — "
+        f"native script and phrasing for that language, not a translation from English. Only the "
+        f"product/brand name may stay in Roman script if that's how it's branded.\n"
+        + _NO_TRANSLATION_NOTE
+    )
 
 
 def _context_block(payload, target_duration: str, target_word_count: int | None = None) -> str:
@@ -462,7 +494,7 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         f"Format: {format_label}{format_desc_note}\n"
         f"{_hook_block(getattr(payload, 'selected_hook_text', ''))}"
         f"{_angle_block(payload.creative_angle)}"
-        f"{_language_block(payload.script_language)}\n"
+        f"{_custom_language_block(getattr(payload, 'custom_language', '')) if payload.script_language == ScriptLanguage.custom else _language_block(payload.script_language)}\n"
         f"{length_line}"
         f"Platform: {payload.platform}\n"
         f"Max characters per line: {payload.max_line_chars}\n\n"
@@ -597,6 +629,7 @@ def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
         situation=payload.selected_situation,
         creative_angle=payload.creative_angle,
         script_language=payload.script_language,
+        custom_language=payload.custom_language,
         target_duration=target_duration,
         estimated_duration_seconds=script_length.estimate_seconds(script_length.count_words(data)),
         content_type=payload.content_type,

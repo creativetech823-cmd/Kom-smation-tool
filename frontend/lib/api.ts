@@ -196,6 +196,7 @@ export function generateScript(payload: {
   max_line_chars?: number;
   creative_angle?: string;
   script_language?: ScriptLanguage;
+  custom_language?: string;
   target_duration?: string;
   selected_hook_text?: string;
   content_type?: ContentType;
@@ -214,6 +215,7 @@ export function regenerateScriptSection(payload: {
   max_line_chars?: number;
   creative_angle?: string;
   script_language?: ScriptLanguage;
+  custom_language?: string;
   target_duration?: string;
   current_script: GeneratedScript;
   scope: ScriptRegenerateScope;
@@ -466,6 +468,13 @@ export function getHook(id: string) {
 
 export function toggleHookFavorite(id: string, is_favorite: boolean) {
   return patch<Hook>(`/library/hooks/${id}`, { is_favorite });
+}
+
+export function updateHook(
+  id: string,
+  payload: Partial<Pick<Hook, "text" | "category" | "platform" | "tone" | "is_favorite">>
+) {
+  return patch<Hook>(`/library/hooks/${id}`, payload);
 }
 
 export function markHookUsed(id: string) {

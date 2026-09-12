@@ -68,7 +68,18 @@ the original.
 
 Return ONLY the translated line — no prose, no quotes, no markdown fences, no explanation."""
 
-_LANGUAGE_NAME = {"english": "English", "hindi": "Hindi (Devanagari script)", "hinglish": "Hinglish (Hindi sentence structure in Roman/Latin script)"}
+_LANGUAGE_NAME = {
+    "english": "English",
+    "hindi": "Hindi (Devanagari script)",
+    "hinglish": "Hinglish (Hindi sentence structure in Roman/Latin script)",
+    "marathi": "Marathi (Devanagari script)",
+    "gujarati": "Gujarati (Gujarati script)",
+    "tamil": "Tamil (Tamil script)",
+    "telugu": "Telugu (Telugu script)",
+    "bengali": "Bengali (Bengali script)",
+    "kannada": "Kannada (Kannada script)",
+    "malayalam": "Malayalam (Malayalam script)",
+}
 
 
 def _build_user_message(payload: RewriteLineInput) -> str:

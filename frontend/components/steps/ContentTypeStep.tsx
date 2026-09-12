@@ -36,19 +36,21 @@ export function ContentTypeStep({
     <Card glow>
       <CardHeader
         title="What do you want to create?"
-        subtitle="Same story, same angle — pick the format of the final creative."
+        subtitle={angle ? "Same story, same angle — pick the format of the final creative." : "Pick the format of the final creative."}
         icon={<IconSparkles />}
       />
       <CardBody className="space-y-5">
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-4 py-3">
           <span className="text-[12px] font-medium text-[var(--muted)]">Story:</span>
           <span className="text-[13px] font-semibold text-[var(--foreground)]">{situation.title}</span>
-          <span
-            className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium text-white"
-            style={{ background: angleAccent(angle), borderColor: "transparent" }}
-          >
-            {angleEmoji(angle)} {angle}
-          </span>
+          {angle && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium text-white"
+              style={{ background: angleAccent(angle), borderColor: "transparent" }}
+            >
+              {angleEmoji(angle)} {angle}
+            </span>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -77,7 +79,7 @@ export function ContentTypeStep({
 
         <div className="flex justify-between pt-1">
           <Button variant="ghost" onClick={onBack}>
-            ← Back to angles
+            {angle ? "← Back to angles" : "← Back"}
           </Button>
         </div>
       </CardBody>

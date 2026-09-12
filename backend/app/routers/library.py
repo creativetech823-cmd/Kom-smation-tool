@@ -152,7 +152,10 @@ def get_hook(hook_id: str, db: Session = Depends(get_db)) -> object:
 
 @router.patch("/hooks/{hook_id}", response_model=HookOut)
 def update_hook(hook_id: str, payload: HookUpdate, db: Session = Depends(get_db)) -> object:
-    hook = svc.update_hook(db, hook_id, payload.is_favorite)
+    try:
+        hook = svc.update_hook(db, hook_id, payload.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     if hook is None:
         raise HTTPException(404, "Hook not found")
     return hook

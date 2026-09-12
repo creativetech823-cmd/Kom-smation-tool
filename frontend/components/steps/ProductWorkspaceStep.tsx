@@ -22,6 +22,9 @@ export function ProductWorkspaceStep({
   onSourceUrlRawTextChange,
   activityLog,
   onActivity,
+  initialProductName,
+  initialCategory,
+  continueLabel,
 }: {
   onSubmit: (input: ProductInput, category: string) => void;
   inputLoading: boolean;
@@ -40,6 +43,9 @@ export function ProductWorkspaceStep({
   onSourceUrlRawTextChange: (text: string | undefined) => void;
   activityLog: ActivityEntry[];
   onActivity: (label: string, tone?: "info" | "success" | "error") => void;
+  initialProductName?: string;
+  initialCategory?: string;
+  continueLabel?: string;
 }) {
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[3fr_2fr]">
@@ -57,6 +63,8 @@ export function ProductWorkspaceStep({
         sourceUrlRawText={sourceUrlRawText}
         onSourceUrlRawTextChange={onSourceUrlRawTextChange}
         onActivity={onActivity}
+        initialProductName={initialProductName}
+        initialCategory={initialCategory}
       />
       <AiUnderstandingPanel
         data={structured}
@@ -64,6 +72,7 @@ export function ProductWorkspaceStep({
         onContinue={onContinue}
         continueLoading={continueLoading}
         activityLog={activityLog}
+        continueLabel={continueLabel}
       />
     </div>
   );

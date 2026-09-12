@@ -9,8 +9,9 @@ import { PipelineSubHeader } from "@/components/shell/PipelineSubHeader";
 import { useToast } from "@/components/shell/ToastProvider";
 import { useActiveProject } from "@/lib/project-context";
 import { ACTIVE_TEMPLATE_KEY, type ActiveTemplateHint } from "@/lib/constants";
-import { staticAspectRatio } from "@/lib/contentFormats";
+import { useSceneVisuals, type SceneVisualsContext } from "@/lib/useSceneVisuals";
 import { HookPickerModal } from "@/components/library/HookPickerModal";
+import { HookBanner } from "@/components/pipeline/HookBanner";
 import { ProductWorkspaceStep } from "@/components/steps/ProductWorkspaceStep";
 import type { ActivityEntry } from "@/components/steps/AiUnderstandingPanel";
 import { StorySituationStep } from "@/components/steps/StorySituationStep";
@@ -29,25 +30,20 @@ import {
   auditCompliance,
   createAsset,
   createProject,
-  downloadVisualConcept,
   generateAlternatives,
   generateMotion,
   generateScript,
-  generateStaticVisual,
   generateStorySituations,
-  planVisualConcepts,
   generateVoiceover,
   getScriptSuggestions,
   logHistoryEvent,
   motionFileUrl,
   regenerateScriptSection,
-  regenerateVisualConcept,
   renderFileUrl,
   renderVideo,
   rewriteLine,
   runScriptCommand,
   savePipelineState,
-  scoreVisualConcept,
   markHookUsed,
   sourceAsset,
   structureProduct,
@@ -80,8 +76,6 @@ import {
   type StorySituation,
   type StructuredProduct,
   type VisualConcept,
-  type VisualConceptStyleParams,
-  type VisualVariationStyle,
   type VoiceoverResult,
 } from "@/lib/types";
 
@@ -285,13 +279,6 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const [scriptLanguage, setScriptLanguage] = useState<ScriptLanguage>(() => restored.scriptLanguage ?? "hinglish");
   const [targetDuration, setTargetDuration] = useState(() => restored.targetDuration ?? "30s");
   const [script, setScript] = useState<GeneratedScript | null>(() => restored.script);
-  const [visualConcepts, setVisualConcepts] = useState<VisualConcept[]>(() => restored.visualConcepts ?? []);
-  const [staticImages, setStaticImages] = useState<Record<string, StaticImageState>>(() => restored.staticImages ?? {});
-  const [visualConceptsLoading, setVisualConceptsLoading] = useState(false);
-  const [visualConceptsError, setVisualConceptsError] = useState<string | null>(null);
-  const [visualConceptScoring, setVisualConceptScoring] = useState<Record<string, boolean>>({});
-  const [visualConceptRegenLoading, setVisualConceptRegenLoading] = useState<Record<string, boolean>>({});
-  const [visualConceptDownloading, setVisualConceptDownloading] = useState<Record<string, boolean>>({});
   const [compliance, setCompliance] = useState<ComplianceResult | null>(() => restored.compliance);
   const [assets, setAssets] = useState<Record<string, SelectedAsset | undefined>>(() => restored.assets ?? {});
   const [loadingAssetIds, setLoadingAssetIds] = useState<Set<string>>(new Set());
@@ -325,12 +312,43 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const { activeProjectId, setActiveProject } = useActiveProject();
 
   const [scriptAssetId, setScriptAssetId] = useState<string | null>(() => restored.scriptAssetId);
-  const [visualAssetIdByConceptId, setVisualAssetIdByConceptId] = useState<Record<string, string>>(
-    () => restored.visualAssetIdByConceptId ?? {}
-  );
   const [selectedHookText, setSelectedHookText] = useState(() => restored.selectedHookText ?? "");
   const [hookPickerOpen, setHookPickerOpen] = useState(false);
   const [activeTemplate, setActiveTemplate] = useState<ActiveTemplateHint | null>(null);
+
+  const sceneVisuals = useSceneVisuals({
+    projectId: activeProjectId,
+    productCategory: category,
+    productName: structured?.product_name ?? "",
+    format: selectedFormat,
+    showToast,
+    initialVisualConcepts: restored.visualConcepts ?? undefined,
+    initialStaticImages: restored.staticImages ?? undefined,
+    initialVisualAssetIdByConceptId: restored.visualAssetIdByConceptId ?? undefined,
+  });
+  const {
+    visualConcepts,
+    setVisualConcepts,
+    staticImages,
+    setStaticImages,
+    visualConceptsLoading,
+    visualConceptsError,
+    visualConceptScoring,
+    visualConceptRegenLoading,
+    visualConceptDownloading,
+    visualAssetIdByConceptId,
+    renderOneVisualConcept,
+    generateVisualConcepts: handleGenerateVisualConcepts,
+    retryVisualConcepts,
+    retryOneVisualConcept,
+    regenerateVisualConcept: handleRegenerateVisualConcept,
+    generateVisualVariation: handleGenerateVisualVariation,
+    editVisualConceptPrompt: handleEditVisualConceptPrompt,
+    downloadVisualConcept: handleDownloadVisualConcept,
+    toggleFavoriteVisualConcept: handleToggleFavoriteVisualConcept,
+    generateStaticVisuals: handleGenerateStaticVisuals,
+    retryStaticImage: handleRetryStaticImage,
+  } = sceneVisuals;
 
   const projectIdRef = useRef<string | null>(projectIdProp);
   const creatingProjectRef = useRef(false);
@@ -707,164 +725,10 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     }
   }
 
-  // Guards against firing two renders for the same concept at once — the
-  // resume-after-refresh effect and a fresh plan could otherwise race.
-  const renderingConceptIdsRef = useRef<Set<string>>(new Set());
-
-  const renderOneVisualConcept = useCallback(
-    async (
-      concept: VisualConcept,
-      structuredProduct: StructuredProduct,
-      generatedScript: GeneratedScript,
-      situation: StorySituation,
-      angle: string
-    ) => {
-      if (renderingConceptIdsRef.current.has(concept.id)) return;
-      renderingConceptIdsRef.current.add(concept.id);
-      setVisualConcepts((prev) => prev.map((c) => (c.id === concept.id ? { ...c, status: "generating", error: null } : c)));
-      try {
-        const result = await regenerateVisualConcept({
-          structured_product: structuredProduct,
-          script: generatedScript,
-          situation,
-          creative_angle: angle,
-          concept,
-        });
-        const completed: VisualConcept = { ...result, status: "completed", error: null };
-        setVisualConcepts((prev) => prev.map((c) => (c.id === concept.id ? completed : c)));
-        createAsset({
-          project_id: activeProjectId ?? undefined,
-          asset_type: "image",
-          title: completed.scene_title,
-          product_name: structuredProduct.product_name,
-          file_path: completed.image_path,
-          model_used: completed.used_model,
-          content_json: completed as unknown as Record<string, unknown>,
-        })
-          .then((asset) => {
-            setVisualAssetIdByConceptId((prev) => ({ ...prev, [completed.id]: asset.id }));
-            void logHistoryEvent({
-              event_type: "generated_image",
-              summary: `Generated image — ${completed.scene_title}`,
-              project_id: activeProjectId ?? undefined,
-              asset_id: asset.id,
-            }).catch(() => {});
-          })
-          .catch(() => {});
-        setVisualConceptScoring((prev) => ({ ...prev, [completed.id]: true }));
-        scoreVisualConcept({ concept: completed })
-          .then((scores) => {
-            setVisualConcepts((prev) => prev.map((c) => (c.id === completed.id ? { ...c, scores } : c)));
-          })
-          .catch(() => {})
-          .finally(() => {
-            setVisualConceptScoring((prev) => ({ ...prev, [completed.id]: false }));
-          });
-      } catch (e) {
-        const message = e instanceof ApiError ? e.message : "Couldn't generate that image.";
-        setVisualConcepts((prev) => prev.map((c) => (c.id === concept.id ? { ...c, status: "failed", error: message } : c)));
-      } finally {
-        renderingConceptIdsRef.current.delete(concept.id);
-      }
-    },
-    [activeProjectId]
-  );
-
-  async function handleGenerateVisualConcepts(
-    structuredProduct: StructuredProduct,
-    generatedScript: GeneratedScript,
-    situation: StorySituation,
-    angle: string
-  ) {
-    setVisualConcepts([]);
-    setVisualConceptsError(null);
-    setVisualConceptsLoading(true);
-    let planned: VisualConcept[];
-    try {
-      planned = await planVisualConcepts({
-        structured_product: structuredProduct,
-        script: generatedScript,
-        situation,
-        creative_angle: angle,
-        product_category: category,
-      });
-    } catch (e) {
-      const message = e instanceof ApiError ? e.message : "Couldn't plan visual concepts.";
-      setVisualConceptsError(message);
-      showToast(message, "danger");
-      setVisualConceptsLoading(false);
-      return;
-    }
-    // The 3 concepts are known immediately — show all 3 cards right away
-    // (each "pending"), then let each image stream in independently rather
-    // than making the user wait for all 3 before seeing anything.
-    setVisualConcepts(planned);
-    setVisualConceptsLoading(false);
-    planned.forEach((concept) => {
-      void renderOneVisualConcept(concept, structuredProduct, generatedScript, situation, angle);
-    });
-  }
-
-  function handleRetryVisualConcepts() {
-    if (!structured || !script || !selectedSituation) return;
-    void handleGenerateVisualConcepts(structured, script, selectedSituation, selectedAngle ?? "");
-  }
-
-  function handleRetryOneVisualConcept(id: string) {
-    if (!structured || !script || !selectedSituation) return;
-    const concept = visualConcepts.find((c) => c.id === id);
-    if (!concept) return;
-    void renderOneVisualConcept(concept, structured, script, selectedSituation, selectedAngle ?? "");
-  }
-
-  async function generateOneStaticImage(lineId: string, prompt: string, aspectRatio: string) {
-    setStaticImages((prev) => ({ ...prev, [lineId]: { status: "generating", imagePath: null, error: null } }));
-    try {
-      const result = await generateStaticVisual({ prompt, aspect_ratio: aspectRatio });
-      setStaticImages((prev) => ({
-        ...prev,
-        [lineId]: { status: "completed", imagePath: result.image_path, error: null },
-      }));
-      createAsset({
-        project_id: activeProjectId ?? undefined,
-        asset_type: "image",
-        title: `Static visual — ${lineId}`,
-        product_name: structured?.product_name ?? "",
-        file_path: result.image_path,
-        model_used: result.used_model,
-      })
-        .then((asset) => {
-          void logHistoryEvent({
-            event_type: "generated_image",
-            summary: "Generated static creative image",
-            project_id: activeProjectId ?? undefined,
-            asset_id: asset.id,
-          }).catch(() => {});
-        })
-        .catch(() => {});
-    } catch (e) {
-      const message = e instanceof ApiError ? e.message : "Couldn't generate that image.";
-      setStaticImages((prev) => ({ ...prev, [lineId]: { status: "failed", imagePath: null, error: message } }));
-    }
-  }
-
-  // Static creative's equivalent of handleGenerateVisualConcepts — one image
-  // per body/hook/cta block that carries an ai_image_prompt, rendered
-  // directly (no scene-planning pass needed, the prompts already exist).
-  function handleGenerateStaticVisuals(generatedScript: GeneratedScript, format: string) {
-    const lines = flattenScript(generatedScript).filter((l) => l.ai_image_prompt);
-    setStaticImages(
-      Object.fromEntries(lines.map((l) => [l.id, { status: "pending" as const, imagePath: null, error: null }]))
-    );
-    const aspectRatio = staticAspectRatio(format);
-    lines.forEach((l) => {
-      void generateOneStaticImage(l.id, l.ai_image_prompt ?? "", aspectRatio);
-    });
-  }
-
-  function handleRetryStaticImage(lineId: string, prompt: string) {
-    void generateOneStaticImage(lineId, prompt, staticAspectRatio(selectedFormat));
-  }
+  const sceneContext: SceneVisualsContext | null =
+    structured && script && selectedSituation
+      ? { structuredProduct: structured, script, situation: selectedSituation, angle: selectedAngle ?? "" }
+      : null;
 
   // Resume in-flight generations after a refresh — a restored concept whose
   // last known status is "pending"/"generating" never got a completed image
@@ -1230,159 +1094,6 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     setScript(scriptHistory[index].script);
   }
 
-  async function handleRegenerateVisualConcept(id: string, variationStyle?: VisualVariationStyle) {
-    if (!structured || !script || !selectedSituation) return;
-    const concept = visualConcepts.find((c) => c.id === id);
-    if (!concept) return;
-    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
-    try {
-      const result = await regenerateVisualConcept({
-        structured_product: structured,
-        script,
-        situation: selectedSituation,
-        creative_angle: selectedAngle ?? "",
-        concept,
-        variation_style: variationStyle,
-      });
-      setVisualConcepts((prev) => prev.map((c) => (c.id === id ? result : c)));
-      const regenAssetId = visualAssetIdByConceptId[id];
-      if (regenAssetId) {
-        void updateAsset(regenAssetId, {
-          file_path: result.image_path,
-          content_json: result as unknown as Record<string, unknown>,
-        }).catch(() => {});
-      }
-      setVisualConceptScoring((prev) => ({ ...prev, [id]: true }));
-      scoreVisualConcept({ concept: result })
-        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, scores } : c))))
-        .catch(() => {})
-        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [id]: false })));
-    } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "Couldn't regenerate that image.", "danger");
-    } finally {
-      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
-    }
-  }
-
-  async function handleGenerateVisualVariation(id: string, variationStyle: VisualVariationStyle) {
-    if (!structured || !script || !selectedSituation) return;
-    const concept = visualConcepts.find((c) => c.id === id);
-    if (!concept) return;
-    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
-    try {
-      const result = await regenerateVisualConcept({
-        structured_product: structured,
-        script,
-        situation: selectedSituation,
-        creative_angle: selectedAngle ?? "",
-        concept,
-        variation_style: variationStyle,
-        as_new_variation: true,
-      });
-      setVisualConcepts((prev) => [...prev, result]);
-      createAsset({
-        project_id: activeProjectId ?? undefined,
-        asset_type: "image",
-        title: result.scene_title,
-        product_name: structured.product_name,
-        file_path: result.image_path,
-        model_used: result.used_model,
-        content_json: result as unknown as Record<string, unknown>,
-      })
-        .then((asset) => {
-          setVisualAssetIdByConceptId((prev) => ({ ...prev, [result.id]: asset.id }));
-          void logHistoryEvent({
-            event_type: "generated_image",
-            summary: `Generated image variation — ${result.scene_title}`,
-            project_id: activeProjectId ?? undefined,
-            asset_id: asset.id,
-          }).catch(() => {});
-        })
-        .catch(() => {});
-      setVisualConceptScoring((prev) => ({ ...prev, [result.id]: true }));
-      scoreVisualConcept({ concept: result })
-        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === result.id ? { ...c, scores } : c))))
-        .catch(() => {})
-        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [result.id]: false })));
-    } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "Couldn't generate a variation.", "danger");
-    } finally {
-      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
-    }
-  }
-
-  async function handleEditVisualConceptPrompt(
-    id: string,
-    patch: { prompt: string; style_params: VisualConceptStyleParams }
-  ) {
-    if (!structured || !script || !selectedSituation) return;
-    const concept = visualConcepts.find((c) => c.id === id);
-    if (!concept) return;
-    const editedConcept: VisualConcept = {
-      ...concept,
-      prompt: patch.prompt,
-      style_params: patch.style_params,
-    };
-    setVisualConcepts((prev) => prev.map((c) => (c.id === id ? editedConcept : c)));
-    setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: true }));
-    try {
-      const result = await regenerateVisualConcept({
-        structured_product: structured,
-        script,
-        situation: selectedSituation,
-        creative_angle: selectedAngle ?? "",
-        concept: editedConcept,
-        is_manual_edit: true,
-      });
-      setVisualConcepts((prev) => prev.map((c) => (c.id === id ? result : c)));
-      const editAssetId = visualAssetIdByConceptId[id];
-      if (editAssetId) {
-        void updateAsset(editAssetId, {
-          file_path: result.image_path,
-          content_json: result as unknown as Record<string, unknown>,
-        }).catch(() => {});
-      }
-      setVisualConceptScoring((prev) => ({ ...prev, [id]: true }));
-      scoreVisualConcept({ concept: result })
-        .then((scores) => setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, scores } : c))))
-        .catch(() => {})
-        .finally(() => setVisualConceptScoring((prev) => ({ ...prev, [id]: false })));
-    } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "Couldn't regenerate with those changes.", "danger");
-    } finally {
-      setVisualConceptRegenLoading((prev) => ({ ...prev, [id]: false }));
-    }
-  }
-
-  async function handleDownloadVisualConcept(id: string, format: "png" | "jpeg" | "webp") {
-    const concept = visualConcepts.find((c) => c.id === id);
-    if (!concept) return;
-    setVisualConceptDownloading((prev) => ({ ...prev, [id]: true }));
-    try {
-      const blob = await downloadVisualConcept({ concept, format });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${concept.scene_title.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}-4k.${format}`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      showToast(e instanceof ApiError ? e.message : "Download failed.", "danger");
-    } finally {
-      setVisualConceptDownloading((prev) => ({ ...prev, [id]: false }));
-    }
-  }
-
-  function handleToggleFavoriteVisualConcept(id: string) {
-    const concept = visualConcepts.find((c) => c.id === id);
-    setVisualConcepts((prev) => prev.map((c) => (c.id === id ? { ...c, favorite: !c.favorite } : c)));
-    const favAssetId = visualAssetIdByConceptId[id];
-    if (favAssetId) {
-      void updateAsset(favAssetId, { is_favorite: !(concept?.favorite ?? false) }).catch(() => {});
-    }
-  }
 
   async function handleRunCompliance() {
     if (!script || !productInput) return;
@@ -1644,6 +1355,14 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.2 }}
               >
+                {stepIndex === 0 && selectedHookText && (
+                  <HookBanner
+                    text={selectedHookText}
+                    onChangeText={setSelectedHookText}
+                    onChooseHook={() => setHookPickerOpen(true)}
+                  />
+                )}
+
                 {stepIndex === 0 && (
                   <ProductWorkspaceStep
                     onSubmit={handleInputSubmit}
@@ -1663,6 +1382,14 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                     onSourceUrlRawTextChange={setSourceUrlRawText}
                     activityLog={activityLog}
                     onActivity={pushActivity}
+                  />
+                )}
+
+                {stepIndex === 1 && scriptSetupPhase === null && selectedHookText && (
+                  <HookBanner
+                    text={selectedHookText}
+                    onChangeText={setSelectedHookText}
+                    onChooseHook={() => setHookPickerOpen(true)}
                   />
                 )}
 
@@ -1750,13 +1477,13 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                         scoring={visualConceptScoring}
                         regenerating={visualConceptRegenLoading}
                         downloading={visualConceptDownloading}
-                        onRegenerate={handleRegenerateVisualConcept}
-                        onGenerateVariation={handleGenerateVisualVariation}
-                        onEditPrompt={handleEditVisualConceptPrompt}
+                        onRegenerate={(id, variationStyle) => handleRegenerateVisualConcept(id, variationStyle, sceneContext)}
+                        onGenerateVariation={(id, variationStyle) => handleGenerateVisualVariation(id, variationStyle, sceneContext)}
+                        onEditPrompt={(id, patch) => handleEditVisualConceptPrompt(id, patch, sceneContext)}
                         onDownload={handleDownloadVisualConcept}
                         onToggleFavorite={handleToggleFavoriteVisualConcept}
-                        onRetry={handleRetryVisualConcepts}
-                        onRetryOne={handleRetryOneVisualConcept}
+                        onRetry={() => retryVisualConcepts(sceneContext)}
+                        onRetryOne={(id) => retryOneVisualConcept(id, sceneContext)}
                       />
                     )}
 

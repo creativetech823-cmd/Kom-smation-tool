@@ -9,10 +9,14 @@ export function HookCard({
   hook,
   onToggleFavorite,
   onUse,
+  onEdit,
+  onGenerateScript,
 }: {
   hook: Hook;
   onToggleFavorite: (id: string, next: boolean) => void;
   onUse?: (hook: Hook) => void;
+  onEdit?: (hook: Hook) => void;
+  onGenerateScript?: (hook: Hook) => void;
 }) {
   const [copied, setCopied] = useState(false);
 
@@ -30,14 +34,26 @@ export function HookCard({
           <Badge tone="neutral">{hook.platform}</Badge>
           <Badge tone="neutral">{hook.tone}</Badge>
         </div>
-        <button
-          type="button"
-          onClick={() => onToggleFavorite(hook.id, !hook.is_favorite)}
-          title="Favorite"
-          className="shrink-0 text-[16px] text-[var(--foreground)]"
-        >
-          {hook.is_favorite ? "♥" : "♡"}
-        </button>
+        <div className="flex shrink-0 items-center gap-2.5">
+          {onEdit && (
+            <button
+              type="button"
+              onClick={() => onEdit(hook)}
+              title="Edit hook"
+              className="text-[11.5px] font-medium text-[var(--muted)] hover:text-[var(--foreground)]"
+            >
+              Edit
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onToggleFavorite(hook.id, !hook.is_favorite)}
+            title="Favorite"
+            className="text-[16px] text-[var(--foreground)]"
+          >
+            {hook.is_favorite ? "♥" : "♡"}
+          </button>
+        </div>
       </div>
 
       <p className="text-[13.5px] leading-relaxed text-[var(--foreground)]">&ldquo;{hook.text}&rdquo;</p>
@@ -45,6 +61,11 @@ export function HookCard({
       <div className="flex items-center justify-between gap-2 pt-1">
         <p className="text-[11px] text-[var(--muted)]">Used {hook.usage_count}x</p>
         <div className="flex items-center gap-2">
+          {onGenerateScript && (
+            <Button size="sm" onClick={() => onGenerateScript(hook)}>
+              Generate Script
+            </Button>
+          )}
           <button
             type="button"
             onClick={handleCopy}

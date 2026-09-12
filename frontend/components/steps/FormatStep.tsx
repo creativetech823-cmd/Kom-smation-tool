@@ -50,12 +50,14 @@ export function FormatStep({
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-4 py-3">
           <span className="text-[12px] font-medium text-[var(--muted)]">Story:</span>
           <span className="text-[13px] font-semibold text-[var(--foreground)]">{situation.title}</span>
-          <span
-            className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium text-white"
-            style={{ background: angleAccent(angle), borderColor: "transparent" }}
-          >
-            {angleEmoji(angle)} {angle}
-          </span>
+          {angle && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-medium text-white"
+              style={{ background: angleAccent(angle), borderColor: "transparent" }}
+            >
+              {angleEmoji(angle)} {angle}
+            </span>
+          )}
           <span className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] px-2.5 py-0.5 text-[11px] font-medium text-[var(--foreground)]">
             {contentType === "video" ? "\u{1F3A5} Video" : "\u{1F5BC}\u{FE0F} Static"}
           </span>

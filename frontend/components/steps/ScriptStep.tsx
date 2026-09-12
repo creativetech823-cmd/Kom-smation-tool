@@ -108,6 +108,7 @@ export function ScriptStep({
   onChangeFormat,
   staticImages,
   onGenerateStaticImage,
+  showsPipelineStages = true,
 }: {
   script: GeneratedScript;
   situation: StorySituation;
@@ -115,6 +116,9 @@ export function ScriptStep({
   onChangeFormat?: () => void;
   staticImages?: Record<string, StaticImageState>;
   onGenerateStaticImage?: (lineId: string, prompt: string) => void;
+  /** False outside the 7-stage pipeline (e.g. Hook Studio), where there's no
+   * Compliance/Voiceover/Assets stage numbering to reference. */
+  showsPipelineStages?: boolean;
   scriptLanguage?: ScriptLanguage;
   onScriptLanguageChange?: (language: ScriptLanguage) => void;
   targetDuration?: string;
@@ -251,7 +255,7 @@ export function ScriptStep({
               onClick={onBack}
               className="whitespace-nowrap text-[12px] font-medium text-[var(--muted)] hover:text-[var(--foreground)] hover:underline"
             >
-              Different angle
+              {creativeAngle ? "Different angle" : "Back"}
             </button>
           </div>
         </div>
@@ -422,12 +426,16 @@ export function ScriptStep({
         <p className="flex items-center gap-2 text-[12px] text-[var(--muted)]">
           {isStatic ? (
             <>
-              <span>🖼️</span> This creative is ready for image generation — static content has no
-              voiceover, so it skips straight from Compliance to Assets.
+              <span>🖼️</span> This creative is ready for image generation — static content has no voiceover
+              {showsPipelineStages ? ", so it skips straight from Compliance to Assets." : "."}
+            </>
+          ) : showsPipelineStages ? (
+            <>
+              <span>🎙</span> Voiceover for every line happens in Stage 9, after Compliance and Assets are locked in.
             </>
           ) : (
             <>
-              <span>🎙</span> Voiceover for every line happens in Stage 9, after Compliance and Assets are locked in.
+              <span>🖼️</span> Scene images are generated below — voiceover isn&apos;t part of this workspace.
             </>
           )}
         </p>

@@ -14,6 +14,14 @@ class ScriptLanguage(str, Enum):
     english = "english"
     hindi = "hindi"
     hinglish = "hinglish"
+    marathi = "marathi"
+    gujarati = "gujarati"
+    tamil = "tamil"
+    telugu = "telugu"
+    bengali = "bengali"
+    kannada = "kannada"
+    malayalam = "malayalam"
+    custom = "custom"
 
 
 class ScriptSection(str, Enum):
@@ -222,6 +230,9 @@ class ScriptGenerationInput(BaseModel):
     # Spoken/on-screen script language — visual_tags always stay in English
     # (stock-footage search) regardless of this.
     script_language: ScriptLanguage = ScriptLanguage.english
+    # Only used when script_language == custom — the free-text language name
+    # to write in (e.g. "Punjabi", "Odia").
+    custom_language: str = Field("", max_length=100)
     # Target video duration bucket (e.g. "30s", "60s"). Empty = derive from
     # selected_situation.estimated_length.
     target_duration: str = ""
@@ -283,6 +294,7 @@ class GeneratedScript(BaseModel):
     bgm_suggestion: str = ""
     creative_angle: str = ""
     script_language: ScriptLanguage = ScriptLanguage.english
+    custom_language: str = ""
     target_duration: str = ""
     estimated_duration_seconds: float = 0.0
     content_type: ContentType = ContentType.video
@@ -307,6 +319,7 @@ class ScriptSectionRegenerateInput(BaseModel):
     max_line_chars: int = 90
     creative_angle: str = Field("", max_length=300)
     script_language: ScriptLanguage = ScriptLanguage.english
+    custom_language: str = Field("", max_length=100)
     target_duration: str = ""
     # See ScriptGenerationInput.selected_hook_text — only meaningful for a
     # full/fresh regeneration; the frontend omits it for scoped regenerations

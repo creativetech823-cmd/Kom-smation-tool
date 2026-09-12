@@ -130,6 +130,10 @@ class HookOut(BaseModel):
 
 
 class HookUpdate(BaseModel):
+    text: Optional[str] = None
+    category: Optional[str] = None
+    platform: Optional[str] = None
+    tone: Optional[str] = None
     is_favorite: Optional[bool] = None
 
 

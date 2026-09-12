@@ -52,8 +52,34 @@ const CATEGORIES: { label: string; items: { directive: RewriteDirective; label: 
   },
 ];
 
-const LANGUAGE_LABEL: Record<ScriptLanguage, string> = { english: "English", hindi: "हिंदी", hinglish: "Hinglish" };
-const ALL_LANGUAGES: ScriptLanguage[] = ["english", "hindi", "hinglish"];
+const LANGUAGE_LABEL: Record<ScriptLanguage, string> = {
+  english: "English",
+  hindi: "हिंदी",
+  hinglish: "Hinglish",
+  marathi: "मराठी",
+  gujarati: "ગુજરાતી",
+  tamil: "தமிழ்",
+  telugu: "తెలుగు",
+  bengali: "বাংলা",
+  kannada: "ಕನ್ನಡ",
+  malayalam: "മലയാളം",
+  custom: "Custom",
+};
+// "custom" is deliberately excluded — this quick per-line translate menu has
+// no accompanying free-text field to name a custom language (see backend
+// rewrite_service._LANGUAGE_NAME, same scope decision).
+const ALL_LANGUAGES: ScriptLanguage[] = [
+  "english",
+  "hindi",
+  "hinglish",
+  "marathi",
+  "gujarati",
+  "tamil",
+  "telugu",
+  "bengali",
+  "kannada",
+  "malayalam",
+];
 
 export function AiRewriteMenu({
   onApplyDirective,

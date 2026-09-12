@@ -40,6 +40,8 @@ export function InputStep({
   sourceUrlRawText,
   onSourceUrlRawTextChange,
   onActivity,
+  initialProductName,
+  initialCategory,
 }: {
   onSubmit: (input: ProductInput, category: string) => void;
   loading: boolean;
@@ -54,10 +56,12 @@ export function InputStep({
   sourceUrlRawText: string | undefined;
   onSourceUrlRawTextChange: (text: string | undefined) => void;
   onActivity: (label: string, tone?: "info" | "success" | "error") => void;
+  initialProductName?: string;
+  initialCategory?: string;
 }) {
-  const [productName, setProductName] = useState("");
+  const [productName, setProductName] = useState(() => initialProductName ?? "");
   const [targetAudience, setTargetAudience] = useState("");
-  const [category, setCategory] = useState("");
+  const [category, setCategory] = useState(() => initialCategory ?? "");
   const [sourceType, setSourceType] = useState<SourceType>("description");
   const [sourceDescription, setSourceDescription] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");

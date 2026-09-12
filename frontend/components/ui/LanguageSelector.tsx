@@ -12,14 +12,16 @@ export function LanguageSelector({
   value,
   onChange,
   disabled,
+  options = OPTIONS,
 }: {
   value: ScriptLanguage;
   onChange: (language: ScriptLanguage) => void;
   disabled?: boolean;
+  options?: { value: ScriptLanguage; label: string }[];
 }) {
   return (
-    <div className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
-      {OPTIONS.map((opt) => {
+    <div className="inline-flex flex-wrap items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
+      {options.map((opt) => {
         const active = value === opt.value;
         return (
           <button

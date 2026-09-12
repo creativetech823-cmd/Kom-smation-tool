@@ -16,6 +16,8 @@ export const VIDEO_FORMATS: FormatOption[] = [
   { value: "educational_video", label: "Educational Video", emoji: "\u{1F393}", hint: "Genuinely teaches something" },
   { value: "social_media_reel", label: "Social Media Reel", emoji: "\u{26A1}", hint: "Fast cuts, native short-form" },
   { value: "storytelling", label: "Storytelling", emoji: "\u{1F4D6}", hint: "Full narrative arc" },
+  { value: "testimonial", label: "Testimonial", emoji: "\u{1F5E3}\u{FE0F}", hint: "Real-customer voice" },
+  { value: "product_demo", label: "Product Demo", emoji: "\u{1F4E6}", hint: "Step-by-step walkthrough" },
   { value: "custom", label: "Custom", emoji: "\u{2728}", hint: "Describe your own format" },
 ];
 
