@@ -127,6 +127,18 @@ class HookOut(BaseModel):
     usage_count: int = 0
     is_favorite: bool = False
     created_at: datetime
+    product_id: Optional[str] = None
+
+
+class HookCreate(BaseModel):
+    text: str = Field(..., min_length=1)
+    category: str = ""
+    platform: str = ""
+    tone: str = ""
+    # Set when this hook is captured for a specific AyushWellness product
+    # (see the product detail page's Hooks tab) — left unset for a global,
+    # unassociated Hook Studio hook.
+    product_id: Optional[str] = None
 
 
 class HookUpdate(BaseModel):

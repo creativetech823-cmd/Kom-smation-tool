@@ -1,6 +1,12 @@
 import type {
   AutoFillSuggestion,
+  AyushProduct,
   ComplianceResult,
+  ProductAsset,
+  ProductAssetType,
+  ProductContext,
+  ProductCreativeAngle,
+  ProductReferenceScript,
   ContentAsset,
   ContentAssetType,
   ContentType,
@@ -203,6 +209,9 @@ export function generateScript(payload: {
   format?: string;
   format_description?: string;
   tone?: string;
+  avoid_repeating_hook?: string;
+  avoid_repeating_mechanism?: string;
+  product_context?: ProductContext;
 }) {
   return post<GeneratedScript>("/pipeline/generate-script", payload);
 }
@@ -227,6 +236,7 @@ export function regenerateScriptSection(payload: {
   format_description?: string;
   tone?: string;
   target_scene_label?: string;
+  product_context?: ProductContext;
 }) {
   return post<GeneratedScript>("/pipeline/regenerate-script-section", payload);
 }
@@ -267,11 +277,18 @@ export function auditCompliance(payload: {
   script_text: string;
   product_category: string;
   product_name: string;
+  structured_product?: StructuredProduct;
 }) {
   return post<ComplianceResult>("/pipeline/compliance-audit", payload);
 }
 
-export function sourceAsset(payload: { line_id: string; visual_tags: string[] }) {
+export function sourceAsset(payload: {
+  line_id: string;
+  visual_tags: string[];
+  exclude_urls?: string[];
+  section?: string;
+  product_context?: ProductContext;
+}) {
   return post<SelectedAsset>("/pipeline/source-asset", payload);
 }
 
@@ -455,11 +472,16 @@ export function listHooks(
     platform?: string;
     tone?: string;
     favorite?: boolean;
+    product_id?: string;
     page?: number;
     page_size?: number;
   } = {}
 ) {
   return get<HookListResult>(`/library/hooks${buildQuery(params)}`);
+}
+
+export function createHook(payload: { text: string; category?: string; platform?: string; tone?: string; product_id?: string }) {
+  return post<Hook>("/library/hooks", payload);
 }
 
 export function getHook(id: string) {
@@ -534,4 +556,176 @@ export function logHistoryEvent(payload: {
   asset_id?: string;
 }) {
   return post<HistoryEvent>("/library/history", payload);
+}
+
+// ---------------------------------------------------------------------------
+// AyushWellness Product Library
+// ---------------------------------------------------------------------------
+
+export type ProductCreatePayload = Partial<Omit<AyushProduct, "id" | "slug" | "status" | "primary_asset" | "asset_count" | "created_at" | "updated_at">> & {
+  name: string;
+  category: string;
+};
+
+export function listAyushProducts(params: { category?: string; status?: string; q?: string } = {}) {
+  return get<AyushProduct[]>(`/product-library/products${buildQuery(params)}`);
+}
+
+export function createAyushProduct(payload: ProductCreatePayload) {
+  return post<AyushProduct>("/product-library/products", payload);
+}
+
+export function getAyushProduct(id: string) {
+  return get<AyushProduct>(`/product-library/products/${id}`);
+}
+
+export function updateAyushProduct(id: string, payload: Partial<ProductCreatePayload> & { status?: string }) {
+  return patch<AyushProduct>(`/product-library/products/${id}`, payload);
+}
+
+export function archiveAyushProduct(id: string) {
+  return post<AyushProduct>(`/product-library/products/${id}/archive`, {});
+}
+
+export function restoreAyushProduct(id: string) {
+  return post<AyushProduct>(`/product-library/products/${id}/restore`, {});
+}
+
+export function getAyushProductContext(id: string) {
+  return get<ProductContext>(`/product-library/products/${id}/context`);
+}
+
+export function listProductAssets(productId: string, params: { asset_type?: string; include_inactive?: boolean } = {}) {
+  return get<ProductAsset[]>(`/product-library/products/${productId}/assets${buildQuery(params)}`);
+}
+
+export function uploadProductAsset(
+  productId: string,
+  file: File,
+  meta: {
+    asset_type: ProductAssetType;
+    title?: string;
+    description?: string;
+    reference_state?: string;
+    learning_notes?: string;
+    style_notes?: string;
+  }
+) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("asset_type", meta.asset_type);
+  if (meta.title) formData.append("title", meta.title);
+  if (meta.description) formData.append("description", meta.description);
+  if (meta.reference_state) formData.append("reference_state", meta.reference_state);
+  if (meta.learning_notes) formData.append("learning_notes", meta.learning_notes);
+  if (meta.style_notes) formData.append("style_notes", meta.style_notes);
+  return postMultipart<ProductAsset>(`/product-library/products/${productId}/assets`, formData);
+}
+
+export function linkProductAsset(
+  productId: string,
+  payload: {
+    asset_type: ProductAssetType;
+    source_url: string;
+    title?: string;
+    description?: string;
+    tags?: string[];
+    reference_state?: string;
+    learning_notes?: string;
+    style_notes?: string;
+  }
+) {
+  return post<ProductAsset>(`/product-library/products/${productId}/assets/link`, payload);
+}
+
+export function updateProductAsset(
+  assetId: string,
+  payload: Partial<{
+    asset_type: ProductAssetType;
+    title: string;
+    description: string;
+    tags: string[];
+    reference_state: string;
+    sort_order: number;
+    is_primary: boolean;
+    is_active: boolean;
+    source_url: string;
+    learning_notes: string;
+    style_notes: string;
+  }>
+) {
+  return patch<ProductAsset>(`/product-library/assets/${assetId}`, payload);
+}
+
+export function deactivateProductAsset(assetId: string) {
+  return del(`/product-library/assets/${assetId}`);
+}
+
+export function createProductReferenceScript(
+  productId: string,
+  payload: { title?: string; script_text: string; format?: string; notes?: string; is_approved?: boolean }
+) {
+  return post<ProductReferenceScript>(`/product-library/products/${productId}/reference-scripts`, payload);
+}
+
+export function listProductReferenceScripts(productId: string, approvedOnly = false) {
+  return get<ProductReferenceScript[]>(
+    `/product-library/products/${productId}/reference-scripts${buildQuery({ approved_only: approvedOnly })}`
+  );
+}
+
+export function updateProductReferenceScript(
+  scriptId: string,
+  payload: Partial<{ title: string; script_text: string; format: string; notes: string; is_approved: boolean }>
+) {
+  return patch<ProductReferenceScript>(`/product-library/reference-scripts/${scriptId}`, payload);
+}
+
+export function deleteProductReferenceScript(scriptId: string) {
+  return del(`/product-library/reference-scripts/${scriptId}`);
+}
+
+export function productUploadFileUrl(relativePath: string): string {
+  return `${API_BASE}/product-uploads/${relativePath}`;
+}
+
+export function createProductCreativeAngle(
+  productId: string,
+  payload: {
+    name: string;
+    description?: string;
+    target_audience?: string;
+    emotional_direction?: string;
+    approved_messaging?: string;
+    restricted_messaging?: string;
+    visual_direction?: string;
+    cta_direction?: string;
+  }
+) {
+  return post<ProductCreativeAngle>(`/product-library/products/${productId}/creative-angles`, payload);
+}
+
+export function listProductCreativeAngles(productId: string) {
+  return get<ProductCreativeAngle[]>(`/product-library/products/${productId}/creative-angles`);
+}
+
+export function updateProductCreativeAngle(
+  angleId: string,
+  payload: Partial<{
+    name: string;
+    description: string;
+    target_audience: string;
+    emotional_direction: string;
+    approved_messaging: string;
+    restricted_messaging: string;
+    visual_direction: string;
+    cta_direction: string;
+    sort_order: number;
+  }>
+) {
+  return patch<ProductCreativeAngle>(`/product-library/creative-angles/${angleId}`, payload);
+}
+
+export function deleteProductCreativeAngle(angleId: string) {
+  return del(`/product-library/creative-angles/${angleId}`);
 }

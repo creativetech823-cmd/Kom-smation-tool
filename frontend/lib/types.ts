@@ -230,6 +230,10 @@ export type GeneratedScript = {
   format?: string;
   format_description?: string;
   tone?: string;
+  /** Internal bookkeeping — which creative mechanism the model used (e.g.
+   * "curiosity_gap"), so a later regenerate can be steered toward a
+   * genuinely different one. Not surfaced in the UI. */
+  creative_mechanism?: string;
 };
 
 export type ScriptSuggestionCategory =
@@ -286,6 +290,8 @@ export type ComplianceViolation = {
   phrase: string;
   reason: string;
   severity: "blocker" | "warning";
+  claim_type?: string;
+  suggested_fix?: string;
 };
 
 export type ComplianceResult = {
@@ -308,6 +314,7 @@ export type SelectedAsset = {
   broadened: boolean;
   candidate: AssetCandidate | null;
   reasoning: string;
+  provider_error?: boolean;
 };
 
 export type VoiceoverResult = {
@@ -329,6 +336,13 @@ export type RenderLine = {
   video_url?: string;
   audio_url?: string;
   min_duration_seconds?: number;
+  section?: ScriptSection;
+  scene_label?: string;
+  on_screen_text?: string;
+  visual_direction?: string;
+  camera_angle?: string;
+  emotion?: string;
+  is_product_asset?: boolean;
 };
 
 export type RenderResult = {
@@ -524,6 +538,7 @@ export type Hook = {
   usage_count: number;
   is_favorite: boolean;
   created_at: string;
+  product_id: string | null;
 };
 
 export type HookListResult = {
@@ -570,3 +585,161 @@ export type HistoryEvent = {
   created_at: string;
   project_name: string | null;
 };
+
+// ---------------------------------------------------------------------------
+// AyushWellness Product Library
+// ---------------------------------------------------------------------------
+
+export type ProductCategory = "herbal_health" | "nutraceuticals" | string;
+
+export type ProductAssetType =
+  | "product_image"
+  | "product_packshot"
+  | "product_lifestyle"
+  | "ingredient_image"
+  | "advertisement"
+  | "reference_video"
+  | "other";
+
+export type ProductAsset = {
+  id: string;
+  product_id: string;
+  asset_type: ProductAssetType;
+  file_path: string | null;
+  thumbnail_path: string | null;
+  title: string;
+  description: string;
+  tags: string[];
+  reference_state: string | null;
+  source_url: string | null;
+  learning_notes: string;
+  style_notes: string;
+  sort_order: number;
+  is_primary: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AyushProduct = {
+  id: string;
+  name: string;
+  slug: string;
+  category: ProductCategory;
+  status: "active" | "archived";
+  short_description: string;
+  description: string;
+  product_url: string | null;
+  price: string | null;
+
+  display_name: string;
+  subcategory: string;
+  brand: string;
+  sku: string;
+  marketplace_urls: string[];
+  landing_page_url: string | null;
+
+  target_audience: string;
+  primary_problem: string;
+  positioning: string;
+  usp: string;
+  ingredients: string[];
+  benefits: string[];
+  usage: string;
+  how_it_works: string;
+  who_is_it_for: string;
+  cautions: string;
+
+  approved_claims: string[];
+  prohibited_claims: string[];
+  mandatory_wording: string;
+  never_say: string;
+
+  secondary_target_audience: string;
+  customer_objections: string[];
+  buying_triggers: string[];
+  awareness_level: string;
+
+  pain_points: string[];
+  emotional_triggers: string[];
+  advertising_angles: string[];
+  preferred_tone: string;
+  preferred_language: string;
+  cta_text: string;
+  winning_hooks: string[];
+  creative_notes: string;
+  brand_personality: string;
+  words_to_use: string[];
+  words_to_avoid: string[];
+  visual_style: string;
+  visual_exclusions: string;
+
+  primary_asset: ProductAsset | null;
+  asset_count: number;
+
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProductReferenceScript = {
+  id: string;
+  product_id: string;
+  title: string;
+  script_text: string;
+  format: string | null;
+  notes: string;
+  is_approved: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProductCreativeAngle = {
+  id: string;
+  product_id: string;
+  name: string;
+  description: string;
+  target_audience: string;
+  emotional_direction: string;
+  approved_messaging: string;
+  restricted_messaging: string;
+  visual_direction: string;
+  cta_direction: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProductContext = {
+  product_id: string;
+  name: string;
+  category: string;
+  short_description: string;
+  usp: string;
+  target_audience: string;
+  primary_problem: string;
+  positioning: string;
+  ingredients: string[];
+  benefits: string[];
+  approved_claims: string[];
+  prohibited_claims: string[];
+  mandatory_wording: string;
+  preferred_tone: string;
+  preferred_language: string;
+  cta_text: string;
+  winning_hooks: string[];
+  reference_script_excerpts: string[];
+  primary_asset_url: string | null;
+  never_say: string;
+  preferred_visual_style: string;
+  visual_exclusions: string;
+  words_to_use: string[];
+  words_to_avoid: string[];
+  creative_angles: string[];
+  approved_hooks: string[];
+  has_real_product_asset: boolean;
+};
+
+export const PRODUCT_CATEGORIES: { value: ProductCategory; label: string; description: string }[] = [
+  { value: "herbal_health", label: "Herbal Health Solutions", description: "Herbal health products, tobacco-free alternatives, etc." },
+  { value: "nutraceuticals", label: "Nutraceutical Products", description: "Supplements, vitamins, wellness products, etc." },
+];

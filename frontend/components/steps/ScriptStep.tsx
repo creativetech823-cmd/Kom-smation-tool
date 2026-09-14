@@ -17,7 +17,8 @@ import { formatLabel } from "@/lib/contentFormats";
 import { ToneMenu } from "@/components/ui/ToneMenu";
 import { visualFileUrl } from "@/lib/api";
 import { renderBold } from "@/lib/renderBold";
-import { durationStatus, estimateSeconds, targetSecondsFor, wordCount } from "@/lib/duration";
+import { durationStatus, estimateSeconds, targetSecondsFor } from "@/lib/duration";
+import { SCRIPT_LENGTH_LEVELS, scriptLengthIndexForBucket } from "@/lib/scriptLength";
 import { cn } from "@/lib/utils";
 import {
   flattenScript,
@@ -156,7 +157,7 @@ export function ScriptStep({
   // groups by scene_label instead (Host/Guest, Scene N, Slide N, Headline...).
   const usesSectionGrouping = !isStatic && (format === "" || format === "video_ad");
 
-  const [view, setView] = useState<"shotlist" | "sheet">("shotlist");
+  const [view, setView] = useState<"shotlist" | "sheet">("sheet");
   const [sectionEditing, setSectionEditing] = useState<string | null>(null);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<{ instruction: string; selection?: ScriptCommandSelection } | null>(
@@ -168,7 +169,7 @@ export function ScriptStep({
   const targetSeconds = targetSecondsFor(bucket);
   const estimated = script.estimated_duration_seconds || estimateSeconds(lines);
   const status = durationStatus(estimated, targetSeconds);
-  const currentWords = wordCount(lines);
+  const lengthIndex = scriptLengthIndexForBucket(bucket);
 
   const grouped = useMemo(() => {
     const groups: { section: string; lines: FlatLine[] }[] = [];
@@ -186,9 +187,12 @@ export function ScriptStep({
     setSuggestionsOpen(true);
   }
 
-  function handleLengthPct(pct: number) {
-    const target = Math.max(15, Math.round(currentWords * (1 + pct / 100)));
-    onRegenerateScope("full", { targetWordCount: target });
+  function handleLengthLevelChange(nextIndex: number) {
+    const clamped = Math.max(0, Math.min(SCRIPT_LENGTH_LEVELS.length - 1, nextIndex));
+    if (clamped === lengthIndex) return;
+    const level = SCRIPT_LENGTH_LEVELS[clamped];
+    onTargetDurationChange?.(level.bucket);
+    onRegenerateScope("full", { targetWordCount: isStatic ? level.staticTargetWordCount : level.targetWordCount });
   }
 
   return (
@@ -289,43 +293,67 @@ export function ScriptStep({
               )}
               <span className="text-[11px] text-[var(--muted)]">— change, then Regenerate</span>
             </div>
-            {!isStatic && (
-              <div className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
-                {(["shotlist", "sheet"] as const).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setView(v)}
-                    className={`rounded-full px-2.5 py-1 text-[12px] font-medium transition-colors ${
-                      view === v ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
-                    }`}
-                  >
-                    {v === "shotlist" ? "Shot List" : "Script Sheet"}
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         )}
 
-        {/* Duration meter + length controls — video only, static has no spoken runtime */}
-        {!isStatic && (
-          <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
-            <DurationMeter estimatedSeconds={estimated} targetSeconds={targetSeconds} status={status} />
-            <div className="flex items-center gap-1.5">
-              <button type="button" onClick={() => handleLengthPct(-40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-                − 40%
-              </button>
-              <button type="button" onClick={() => handleLengthPct(-20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-                − 20%
-              </button>
-              <button type="button" onClick={() => handleLengthPct(20)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-                + 20%
-              </button>
-              <button type="button" onClick={() => handleLengthPct(40)} className="rounded-lg border border-[var(--border-strong)] bg-[var(--surface-2)] px-2 py-1 text-[11px] font-medium text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06]">
-                + 40%
-              </button>
+        {/* Script Length — always visible (video AND static), directly below
+            Language. Uses the same length-adjustment regenerate as before;
+            only the target word count scales down for static ad copy. */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
+          <p className="text-[12px] font-medium text-[var(--muted)]">Script Length</p>
+          <div className="flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => handleLengthLevelChange(lengthIndex - 1)}
+              disabled={lengthIndex === 0 || regenerating}
+              aria-label="Make script shorter"
+              title="Make script shorter"
+              className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] text-[14px] font-semibold leading-none text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              −
+            </button>
+            <div className="min-w-[92px] text-center leading-tight">
+              <p className="text-[13px] font-semibold text-[var(--foreground)]">{SCRIPT_LENGTH_LEVELS[lengthIndex].label}</p>
+              <p className="text-[10px] text-[var(--muted)]">{SCRIPT_LENGTH_LEVELS[lengthIndex].rangeLabel}</p>
             </div>
+            <button
+              type="button"
+              onClick={() => handleLengthLevelChange(lengthIndex + 1)}
+              disabled={lengthIndex === SCRIPT_LENGTH_LEVELS.length - 1 || regenerating}
+              aria-label="Make script longer"
+              title="Make script longer"
+              className="flex h-6 w-6 items-center justify-center rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] text-[14px] font-semibold leading-none text-[var(--foreground)] hover:bg-[var(--foreground)]/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              +
+            </button>
+          </div>
+        </div>
+
+        {/* Whole Script / Scene Breakdown toggle — always visible whenever a
+            script exists, directly above the generated content. Applies to
+            both video (shotlist) and static (per-block workspace) formats. */}
+        <div className="flex items-center justify-center">
+          <div className="inline-flex items-center gap-1 rounded-full border border-[var(--border-strong)] bg-[var(--surface-2)] p-1">
+            {(["sheet", "shotlist"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setView(v)}
+                className={`rounded-full px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
+                  view === v ? "bg-[var(--accent)] text-[var(--on-accent)]" : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                }`}
+              >
+                {view === v ? "✓ " : ""}
+                {v === "sheet" ? "Whole Script" : "Scene Breakdown"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Duration meter — video only, static has no spoken runtime */}
+        {!isStatic && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--border)] bg-[var(--surface-2)]/40 px-3.5 py-2.5">
+            <DurationMeter estimatedSeconds={estimated} targetSeconds={targetSeconds} status={status} />
           </div>
         )}
 
@@ -440,7 +468,20 @@ export function ScriptStep({
           )}
         </p>
 
-        {isStatic ? (
+        {view === "sheet" ? (
+          <ScriptSheet
+            title={situation.title}
+            lines={lines}
+            onEditLine={onEditLine}
+            onApplyDirective={onApplyDirective}
+            onGenerateAlternatives={onGenerateAlternatives}
+            onSelectAlternative={onSelectAlternative}
+            onTranslateLine={onTranslateLine}
+            currentLanguage={scriptLanguage}
+            lineLoading={lineLoading}
+            recentlyChangedLineIds={recentlyChangedLineIds}
+          />
+        ) : isStatic ? (
           <StaticCreativeWorkspace
             lines={lines}
             onEditLine={onEditLine}
@@ -455,7 +496,7 @@ export function ScriptStep({
             imageResults={staticImages ?? {}}
             onGenerateImage={onGenerateStaticImage}
           />
-        ) : view === "shotlist" ? (
+        ) : (
           <div className="space-y-5">
             {grouped.map((group, gi) => (
               <div key={gi}>
@@ -501,19 +542,6 @@ export function ScriptStep({
               </div>
             ))}
           </div>
-        ) : (
-          <ScriptSheet
-            title={situation.title}
-            lines={lines}
-            onEditLine={onEditLine}
-            onApplyDirective={onApplyDirective}
-            onGenerateAlternatives={onGenerateAlternatives}
-            onSelectAlternative={onSelectAlternative}
-            onTranslateLine={onTranslateLine}
-            currentLanguage={scriptLanguage}
-            lineLoading={lineLoading}
-            recentlyChangedLineIds={recentlyChangedLineIds}
-          />
         )}
 
         {script.bgm_suggestion && (
@@ -727,26 +755,36 @@ function ScriptSheet({
     <div className="rounded-2xl border border-[var(--border)] bg-[var(--surface-2)]/50 px-6 py-8 sm:px-10">
       <h2 className="mb-6 text-center text-[19px] font-bold tracking-tight text-[var(--foreground)]">{title}</h2>
       <div className="mx-auto max-w-[640px] space-y-4">
-        {lines.map((line) => (
-          <EditableLine
-            key={line.id}
-            text={line.text}
-            onSave={(text) => onEditLine(line.id, text)}
-            renderText={renderBold}
-            textClassName={
-              line.role === "hook" || line.role === "cta"
-                ? "text-[15px] font-semibold leading-relaxed text-[var(--foreground)]"
-                : "text-[15px] leading-relaxed text-[var(--foreground)]/90"
-            }
-            onApplyDirective={(d) => onApplyDirective(line.id, d)}
-            onGenerateAlternatives={() => onGenerateAlternatives(line.id)}
-            onSelectAlternative={(text) => onSelectAlternative(line.id, text)}
-            onTranslate={(lang) => onTranslateLine(line.id, lang)}
-            currentLanguage={currentLanguage}
-            aiLoading={Boolean(lineLoading[line.id])}
-            glow={recentlyChangedLineIds.has(line.id)}
-          />
-        ))}
+        {lines.map((line, i) => {
+          const prevRole = lines[i - 1]?.role;
+          return (
+            <div key={line.id}>
+              {line.role === "hook" && prevRole !== "hook" && (
+                <p className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--accent)]">Hook</p>
+              )}
+              {line.role === "cta" && prevRole !== "cta" && (
+                <p className="mb-1.5 mt-2 text-[10.5px] font-semibold uppercase tracking-wide text-[var(--accent-2)]">CTA</p>
+              )}
+              <EditableLine
+                text={line.text}
+                onSave={(text) => onEditLine(line.id, text)}
+                renderText={renderBold}
+                textClassName={
+                  line.role === "hook" || line.role === "cta"
+                    ? "text-[15px] font-semibold leading-relaxed text-[var(--foreground)]"
+                    : "text-[15px] leading-relaxed text-[var(--foreground)]/90"
+                }
+                onApplyDirective={(d) => onApplyDirective(line.id, d)}
+                onGenerateAlternatives={() => onGenerateAlternatives(line.id)}
+                onSelectAlternative={(text) => onSelectAlternative(line.id, text)}
+                onTranslate={(lang) => onTranslateLine(line.id, lang)}
+                currentLanguage={currentLanguage}
+                aiLoading={Boolean(lineLoading[line.id])}
+                glow={recentlyChangedLineIds.has(line.id)}
+              />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

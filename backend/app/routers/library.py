@@ -10,6 +10,7 @@ from app.models.library import (
     ContentAssetUpdate,
     HistoryEventCreate,
     HistoryEventOut,
+    HookCreate,
     HookListResult,
     HookOut,
     HookUpdate,
@@ -134,12 +135,21 @@ def list_hooks(
     platform: Optional[str] = None,
     tone: Optional[str] = None,
     favorite: Optional[bool] = None,
+    product_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 24,
     db: Session = Depends(get_db),
 ) -> dict:
-    items, total = svc.list_hooks(db, q, category, platform, tone, favorite, page, page_size)
+    items, total = svc.list_hooks(db, q, category, platform, tone, favorite, product_id, page, page_size)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@router.post("/hooks", response_model=HookOut)
+def create_hook(payload: HookCreate, db: Session = Depends(get_db)) -> object:
+    try:
+        return svc.create_hook(db, payload.text, payload.category, payload.platform, payload.tone, payload.product_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/hooks/{hook_id}", response_model=HookOut)

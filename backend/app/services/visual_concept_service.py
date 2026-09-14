@@ -36,6 +36,12 @@ logger = logging.getLogger("visual_concept_service")
 _IMAGE_SIZE_PREVIEW = "1K"
 _IMAGE_SIZE_DOWNLOAD = "4K"
 
+# Shown to the user wherever a would-be image render is skipped —
+# script/scene text generation (ai_image_prompt, visual_direction, etc.) is
+# untouched; only the actual provider call that turns a prompt into pixels
+# is gated. See Settings.image_generation_enabled / IMAGE_GENERATION_ENABLED.
+IMAGE_GENERATION_DISABLED_MESSAGE = "Image generation disabled during testing."
+
 
 def _4k_canvas_for(aspect_ratio: str) -> tuple[int, int]:
     """The 4K-pixel-class canvas for this aspect ratio (3840 on the long edge,
@@ -571,6 +577,12 @@ def generate_visual_concepts(payload: VisualConceptsInput) -> VisualConceptsResu
     script, then render all 3 concurrently (each OpenRouter call is
     blocking)."""
     concepts = plan_visual_concepts(payload)
+    if not settings.image_generation_enabled:
+        logger.info("Image generation disabled (IMAGE_GENERATION_ENABLED=false) — skipping render for %d concept(s).", len(concepts))
+        for concept in concepts:
+            concept.status = "failed"
+            concept.error = IMAGE_GENERATION_DISABLED_MESSAGE
+        return VisualConceptsResult(concepts=concepts)
     with ThreadPoolExecutor(max_workers=3) as executor:
         rendered = list(executor.map(_render_concept, concepts))
     logger.info("Done. Visual concepts generation complete — %d image(s) saved.", len(rendered))
@@ -586,6 +598,11 @@ def regenerate_visual_concept(payload: VisualConceptRegenerateInput) -> VisualCo
     - a plain "Regenerate" click (neither set) — a fresh text-to-image
       re-roll with a new seed."""
     concept = payload.concept.model_copy(deep=True)
+    if not settings.image_generation_enabled:
+        logger.info("Image generation disabled (IMAGE_GENERATION_ENABLED=false) — skipping render for scene %d.", concept.scene_number)
+        concept.status = "failed"
+        concept.error = IMAGE_GENERATION_DISABLED_MESSAGE
+        return concept
     label = f"regenerate scene {concept.scene_number}"
     current_bytes = None
     if concept.image_path and Path(concept.image_path).exists():
@@ -651,6 +668,8 @@ def render_download(payload: VisualConceptDownloadInput) -> str:
     """A fresh, native 4K render (same prompt/seed, requested at Gemini's "4K"
     image_size) — not an upscale of the small preview. Resized only if the
     native output doesn't already land exactly on the target canvas."""
+    if not settings.image_generation_enabled:
+        raise ValueError(IMAGE_GENERATION_DISABLED_MESSAGE)
     concept = payload.concept
     prompt = _build_full_prompt(concept)
     data, _model, _elapsed = call_openrouter_with_retry(
@@ -675,6 +694,9 @@ def generate_static_visual(prompt: str, aspect_ratio: str = "1:1") -> dict:
     the same generation/quality pipeline as a video VisualConcept (reference
     conditioning, ad-creative/realism directives, retry) without the scene
     planning, scoring, or style-param editing machinery those carry."""
+    if not settings.image_generation_enabled:
+        logger.info("Image generation disabled (IMAGE_GENERATION_ENABLED=false) — skipping static visual render.")
+        raise ValueError(IMAGE_GENERATION_DISABLED_MESSAGE)
     seed = random.randint(1, 2_000_000_000)
     data, model, elapsed = _generate_cached(prompt, aspect_ratio, seed, "static_visual")
     path = _save_bytes(data)
@@ -686,6 +708,9 @@ def generate_test_image() -> dict:
     """Diagnostic — isolates whether a failure is in the OpenRouter image
     pipeline itself or in the script-to-image flow around it. Fixed, simple
     prompt so results are comparable across runs."""
+    if not settings.image_generation_enabled:
+        logger.info("Image generation disabled (IMAGE_GENERATION_ENABLED=false) — skipping test image render.")
+        raise ValueError(IMAGE_GENERATION_DISABLED_MESSAGE)
     prompt = "A photorealistic apple on a wooden table, cinematic lighting."
     logger.info(
         "[test] API Key Loaded: %s | Model: %s",
@@ -712,4 +737,5 @@ def get_debug_info() -> dict:
         "model": settings.openrouter_image_model,
         "api_url": "https://openrouter.ai/api/v1",
         "internet_access": internet_access,
+        "image_generation_enabled": settings.image_generation_enabled,
     }

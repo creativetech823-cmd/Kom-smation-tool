@@ -3,6 +3,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.models.product_library import ProductContext
+
 
 class SourceType(str, Enum):
     url = "url"
@@ -251,6 +253,21 @@ class ScriptGenerationInput(BaseModel):
     # label from the frontend's tone catalog, same free-string pattern as
     # creative_angle. Empty = no specific tone requested.
     tone: str = Field("", max_length=100)
+    # Set only when this is a from-scratch "Entire Script" regenerate of an
+    # already-generated script (not a first generation) — the previous
+    # attempt's hook line, so the model is nudged toward a genuinely
+    # different creative mechanism/story arc instead of reproducing the same
+    # angle in different words. Empty on first generation.
+    avoid_repeating_hook: str = Field("", max_length=500)
+    # The previous attempt's self-reported creative_mechanism (e.g.
+    # "curiosity_gap") — paired with avoid_repeating_hook so the model can
+    # steer toward an actually different mechanism next time, not just
+    # different wording for the same one. Empty on first generation.
+    avoid_repeating_mechanism: str = Field("", max_length=50)
+    # Set when the user selected an AyushWellness Product Library product
+    # for this project — threads its approved knowledge/claims/tone/CTA into
+    # the prompt. None = the existing manual-Product flow, unchanged.
+    product_context: Optional[ProductContext] = None
 
 
 class ScriptLine(BaseModel):
@@ -301,6 +318,11 @@ class GeneratedScript(BaseModel):
     format: str = ""
     format_description: str = ""
     tone: str = ""
+    # The creative mechanism the model reports having used (e.g.
+    # "curiosity_gap", "mini_story") — internal bookkeeping so a later
+    # regenerate can be steered away from repeating it. Never surfaced in
+    # the UI. Empty on scripts generated before this field existed.
+    creative_mechanism: str = ""
 
     @property
     def full_text(self) -> str:
@@ -341,6 +363,7 @@ class ScriptSectionRegenerateInput(BaseModel):
     # single body block to regenerate; every other block (including hook/cta)
     # is left untouched.
     target_scene_label: str = Field("", max_length=100)
+    product_context: Optional[ProductContext] = None
 
 
 class AssetSourcingInput(BaseModel):
@@ -348,6 +371,23 @@ class AssetSourcingInput(BaseModel):
 
     line_id: str = Field(..., description="e.g. 'hook', 'body_0', 'cta' — ties the asset back to a script line")
     visual_tags: list[str] = Field(..., min_length=1)
+    # Optional and additive — URLs already selected for OTHER lines in this
+    # same script, so this line can avoid picking a duplicate. Only
+    # meaningful when the caller actually knows prior selections (e.g.
+    # regenerating one line's asset after the rest already loaded); the
+    # initial parallel batch load has nothing to pass here, which is fine.
+    exclude_urls: list[str] = Field(default_factory=list)
+    # Optional, additive — existing ScriptLine metadata for THIS line, used
+    # to deterministically decide whether the scene needs the actual product
+    # (section == product_intro/benefits/cta), an ingredient shot (section
+    # == ingredients), or a generic lifestyle/stock photo (everything else).
+    # None on every existing caller — behavior is byte-for-byte unchanged
+    # unless both this and product_context are supplied.
+    section: Optional[str] = None
+    # Set only when a Product Library product is selected for this project —
+    # its primary asset gets first refusal on product/ingredient-shaped
+    # scenes, ahead of Pexels/Pixabay. None = existing stock-only behavior.
+    product_context: Optional[ProductContext] = None
 
 
 class AssetCandidate(BaseModel):
@@ -364,6 +404,11 @@ class SelectedAsset(BaseModel):
     broadened: bool = False
     candidate: Optional[AssetCandidate] = None
     reasoning: str = ""
+    # True when candidate is None because Pexels/Pixabay rejected our API key
+    # (a configuration problem), not because a genuine search found nothing —
+    # lets the frontend tell the two apart instead of showing "No match
+    # found" for both.
+    provider_error: bool = False
 
 
 class MotionGenerationInput(BaseModel):
@@ -402,6 +447,22 @@ class RenderLine(BaseModel):
     video_url: Optional[str] = None
     audio_url: Optional[str] = None
     min_duration_seconds: Optional[float] = None
+    # Optional, additive — the SAME creative metadata ScriptLine already
+    # produces (see ScriptSection/ScriptLine above), just no longer dropped
+    # before reaching render. None on every existing caller: the scene
+    # planner falls back to position-based heuristics (first=HOOK,
+    # last=CTA) when these are absent, so old requests keep working exactly
+    # as before, just with a slightly less-informed scene plan.
+    section: Optional[str] = None
+    scene_label: Optional[str] = None
+    on_screen_text: Optional[str] = None
+    visual_direction: Optional[str] = None
+    camera_angle: Optional[str] = None
+    emotion: Optional[str] = None
+    # True when image_url/video_url is a real, approved Product Library
+    # asset (not stock) — lets the scene planner apply product-hero
+    # treatment and the renderer preserve the asset exactly, unmodified.
+    is_product_asset: bool = False
 
 
 class RenderInput(BaseModel):
@@ -422,17 +483,27 @@ class ComplianceCheckInput(BaseModel):
 
     Independent from whatever produced the script (Stage 6 today, anything
     else later) — this stage only ever sees the finished text.
+
+    structured_product is optional and additive (Compliance V2) — when given,
+    it lets the audit distinguish a claim that's actually supported by the
+    supplied product data from one the script invented. Old callers that omit
+    it still work; the audit just has less grounding to work with.
     """
 
     script_text: str = Field(..., min_length=1)
     product_category: str = Field(..., min_length=1)
     product_name: str = Field(..., min_length=1)
+    structured_product: Optional[StructuredProduct] = None
 
 
 class ComplianceViolation(BaseModel):
     phrase: str
     reason: str
     severity: str  # "blocker" | "warning"
+    # Compliance V2 additions — both optional so older responses/consumers
+    # that don't know about them still validate fine.
+    claim_type: str = ""  # e.g. "GUARANTEED_OUTCOME", "AUTHORITY_CLAIM" — internal taxonomy label
+    suggested_fix: str = ""
 
 
 class ComplianceResult(BaseModel):
@@ -701,6 +772,7 @@ class VisualConceptDebugInfo(BaseModel):
     model: str
     api_url: str
     internet_access: bool
+    image_generation_enabled: bool = True
 
 
 class StaticVisualInput(BaseModel):

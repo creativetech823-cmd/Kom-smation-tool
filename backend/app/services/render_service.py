@@ -5,15 +5,68 @@ from pathlib import Path
 
 from app.config import settings
 from app.models.product import RenderInput, RenderResult
+from app.models.scene_plan import ScenePlan, VideoScene
+from app.services.scene_plan_service import build_scene_plan
 
 
 def _remotion_dir() -> Path:
     return (Path(__file__).resolve().parent.parent.parent / settings.remotion_project_dir).resolve()
 
 
+def _resolve_url(url: str | None) -> str | None:
+    """Remotion's headless-Chrome render process fetches URLs over real
+    HTTP — a relative URL from our own /product-uploads static mount (a
+    Product Library asset) needs to become absolute before Remotion can
+    fetch it. Pexels/Pixabay/gTTS-audio URLs are already absolute and pass
+    through unchanged."""
+    if url and url.startswith("/"):
+        return settings.backend_base_url.rstrip("/") + url
+    return url
+
+
+def _scene_props(scene: VideoScene) -> dict:
+    entry = {
+        "sceneId": scene.scene_id,
+        "order": scene.order,
+        "durationSeconds": scene.duration_seconds,
+        "purpose": scene.purpose.value,
+        "text": scene.script_text,
+        "onScreenText": scene.on_screen_text,
+        "imageUrl": _resolve_url(scene.image_url),
+        "isProductAsset": scene.is_product_asset,
+        "visualStyle": scene.visual_style.value,
+        "cameraMotion": scene.camera_motion.value,
+        "textAnimation": scene.text_animation.value,
+        "transition": scene.transition.value,
+        "emphasis": scene.emphasis,
+        "isCta": scene.is_cta,
+        "isProductReveal": scene.is_product_reveal,
+        # Sound-design architecture only — Remotion does not play these yet;
+        # exposed so a future mixing pass has the per-scene mood/cue to work from.
+        "musicMood": scene.music_mood,
+        "sfxCue": scene.sfx_cue,
+    }
+    video_url = _resolve_url(scene.video_url)
+    if video_url:
+        entry["videoUrl"] = video_url
+    audio_url = _resolve_url(scene.audio_url)
+    if audio_url:
+        entry["audioUrl"] = audio_url
+    return entry
+
+
 def render_video(payload: RenderInput) -> RenderResult:
-    """Stage 9 — inject script lines + assets into the ProductAdMold Remotion
-    template and render a finished MP4."""
+    """Stage 9 — build a ScenePlan from the script lines + resolved assets
+    (see scene_plan_service.build_scene_plan — deterministic, no LLM call),
+    then render it through the ProductAdMold Remotion composition.
+
+    Backward compatible by construction: build_scene_plan() already handles
+    both a RenderInput with the newer optional section/emotion/etc fields
+    populated AND an older/external caller that only ever sent
+    text/image_url — either way this function always ends up with a
+    complete ScenePlan to hand to Remotion."""
+
+    scene_plan: ScenePlan = build_scene_plan(payload)
 
     remotion_dir = _remotion_dir()
     output_dir = Path(settings.renders_output_dir).resolve()
@@ -23,20 +76,9 @@ def render_video(payload: RenderInput) -> RenderResult:
     output_path = output_dir / f"{job_id}.mp4"
     props_path = remotion_dir / f".props-{job_id}.json"
 
-    def _line_props(line):
-        entry = {"text": line.text, "imageUrl": line.image_url}
-        if line.video_url:
-            entry["videoUrl"] = line.video_url
-        if line.audio_url:
-            entry["audioUrl"] = line.audio_url
-        if line.min_duration_seconds:
-            entry["durationSeconds"] = max(payload.seconds_per_line, line.min_duration_seconds)
-        return entry
-
     props = {
-        "productName": payload.product_name,
-        "secondsPerLine": payload.seconds_per_line,
-        "lines": [_line_props(line) for line in payload.lines],
+        "productName": scene_plan.product_name,
+        "scenes": [_scene_props(s) for s in scene_plan.scenes],
     }
     props_path.write_text(json.dumps(props), encoding="utf-8")
 
@@ -63,7 +105,4 @@ def render_video(payload: RenderInput) -> RenderResult:
     if result.returncode != 0:
         raise RuntimeError(f"Remotion render failed:\n{result.stdout}\n{result.stderr}")
 
-    duration_seconds = sum(
-        max(payload.seconds_per_line, line.min_duration_seconds or 0) for line in payload.lines
-    )
-    return RenderResult(output_path=str(output_path), duration_seconds=duration_seconds)
+    return RenderResult(output_path=str(output_path), duration_seconds=scene_plan.total_duration_seconds)

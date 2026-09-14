@@ -4,6 +4,8 @@ import { type ReactNode, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { listAyushProducts } from "@/lib/api";
+import { PRODUCT_CATEGORIES, type AyushProduct } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 type SidebarItem = { key: string; label: string; href: string; icon: ReactNode };
@@ -13,6 +15,14 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = usePathname();
 
+  // Session-persisted (component never unmounts across client-side nav) —
+  // starts expanded so a fresh session sees the catalog immediately.
+  const [treeOpen, setTreeOpen] = useState(true);
+  const [openCategories, setOpenCategories] = useState<Set<string>>(
+    () => new Set(PRODUCT_CATEGORIES.map((c) => c.value))
+  );
+  const [ayushProducts, setAyushProducts] = useState<AyushProduct[] | null>(null);
+
   useEffect(() => {
     // Deferred to after mount, not a lazy useState initializer: the server has no
     // access to localStorage, so reading it during the initial client render would
@@ -20,6 +30,33 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCollapsed(window.localStorage.getItem("cf:sidebar-collapsed") === "1");
   }, []);
+
+  useEffect(() => {
+    // Refetch on every navigation so a product created/archived elsewhere
+    // (the Add Product page, archiving from the detail page) is reflected
+    // here without needing a global event bus — this is a small catalog, so
+    // a GET per navigation is cheap.
+    let cancelled = false;
+    listAyushProducts()
+      .then((products) => {
+        if (!cancelled) setAyushProducts(products);
+      })
+      .catch(() => {
+        if (!cancelled) setAyushProducts((prev) => prev ?? []);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+
+  function toggleCategory(value: string) {
+    setOpenCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  }
 
   function toggle() {
     setCollapsed((c) => {
@@ -92,6 +129,17 @@ export function Sidebar() {
             {group.items.map((item) => (
               <SidebarButton key={item.key} item={item} collapsed={collapsed} active={isActive(item.href)} />
             ))}
+            {group.label === "Library" && (
+              <AyushProductTree
+                collapsed={collapsed}
+                pathname={pathname}
+                treeOpen={treeOpen}
+                setTreeOpen={setTreeOpen}
+                openCategories={openCategories}
+                toggleCategory={toggleCategory}
+                products={ayushProducts}
+              />
+            )}
           </div>
         ))}
 
@@ -117,6 +165,183 @@ export function Sidebar() {
         </AnimatePresence>
       </div>
     </motion.aside>
+  );
+}
+
+function AyushProductTree({
+  collapsed,
+  pathname,
+  treeOpen,
+  setTreeOpen,
+  openCategories,
+  toggleCategory,
+  products,
+}: {
+  collapsed: boolean;
+  pathname: string;
+  treeOpen: boolean;
+  setTreeOpen: (fn: (v: boolean) => boolean) => void;
+  openCategories: Set<string>;
+  toggleCategory: (value: string) => void;
+  products: AyushProduct[] | null;
+}) {
+  if (collapsed) {
+    // Icon-only mode: a single nav item to the flat list page, matching how
+    // every other sidebar entry behaves when collapsed — the tree itself
+    // only makes sense expanded.
+    return (
+      <SidebarButton
+        item={{ key: "ayush-products", label: "AyushWellness Products", href: "/ayush-products", icon: <IconAyushProducts /> }}
+        collapsed={collapsed}
+        active={pathname.startsWith("/ayush-products")}
+      />
+    );
+  }
+
+  const byCategory = new Map<string, AyushProduct[]>();
+  for (const p of products ?? []) {
+    const list = byCategory.get(p.category);
+    if (list) list.push(p);
+    else byCategory.set(p.category, [p]);
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5">
+      <button
+        type="button"
+        onClick={() => setTreeOpen((v) => !v)}
+        className={cn(
+          "flex items-center gap-2 rounded-xl px-2.5 py-2 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+          pathname.startsWith("/ayush-products")
+            ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+            : "text-[var(--muted)] hover:bg-[var(--foreground)]/[0.05] hover:text-[var(--foreground)]"
+        )}
+      >
+        <span className="flex h-5 w-5 shrink-0 items-center justify-center">
+          <IconAyushProducts />
+        </span>
+        <span className="flex-1 truncate text-left">AyushWellness Products</span>
+        <IconCaret open={treeOpen} />
+      </button>
+
+      {treeOpen && (
+        <div className="ml-2.5 flex flex-col gap-0.5 border-l border-[var(--border)] pl-2.5">
+          {PRODUCT_CATEGORIES.map((cat) => {
+            const catProducts = byCategory.get(cat.value) ?? [];
+            const open = openCategories.has(cat.value);
+            return (
+              <div key={cat.value} className="flex flex-col gap-0.5">
+                <button
+                  type="button"
+                  onClick={() => toggleCategory(cat.value)}
+                  className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12.5px] font-medium text-[var(--muted)] transition-colors hover:bg-[var(--foreground)]/[0.05] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                  title={cat.description}
+                >
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                    {cat.value === "nutraceuticals" ? <IconCapsule /> : <IconLeaf />}
+                  </span>
+                  <span className="flex-1 truncate text-left">{cat.label}</span>
+                  <IconCaret open={open} small />
+                </button>
+
+                {open && (
+                  <div className="ml-2 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto border-l border-[var(--border)] pl-2.5">
+                    {products === null ? (
+                      <p className="px-2 py-1 text-[11.5px] text-[var(--muted)]">Loading…</p>
+                    ) : catProducts.length === 0 ? (
+                      <p className="px-2 py-1 text-[11.5px] text-[var(--muted)]">No products yet</p>
+                    ) : (
+                      catProducts.map((p) => {
+                        const href = `/ayush-products/${p.id}`;
+                        const active = pathname === href;
+                        return (
+                          <Link
+                            key={p.id}
+                            href={href}
+                            title={p.display_name || p.name}
+                            className={cn(
+                              "truncate rounded-lg px-2 py-1.5 text-[12.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+                              active
+                                ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
+                                : "text-[var(--muted)] hover:bg-[var(--foreground)]/[0.05] hover:text-[var(--foreground)]"
+                            )}
+                          >
+                            {p.display_name || p.name}
+                          </Link>
+                        );
+                      })
+                    )}
+                    <Link
+                      href={`/ayush-products/new?category=${encodeURIComponent(cat.value)}`}
+                      className="flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-[12.5px] font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                    >
+                      <IconPlus />
+                      Add Product
+                    </Link>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function IconCaret({ open, small }: { open: boolean; small?: boolean }) {
+  const size = small ? 10 : 12;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      className="shrink-0"
+      style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform .15s" }}
+    >
+      <path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconPlus() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLeaf() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M5 19c8-1 13-6 14-14-8 1-13 6-14 14z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <path d="M5 19c1-4 3.5-8 8-10.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconCapsule() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+      <rect
+        x="3.5"
+        y="8.5"
+        width="17"
+        height="7"
+        rx="3.5"
+        transform="rotate(-35 12 12)"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path d="M9.5 9.5l5 5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+    </svg>
   );
 }
 
@@ -225,6 +450,20 @@ function IconLibrary() {
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
       <path d="M4 4h6v16H4a1 1 0 01-1-1V5a1 1 0 011-1z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
       <path d="M14 4h6a1 1 0 011 1v14a1 1 0 01-1 1h-6V4z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconAyushProducts() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M12 3l2.2 4.6L19 8.3l-3.5 3.3.8 4.8L12 14.2l-4.3 2.2.8-4.8L5 8.3l4.8-.7L12 3z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path d="M6 20h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
 }

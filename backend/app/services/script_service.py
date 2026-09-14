@@ -13,7 +13,7 @@ from app.models.product import (
     ScriptRegenerateScope,
     ScriptSectionRegenerateInput,
 )
-from app.services import content_formats, script_length
+from app.services import content_formats, script_length, script_quality
 from app.services.compliance_rules import rules_for_category
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
@@ -64,8 +64,11 @@ _SECTION_PROSE: dict[str, str] = {
         "naturally, in-voice, not as a Q&A list."
     ),
     "cta": (
-        'CTA ("cta" field, section "cta") — a strong close: not "buy now" but a transformation-'
-        'framed call (e.g. "Start your recovery today", "Choose better, starting now").'
+        'CTA ("cta" field, section "cta") — a close that feels earned by everything before it, not a '
+        'reflexive "buy now"/"try it today"/"order now". Pick whichever style actually fits this '
+        'story\'s tone and funnel stage: soft ("maybe this is the upgrade your routine was missing"), '
+        'direct ("try the kit and make your next weekend count"), curiosity ("see what\'s inside"), or '
+        'UGC-style ("if you\'re dealing with the same thing, it\'s worth checking out").'
     ),
 }
 
@@ -97,7 +100,16 @@ fields:
   spoken language (these feed an English-language stock photo/video search, e.g. Pexels/Pixabay) —
   phrases that would actually return relevant results. Abstract or poetic phrasing is useless; tags
   must describe a literal, photographable scene or object (e.g. "green cardamom pods closeup",
-  "worried father looking at phone", not "a wave of realization"). 1-3 tags per block.
+  "worried father looking at phone", not "a wave of realization"). Never just translate the spoken
+  line word-for-word — describe the actual VISUAL SCENE it implies, shaped as SCENE + SUBJECT +
+  ACTION/EMOTION + CONTEXT (e.g. for "Roz ki thakaan ke baad bhi active rehna mushkil lagta hai" —
+  not "tired" or "active rehna" but "Indian man tired after work at home" or "Indian office worker
+  resting after long work day"). When the block's subject is a person, lifestyle moment, family,
+  workplace, or home setting for an Indian audience, lead with an "Indian" (or "Indian man" / "Indian
+  woman" / "Indian family" / "Indian office worker", etc.) modifier so search results reflect Indian
+  people and settings rather than generic/Western stock imagery — but don't force it where it doesn't
+  fit the subject (a closeup of cardamom pods or a product bottle doesn't need "Indian" in front of
+  it; "ayurvedic herbs natural ingredients" already reads as intended without it). 1-3 tags per block.
 - "scene_label": "Hook", "Scene 1", "Scene 2", ... or "CTA"
 - "section": one of hook, problem, science, story, product_intro, ingredients, benefits,
   objection_handling, cta — whichever beat this block belongs to.
@@ -115,26 +127,60 @@ fields:
 - "sfx": one short sound-effect suggestion for this block if genuinely useful (e.g. "soft phone
   notification chime"), or an empty string if none needed.
 - "ai_image_prompt": one concise, ready-to-use text-to-image generation prompt (under ~25 words)
-  that would produce this block's key visual.
+  that would produce THIS block's key visual — derived directly from this block's own text and
+  visual_direction, never a generic stock-photo scene unrelated to what's actually being said here.
+  Where relevant to this exact beat, ground it in: subject, action, environment, product placement
+  (only in beats where the product should actually be visible), emotion, composition, camera angle,
+  lighting, and visual style. The product does not need to appear in every block — many blocks are
+  the human situation with no product in frame, and that's expected, often stronger than forcing it
+  into every scene.
 - "ai_video_prompt": one concise, ready-to-use text-to-video/motion generation prompt (under ~25
   words) describing the motion/action for this block.
 
 Also produce one top-level "bgm_suggestion": a short direction for background music (mood/genre/
 tempo) that fits the situation's emotional arc across the whole ad."""
 
-_CORE_PRINCIPLES_BLOCK = """CORE WRITING PRINCIPLES (non-negotiable):
-- Write like a human copywriter who actually gets this audience, not like an AI. Never use
-  corporate/AI-ish filler ("in today's fast-paced world", "unlock the power of", "game-changer",
-  "revolutionize", "elevate your", "unleash", "seamlessly", "journey to a better you"). If a line
-  could appear in literally any ad for any product, rewrite it until it couldn't.
+# The generation prompt's banned-phrase sentence is rendered FROM
+# script_quality.BANNED_PHRASES (the same list the post-generation quality
+# gate checks against) so the writer and the checker can't drift apart.
+def _banned_phrases_prose() -> str:
+    return ", ".join(f'"{p}"' for p in script_quality.BANNED_PHRASES)
+
+
+def _core_principles_block() -> str:
+    return f"""CORE WRITING PRINCIPLES (non-negotiable):
+- Write like a human copywriter who actually gets this audience, not like an AI. Banned words/
+  phrases (not exhaustive — the point is the pattern, not just this list): {_banned_phrases_prose()}.
+  Generic openers like "are you tired of...", "in today's busy world...", "we all know...", "do you
+  want to...", "have you ever wondered..." may be used ONLY when genuinely the sharpest option for
+  this exact hook — never reach for them by default. If a line could appear in literally any ad for
+  any product, rewrite it until it couldn't.
 - Follow a real narrative arc for this exact story situation — do NOT default to a generic
-  Problem -> Product -> Benefits -> CTA template. Let the persona, emotion, and marketing angle
-  given to you dictate the actual shape of the story; some situations open mid-scene, some open on
-  a feeling, some open on someone else's voice. The structure beats above are the scaffolding, not
-  a fill-in-the-blanks form.
+  Problem -> Product -> Benefits -> CTA template every time. Let the persona, emotion, marketing
+  angle, and chosen creative mechanism dictate the actual shape of the story; some situations open
+  mid-scene, some open on a feeling, some open on someone else's voice. The structure beats above
+  are the scaffolding, not a fill-in-the-blanks form.
+- The product must feel like it belongs in this exact story, not like it was stuffed in because a
+  product had to be mentioned somewhere. Build the situation so its entry feels inevitable — "of
+  course this is what they'd reach for" — not announced. Never write a beat that exists only to
+  name-drop the product.
+- Turn features into benefits, not a feature dump: for anything you mention, think feature ->
+  function -> consumer benefit -> human value, and write the human value the audience actually
+  feels, not the ingredient label. Only make claims the given product info actually supports.
+- Vary sentence rhythm on purpose — short punchy lines mixed with a longer thought that develops an
+  idea, not every sentence the same length or shape. This is meant to be heard, not read as a
+  paragraph. Avoid a run of same-shaped short declaratives back to back (e.g. "Energy low thi.
+  Stamina low thi. Progress slow thi." reads like AI-generated bullet points, not speech) — break
+  that pattern with a real question, a longer sentence that develops the thought, or a natural
+  transition between beats.
 - Use ONLY the product info you were actually given below (ingredients, doses, USP, benefits). Never
-  invent a certification, clinical study, statistic, doctor endorsement, or ingredient/dose that
-  wasn't provided — if something is missing, write around it generically instead of making it up.
+  invent a certification, clinical study, statistic, doctor endorsement, customer review/testimonial,
+  award, or ingredient/dose that wasn't provided — if something is missing, write around it
+  generically instead of making it up. This applies to the STORY, not just explicit claims: do not
+  invent a specific concrete achievement (a race finished, a number on a scale, a health outcome) and
+  present it as something the product caused — an aspirational story is fine, a fabricated result
+  presented as fact is not. Frame the product's role as supporting/part of the routine/designed for
+  this, not as the proven cause of an invented outcome.
 - Write specifically for the given target audience — their real vocabulary, daily context, and
   concerns — not a generic "everyone" voice.
 - Stay strictly inside the given persona, emotion, and marketing angle of the chosen story situation
@@ -142,8 +188,68 @@ _CORE_PRINCIPLES_BLOCK = """CORE WRITING PRINCIPLES (non-negotiable):
   through.
 - Make every visual beat concrete and photographable (a real scene, action, or object), never an
   abstract mood description that a camera or an image generator couldn't actually shoot.
-Before finalizing, silently check your own output against every rule above and the language rule
-below — fix anything that fails before returning."""
+- The CTA must feel earned by what came before it, matching the tone/format/funnel stage — not a
+  reflexive "buy now"/"try it today"/"order now" by default. A soft, direct, curiosity-driven, or
+  UGC-style close are all valid; pick whichever this exact story actually earns.
+Before returning, silently self-check (never show this checking, never output it): would a
+professional ad-agency creative director approve this, or does it read like generic AI marketing
+copy? Is there ONE clear central idea, not several unrelated selling points mixed together? If
+anything fails, rewrite it before returning — also check against the language rule below."""
+
+# The prompt's mechanism list is rendered FROM script_quality.CREATIVE_MECHANISMS
+# (the same list normalize_creative_mechanism() validates against post-hoc) so
+# the writer's instructions and the checker's canonical set can't drift apart.
+_MECHANISM_DESCRIPTIONS: dict[str, str] = {
+    "confession": 'confession ("I used to think...")',
+    "social_observation": 'social_observation ("you know that one friend who...")',
+    "mini_story": "mini_story (setup -> tension -> realization -> resolution)",
+    "problem_insight": "problem_insight (naming something the audience overlooked)",
+    "question": "question (a genuinely intriguing one — this is a fallback, not a default; reach for it only when nothing sharper fits)",
+}
+
+
+def _creative_mechanisms_prose() -> str:
+    return ", ".join(_MECHANISM_DESCRIPTIONS.get(m, m) for m in script_quality.CREATIVE_MECHANISMS)
+
+
+def _creative_direction_block() -> str:
+    return f"""CREATIVE STRATEGY — work through this silently before writing (never
+show this reasoning, never output it as text; return only the final script JSON):
+1. PRODUCT — what does it actually do, what makes it different, and which given benefit is
+   strongest and most specific to this audience? Use only benefits/facts actually given below.
+2. AUDIENCE — what does this persona want, fear, or get frustrated by? What situation puts them in
+   the market for this right now?
+3. HOOK — why would this exact person stop scrolling in the first 1-3 seconds? What curiosity gap,
+   tension, surprising observation, or emotional trigger fits here?
+4. CREATIVE MECHANISM — choose exactly ONE from this list: {_creative_mechanisms_prose()}.
+   Decide the mechanism in this priority order, never picking one that doesn't actually fit just to
+   be different: (1) if a specific hook line is given below, the mechanism it inherently implies
+   wins — don't override a hook's own promise; (2) otherwise, whatever genuinely suits this exact
+   product; (3) then the requested format; (4) then the audience; (5) then the tone; (6) only last,
+   if a PREVIOUS ATTEMPT is noted below, prefer a mechanism different from it — but never force an
+   unfitting one just to be different. Report your final choice, verbatim, as the top-level
+   "creative_mechanism" JSON field — it MUST be exactly one of the snake_case labels above, nothing
+   else (not a phrase, not a new word — pick the closest one from the list).
+5. STORY ARC — pick the shape that fits the chosen mechanism, adapted freely into the STRUCTURE
+   beats below (the arc is the internal logic; STRUCTURE is the JSON scaffolding it pours into):
+   curiosity (hook -> unexpected observation -> tension -> reveal -> product -> benefit -> cta),
+   story (hook -> situation -> problem -> emotional moment -> discovery -> product -> result -> cta),
+   problem/insight (hook -> common belief -> why it's incomplete -> insight -> product -> why it
+   fits -> cta), UGC (hook -> personal experience -> problem -> discovery -> product experience ->
+   specific benefit -> recommendation), demonstration (hook -> show problem -> show process ->
+   product -> result/benefit -> cta), or emotional (hook -> human moment -> emotional tension ->
+   product enters naturally -> emotional payoff -> cta).
+6. ONE IDEA — build the whole script around ONE central creative idea; never mix several unrelated
+   selling points or emotional angles into the same script.
+7. HOOK -> PAYOFF — if a specific hook line is given below, treat the promise/curiosity it opens as
+   a contract with the viewer: the body must actually answer or resolve what the hook implied, in a
+   way that couldn't be guessed from the hook alone. A viewer should never think "why did it start
+   with that?"
+8. CTA -> IDEA — the closing line should connect back to the ONE central creative idea from step 6,
+   not just be a generic sign-off. A direct, plain call to action is correct when the story earns a
+   direct close — don't force poetic phrasing where a direct CTA genuinely fits better.
+Only after this reasoning, write the actual script — commit to the single strongest direction, do
+not hedge between two ideas."""
 
 _JSON_SAFETY_BLOCK = """JSON SAFETY (strictly enforced): return ONLY a single valid JSON object, no
 prose before or after, no markdown code fences. Every string value must have its double quotes
@@ -155,7 +261,8 @@ _SCRIPT_JSON_SHAPE = """{
   "hook": {"text": string, "on_screen_text": string, "visual_tags": [string], "scene_label": string, "section": string, "visual_direction": string, "camera_angle": string, "emotion": string, "duration_seconds": number, "b_roll": [string], "sfx": string, "ai_image_prompt": string, "ai_video_prompt": string},
   "body": [ ...same shape as hook... ],
   "cta": { ...same shape as hook... },
-  "bgm_suggestion": string
+  "bgm_suggestion": string,
+  "creative_mechanism": string
 }"""
 
 def _tone_block(tone: str) -> str:
@@ -181,20 +288,24 @@ def _video_structure(bucket: str, format_value: str, format_description: str) ->
 
 def _system_prompt(bucket: str, format_value: str = "", format_description: str = "", tone: str = "") -> str:
     return (
-        "You are a senior short-form video ad copywriter/director for a content factory pipeline, "
-        "writing scripts as sharp and professional as a real D2C ad agency's shooting scripts, "
-        "sized EXACTLY to fit the target duration below — never longer. You do NOT invent the "
-        "creative — you are given ONE specific, already-chosen story situation (a persona, a "
-        "conflict, an emotional arc) and your job is to write the complete script, in the requested "
-        "format, that brings that exact situation to life, at the correct length for its runtime. "
-        "Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
+        "You are a senior short-form video ad creative team in one — creative director, advertising "
+        "strategist, senior copywriter, direct-response marketer, and visual storyteller — for a "
+        "content factory pipeline, writing scripts as sharp and professional as a real D2C ad "
+        "agency's shooting scripts, sized EXACTLY to fit the target duration below — never longer. "
+        "Your job is to make the audience stop, watch, feel, understand, want, and act — not to "
+        "write generic sentences about a product. You do NOT invent the creative situation itself — "
+        "you are given ONE specific, already-chosen story situation (a persona, a conflict, an "
+        "emotional arc) — but you choose HOW to tell it: the mechanism, the structure, the line-by-"
+        "line execution. Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
+        + _creative_direction_block()
+        + "\n\n"
         + _video_structure(bucket, format_value, format_description)
         + "\n\n"
         + _FIELDS_BLOCK
         + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
         "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
         "write generically rather than inventing specifics.\n\n"
-        + _CORE_PRINCIPLES_BLOCK
+        + _core_principles_block()
         + _tone_block(tone)
         + "\n\n"
         + _JSON_SAFETY_BLOCK
@@ -205,20 +316,22 @@ def _system_prompt(bucket: str, format_value: str = "", format_description: str 
 
 def _static_system_prompt(format_value: str, format_description: str, tone: str) -> str:
     return (
-        "You are a senior creative copywriter/art director for a content factory pipeline, writing "
+        "You are a senior creative director and copywriter for a content factory pipeline, writing "
         "static ad creative (a single graphic or a short slide set), as sharp and professional as a "
         "real D2C brand's in-house creative team — not a video script, no voiceover or camera work. "
-        "You do NOT invent the creative — you are given ONE specific, already-chosen story situation "
-        "(a persona, a conflict, an emotional arc) and your job is to distill it into the requested "
-        "static format's copy plus a detailed image-generation prompt. Stay faithful to the given "
-        "persona, emotion, and marketing angle throughout.\n\n"
+        "You do NOT invent the creative situation itself — you are given ONE specific, already-"
+        "chosen story situation (a persona, a conflict, an emotional arc) — but you choose HOW to "
+        "distill it into the requested static format's copy plus a detailed image-generation prompt. "
+        "Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
+        + _creative_direction_block()
+        + "\n\n"
         + content_formats.static_structure_block(format_value, format_description)
         + "\n\n"
         + content_formats.STATIC_FIELDS_BLOCK
         + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
         "the first of two guardrail passes, so be conservative. If ingredient/USP data is missing, "
         "write generically rather than inventing specifics.\n\n"
-        + _CORE_PRINCIPLES_BLOCK
+        + _core_principles_block()
         + _tone_block(tone)
         + "\n\n"
         + _JSON_SAFETY_BLOCK
@@ -250,8 +363,11 @@ _SCOPE_GUIDANCE: dict[ScriptRegenerateScope, str] = {
         "current script — build on it, don't discard it."
     ),
     ScriptRegenerateScope.hook: (
-        'TASK: regenerate ONLY the "hook" block — a fresh angle/wording for the opening. Leave '
-        "every body block and the cta completely unchanged."
+        'TASK: regenerate ONLY the "hook" block — a genuinely different creative mechanism for the '
+        "opening (see the mechanism list — pattern interrupt, curiosity gap, contrarian insight, "
+        "relatable moment, confession, POV, social observation, etc. — pick one that isn't just a "
+        "reworded version of the current hook's mechanism), still setting up a promise the "
+        "unchanged body actually pays off. Leave every body block and the cta completely unchanged."
     ),
     ScriptRegenerateScope.cta: (
         'TASK: regenerate ONLY the "cta" block. Leave the hook and every body block completely '
@@ -317,7 +433,7 @@ def _regen_system_prompt(
         + "\n\n"
         + fields_block
         + "\n\n"
-        + _CORE_PRINCIPLES_BLOCK
+        + _core_principles_block()
         + _tone_block(tone)
         + "\n\n"
         + _JSON_SAFETY_BLOCK
@@ -356,8 +472,51 @@ def _hook_block(selected_hook_text: str) -> str:
     return (
         f"\nSELECTED HOOK LINE (mandatory) — open the \"hook\" block with this exact line, or a "
         f"light, faithful adaptation of it (translated/localized into the script's language if "
-        f"needed) that keeps its core wording and structure: \"{selected_hook_text}\"\n"
+        f"needed, naturally connected to this exact product/audience) that keeps its core wording "
+        f"and structure: \"{selected_hook_text}\"\n"
+        f"This hook creates a specific promise or curiosity gap. Do not casually replace it, and do "
+        f"not just paste it and then write unrelated product copy after it — the rest of the script "
+        f"must actually pay off what it opened, specifically and concretely, not with generic copy "
+        f"that could follow any hook. A viewer should never think \"why did it start with that?\"\n"
     )
+
+
+# Keyword -> creative-emphasis note. Purely additive creative guidance, separate
+# from compliance_rules.py's claim restrictions — keyed dynamically off whatever
+# category string the user picked, so no single brand/category is hardcoded.
+_CATEGORY_CREATIVE_NOTES: list[tuple[tuple[str, ...], str]] = [
+    (
+        ("ayur", "herbal", "natural remed"),
+        "This is a herbal/Ayurvedic-style category — where the given product info actually supports "
+        "it, traditional inspiration, ingredients, ritual/routine, sensory experience, and heritage "
+        "are natural angles. Never invent a tradition, lineage, or heritage detail that wasn't given.",
+    ),
+    (
+        ("skin", "beauty", "hair", "personal care", "face care"),
+        "This is a skincare/personal-care-style category — routine, texture, sensory experience, "
+        "confidence, and specific skin/hair concerns are natural angles. Never make a medical claim "
+        "about treating or curing a skin condition.",
+    ),
+    (
+        ("health", "wellness", "fitness", "nutrition", "supplement"),
+        "This is a healthcare/wellness-style category — be especially careful: never diagnose, never "
+        "promise a cure, never guarantee a medical outcome, never invent clinical proof. Lean on "
+        "lifestyle, routine, and confidence framing instead of medical claims.",
+    ),
+    (
+        ("food", "beverage", "tea", "drink"),
+        "This is a food/beverage-style category — sensory experience (taste, aroma, the ritual of "
+        "consumption), routine, and lifestyle fit are natural angles.",
+    ),
+]
+
+
+def _category_creative_note(category: str) -> str:
+    key = (category or "").lower()
+    for keywords, note in _CATEGORY_CREATIVE_NOTES:
+        if any(k in key for k in keywords):
+            return note
+    return ""
 
 
 _VOICE_STRUCTURE_GUIDE = """
@@ -474,10 +633,13 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         else None
     )
 
+    category_note = _category_creative_note(payload.product_category)
+    category_note_block = f"\nCategory creative note: {category_note}\n" if category_note else ""
+
     format_label = payload.format.replace("_", " ").title() if payload.format else "default"
     format_desc_note = f' — "{payload.format_description}"' if payload.format == "custom" and payload.format_description else ""
     length_line = (
-        ""
+        script_length.static_length_directive(target_word_count, current_word_count)
         if payload.content_type == ContentType.static
         else script_length.length_directive(target_duration, target_word_count, current_word_count)
     )
@@ -504,10 +666,67 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         f"USP: {p.usp or 'unknown'}\n"
         f"Tone: {p.tone or 'unspecified'}\n"
         f"Key benefits: {', '.join(p.key_benefits) or 'unknown'}\n\n"
-        f"Category compliance rules (do not violate these):\n{rules_block}\n\n"
+        f"Category compliance rules (do not violate these):\n{rules_block}\n"
+        f"{category_note_block}\n"
         f"Similar past-winning scripts for reference (style/structure inspiration only, "
         f"do not copy claims):\n{winners_block}"
+        f"{_product_library_block(getattr(payload, 'product_context', None))}"
     )
+
+
+def _product_library_block(ctx) -> str:
+    """AyushWellness Product Library context — additive, empty string when no
+    Product Library product is selected (every existing caller/script stays
+    byte-for-byte unchanged). Approved claims are the ONLY claims the model
+    may use; prohibited claims are an explicit denylist. Reference scripts
+    are style/strategy inspiration only — the model is told explicitly not
+    to copy them verbatim, same convention as similar_past_winners above."""
+    if ctx is None:
+        return ""
+    lines = [
+        "\n\nAYUSHWELLNESS PRODUCT LIBRARY CONTEXT (this is the real, approved product — ground the "
+        "script in this, not invented details):",
+        f"Product: {ctx.name} ({ctx.category})",
+    ]
+    if ctx.usp:
+        lines.append(f"USP: {ctx.usp}")
+    if ctx.target_audience:
+        lines.append(f"Target audience: {ctx.target_audience}")
+    if ctx.primary_problem:
+        lines.append(f"Primary problem it solves: {ctx.primary_problem}")
+    if ctx.positioning:
+        lines.append(f"Positioning: {ctx.positioning}")
+    if ctx.ingredients:
+        lines.append(f"Ingredients: {', '.join(ctx.ingredients)}")
+    if ctx.benefits:
+        lines.append(f"Benefits: {', '.join(ctx.benefits)}")
+    if ctx.preferred_tone:
+        lines.append(f"Preferred tone: {ctx.preferred_tone}")
+    if ctx.cta_text:
+        lines.append(f"Preferred CTA: {ctx.cta_text}")
+    if ctx.winning_hooks:
+        lines.append("Winning hooks from past creative (style reference only, do not reuse verbatim):")
+        lines.extend(f"  - {h}" for h in ctx.winning_hooks)
+    if ctx.approved_claims:
+        lines.append(
+            "APPROVED CLAIMS — the ONLY claims about this product's efficacy you may make "
+            "(reword naturally, but never claim more than these say):"
+        )
+        lines.extend(f"  - {c}" for c in ctx.approved_claims)
+    if ctx.prohibited_claims:
+        lines.append("PROHIBITED CLAIMS — never say or imply any of these, in any wording:")
+        lines.extend(f"  - {c}" for c in ctx.prohibited_claims)
+    if ctx.mandatory_wording:
+        lines.append(f"Mandatory wording (must appear somewhere in the script): {ctx.mandatory_wording}")
+    if ctx.reference_script_excerpts:
+        lines.append(
+            "Approved reference script excerpts — STYLE/PACING/TONE reference only. Learn the voice, "
+            "hook pattern, and structure. Do NOT copy sentences, claims, or the exact creative idea "
+            "verbatim — write an original script:"
+        )
+        for excerpt in ctx.reference_script_excerpts:
+            lines.append(f'  """{excerpt}"""')
+    return "\n".join(lines)
 
 
 def _call_llm(system: str, user_message: str, max_tokens: int) -> str:
@@ -584,8 +803,11 @@ def _generate_with_recovery(
 
     # Static creative has its own tight, format-specific word ceilings baked into
     # content_formats.py's structure prompts, not the video WPM/duration-bucket
-    # system — skip the video length-correction pass entirely for it.
-    if content_type == ContentType.static:
+    # system — skip the correction pass for a FRESH static generation (no
+    # explicit target). But when the Script Length control set an explicit
+    # target_word_count on a static creative, still correct toward it below,
+    # same as video.
+    if content_type == ContentType.static and not target_word_count:
         return data
 
     if target_word_count:
@@ -593,25 +815,40 @@ def _generate_with_recovery(
         # tight, since "barely moved from the current length" must be caught,
         # not just catastrophic failures.
         word_lo, word_hi = max(10, target_word_count - 10), target_word_count + 10
-        tol_lo, tol_hi = 0.9, 1.15
+        correction_floor, correction_ceiling = word_lo * 0.9, word_hi * 1.15
     else:
+        # A duration bucket's published range (fresh generation) — deliberately
+        # a FLAT word margin around the range, not a percentage of it. A
+        # percentage multiplier scales the same way the range itself does, so
+        # at wide high-tier ranges (e.g. Very Long's 160-230) it silently
+        # created a huge absolute floor gap (was 0.75x -> 120, well below the
+        # stated 160 minimum) that never got caught by the correction pass
+        # below — exactly why fresh Very Long generations could undershoot to
+        # ~148 words and be accepted as "close enough". A flat margin keeps
+        # the same absolute slack regardless of bucket size, matching the
+        # already-working stepper (target_word_count) branch above.
         word_lo, word_hi = script_length.target_word_minimum(target_duration), script_length.target_word_maximum(target_duration)
-        tol_lo, tol_hi = 0.75, 1.3
+        correction_floor, correction_ceiling = word_lo - 10, word_hi + 20
 
     words = script_length.count_words(data)
-    if words < word_lo * tol_lo or words > word_hi * tol_hi:
+    if words < correction_floor or words > correction_ceiling:
+        fit_note = "fit the spoken runtime" if content_type != ContentType.static else "fit the target copy length"
         direction = (
             f"far too short ({words} words; target is {word_lo}-{word_hi})"
-            if words < word_lo
+            if words < correction_floor
             else f"far too long ({words} words; target is {word_lo}-{word_hi}) — this must actually "
-            "fit the spoken runtime, cut it down substantially by removing or merging blocks"
+            f"{fit_note}, cut it down substantially by removing or merging blocks"
         )
         try:
             corrected_raw = _call_llm(
                 system,
                 user_message
-                + f"\n\nIMPORTANT: your previous attempt was {direction}. Rewrite it to actually "
-                "hit the target word count while preserving the same story, hook, and structure.",
+                + f"\n\nIMPORTANT: your previous attempt was {direction}. Rewrite it to actually hit "
+                "the target word count — but by adding genuinely NEW story beats (situation, "
+                "consequence, tension, insight, turning point, experience, payoff — whichever the "
+                "brief above calls for), never by repeating a point in different words, adding a "
+                "generic motivational line, repeating the product name, or padding with filler "
+                "adjectives. Preserve the same story, hook, and structure; develop it further.",
                 max_tokens,
             )
             corrected_data = _parse_script_json(corrected_raw)
@@ -624,6 +861,12 @@ def _generate_with_recovery(
 
 
 def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
+    # Normalize against the canonical mechanism list here — the one choke
+    # point every generation/regeneration path passes through — so an
+    # off-list value the model happens to self-report (e.g. "transformation"
+    # instead of "before_after") never reaches GeneratedScript, and
+    # therefore never reaches a later avoid_repeating_mechanism either.
+    data = {**data, "creative_mechanism": script_quality.normalize_creative_mechanism(data.get("creative_mechanism", ""))}
     return GeneratedScript(
         **data,
         situation=payload.selected_situation,
@@ -639,13 +882,135 @@ def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
     )
 
 
+def _rewrite_for_quality(
+    data: dict,
+    payload,
+    target_duration: str,
+    target_word_count: int | None,
+    reason: str,
+    content_type: ContentType,
+) -> dict:
+    """The quality gate's one allowed rewrite pass. Reuses the same
+    full-rewrite scaffolding as a normal "full" regenerate — same prefix and
+    scope guidance ("keep the same story/hook/persona/product facts, build
+    on it"), so a selected Hooks-library hook or the current creative
+    direction is preserved by default; the `reason` argument is what
+    actually steers the fix, and only overrides that default when the
+    flagged issue is specifically about the hook itself."""
+    context = _context_block(payload, target_duration, target_word_count)
+    current_script_json = json.dumps(data, ensure_ascii=False)
+    user_message = (
+        f"{context}\n\n"
+        f"Current script (JSON) — this is what was generated; follow the TASK above to fix it:\n"
+        f"{current_script_json}"
+    )
+    system = _regen_system_prompt(ScriptRegenerateScope.full, reason, content_type, getattr(payload, "tone", ""))
+    return _generate_with_recovery(
+        system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type
+    )
+
+
+def _apply_quality_gate(
+    data: dict,
+    payload,
+    target_duration: str,
+    target_word_count: int | None,
+    content_type: ContentType,
+    run_semantic_check: bool,
+) -> dict:
+    """Draft -> Quality Gate -> (rewrite once if weak) -> Final script. Layer
+    1 (banned-phrase/structural/product-relevance checks) is free and always
+    runs; Layer 2 (one small LLM eval) only runs when Layer 1 is clean AND
+    the caller opts in — reserved for the broad generation paths (fresh
+    generation, full/length regenerate), skipped for narrow single-block
+    regenerates (Improve Hook/CTA/etc) to avoid an extra call on every
+    click. At most one rewrite pass total. Never raises — any failure here
+    falls back to the original draft so the user always gets a script."""
+    try:
+        issues = script_quality.deterministic_issues(data, payload)
+        if not issues and run_semantic_check:
+            issues = script_quality.llm_quality_issues(data, payload)
+        if not issues:
+            return data
+        logger.info("Quality gate flagged %s — attempting one rewrite pass", issues)
+        reason = script_quality.rewrite_reason(issues)
+        return _rewrite_for_quality(data, payload, target_duration, target_word_count, reason, content_type)
+    except Exception as e:
+        logger.warning("Quality gate rewrite failed, keeping original draft: %s", e)
+        return data
+
+
+def _apply_narrow_quality_gate(
+    data: dict,
+    payload: ScriptSectionRegenerateInput,
+    target_duration: str,
+    target_word_count: int | None,
+    content_type: ContentType,
+) -> dict:
+    """The narrow-scope counterpart to _apply_quality_gate: cheap,
+    deterministic-only checks on JUST the block(s) this scope is allowed to
+    touch (Improve Hook only checks the hook, Improve CTA only the cta,
+    etc.) — never the whole script. If something's wrong, ONE targeted
+    rewrite using that SAME scope (never scope=full), so the fix can't
+    spill into blocks the current edit wasn't meant to touch. No LLM eval
+    layer here — deliberately cheap, matching the existing "no extra API
+    call on every narrow click" design. Never raises."""
+    try:
+        changed_text = script_quality.scope_changed_text(data, payload.scope, payload.target_scene_label)
+        if not changed_text.strip():
+            return data
+        issues = script_quality.text_issues(changed_text)
+        if "unsupported_claim" in issues and script_quality.claim_grounded_in_product_data(payload):
+            issues = [i for i in issues if i != "unsupported_claim"]
+        if not issues:
+            return data
+        logger.info("Narrow quality gate flagged %s on scope=%s — targeted rewrite", issues, payload.scope)
+        reason = script_quality.rewrite_reason(issues)
+        context = _context_block(payload, target_duration, target_word_count)
+        current_script_json = json.dumps(data, ensure_ascii=False)
+        user_message = (
+            f"{context}\n\n"
+            f"Current script (JSON) — this is what was just generated; follow the TASK above to fix "
+            f"it:\n{current_script_json}"
+        )
+        system = _regen_system_prompt(payload.scope, reason, content_type, payload.tone, payload.target_scene_label)
+        rewritten = _generate_with_recovery(
+            system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type
+        )
+        # The rewrite prompt says "leave every other block unchanged", but a
+        # targeted-fix instruction can still make the model drift and touch
+        # more than it was asked to — enforce the contract deterministically
+        # rather than trusting compliance alone.
+        return script_quality.enforce_narrow_scope(data, rewritten, payload.scope, payload.target_scene_label)
+    except Exception as e:
+        logger.warning("Narrow quality gate rewrite failed, keeping original draft: %s", e)
+        return data
+
+
 def _generate_full_script(
     payload,
     target_duration: str,
     target_word_count: int | None = None,
     custom_instruction: str = "",
+    avoid_repeating_hook: str = "",
+    avoid_repeating_mechanism: str = "",
 ) -> GeneratedScript:
     user_message = _context_block(payload, target_duration, target_word_count)
+    if avoid_repeating_hook:
+        mechanism_note = (
+            f' (creative mechanism: "{avoid_repeating_mechanism}")' if avoid_repeating_mechanism else ""
+        )
+        user_message += (
+            f"\n\nThis is a RE-generation from scratch — the previous attempt's hook was: "
+            f"\"{avoid_repeating_hook}\"{mechanism_note}. Per the priority order in CREATIVE STRATEGY "
+            f"step 4 above, prefer a genuinely different creative mechanism and story arc this time — "
+            f"NOT just different wording for the same mechanism (e.g. \"Nobody tells you...\" -> "
+            f"\"Here's what nobody tells you...\" is NOT a different mechanism, it's the same "
+            f"curiosity_gap reworded). Only repeat the previous mechanism if the selected hook below "
+            f"genuinely requires it or no other mechanism actually fits this product/format/audience. "
+            f"Same product, same story situation, same format/tone/language/duration — a meaningfully "
+            f"different creative idea.\n"
+        )
     if custom_instruction:
         user_message += f"\n\nADDITIONAL INSTRUCTION: {custom_instruction}\n"
     if payload.content_type == ContentType.static:
@@ -654,6 +1019,9 @@ def _generate_full_script(
         system = _system_prompt(target_duration, payload.format, payload.format_description, payload.tone)
     data = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type
+    )
+    data = _apply_quality_gate(
+        data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True
     )
     return _finish(data, payload, target_duration)
 
@@ -668,7 +1036,12 @@ def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:
         if payload.content_type == ContentType.static
         else script_length.resolve_target_duration(payload.selected_situation.estimated_length, payload.target_duration)
     )
-    return _generate_full_script(payload, target_duration)
+    return _generate_full_script(
+        payload,
+        target_duration,
+        avoid_repeating_hook=getattr(payload, "avoid_repeating_hook", ""),
+        avoid_repeating_mechanism=getattr(payload, "avoid_repeating_mechanism", ""),
+    )
 
 
 def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> GeneratedScript:
@@ -692,7 +1065,16 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
         and not payload.custom_instruction
     )
     if is_pure_full:
-        return _generate_full_script(payload, target_duration)
+        previous_hook = (payload.current_script.hook.text or "").strip() if payload.current_script else ""
+        previous_mechanism = (
+            (payload.current_script.creative_mechanism or "").strip() if payload.current_script else ""
+        )
+        return _generate_full_script(
+            payload,
+            target_duration,
+            avoid_repeating_hook=previous_hook,
+            avoid_repeating_mechanism=previous_mechanism,
+        )
 
     length_target = (
         script_length.bump_bucket(target_duration)
@@ -712,5 +1094,16 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
     data = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, length_target, payload.target_word_count, payload.content_type
     )
+    # Quality gate only runs for the broad rewrite scopes (full/length) —
+    # its rewrite pass always targets the WHOLE script, which is correct
+    # there but would break a narrow scope's "leave every other block
+    # untouched" contract (e.g. flagging a pre-existing issue in a body
+    # block that an Improve-Hook/CTA-only edit was never meant to touch).
+    if payload.scope in (ScriptRegenerateScope.full, ScriptRegenerateScope.length):
+        data = _apply_quality_gate(
+            data, payload, length_target, payload.target_word_count, payload.content_type, run_semantic_check=True
+        )
+    else:
+        data = _apply_narrow_quality_gate(data, payload, length_target, payload.target_word_count, payload.content_type)
 
     return _finish(data, payload, length_target)

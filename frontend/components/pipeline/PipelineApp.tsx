@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { Stepper, type Step } from "@/components/ui/Stepper";
 import { Button } from "@/components/ui/Button";
+import { Card, CardBody } from "@/components/ui/Card";
 import { PipelineSubHeader } from "@/components/shell/PipelineSubHeader";
 import { useToast } from "@/components/shell/ToastProvider";
 import { useActiveProject } from "@/lib/project-context";
@@ -35,9 +36,12 @@ import {
   generateScript,
   generateStorySituations,
   generateVoiceover,
+  getAyushProductContext,
   getScriptSuggestions,
+  listAyushProducts,
   logHistoryEvent,
   motionFileUrl,
+  productUploadFileUrl,
   regenerateScriptSection,
   renderFileUrl,
   renderVideo,
@@ -55,11 +59,14 @@ import type { ApplyPatch } from "@/components/ui/AiSuggestionsPanel";
 import type { RegenerateOptions } from "@/components/steps/ScriptStep";
 import {
   flattenScript,
+  PRODUCT_CATEGORIES,
+  type AyushProduct,
   type ComplianceResult,
   type ContentType,
   type GeneratedScript,
   type Hook,
   type MotionGenerationResult,
+  type ProductContext,
   type ProductInput,
   type Project,
   type ReferenceKind,
@@ -132,6 +139,7 @@ type RestoredPipelineState = {
   renderResult: RenderResult | null;
   approved: boolean | null;
   selectedHookText: string | null;
+  productLibraryContext: ProductContext | null;
 };
 
 function restorePipelineState(project: Project | null): RestoredPipelineState {
@@ -167,6 +175,7 @@ function restorePipelineState(project: Project | null): RestoredPipelineState {
     renderResult: (raw.renderResult as RenderResult | undefined) ?? null,
     approved: typeof raw.approved === "boolean" ? raw.approved : null,
     selectedHookText: (raw.selectedHookText as string | undefined) ?? null,
+    productLibraryContext: (raw.productLibraryContext as ProductContext | undefined) ?? null,
   };
 }
 
@@ -258,6 +267,18 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const [productInput, setProductInput] = useState<ProductInput | null>(() => restored.productInput);
   const [category, setCategory] = useState(() => restored.category ?? "");
   const [structured, setStructured] = useState<StructuredProduct | null>(() => restored.structured);
+  // Set only when the user picked a Product Library product instead of the
+  // manual Product flow — threaded into Script generation / Asset Sourcing
+  // as approved product knowledge. `structured` above is still populated
+  // (mapped from this context) so every existing downstream reader keeps
+  // working unchanged; this is purely additive.
+  const [productLibraryContext, setProductLibraryContext] = useState<ProductContext | null>(
+    () => restored.productLibraryContext
+  );
+  const [ayushProducts, setAyushProducts] = useState<AyushProduct[] | null>(null);
+  const [productSourceMode, setProductSourceMode] = useState<"manual" | "library">(() =>
+    restored.productLibraryContext ? "library" : "manual"
+  );
   const [referenceMaterials, setReferenceMaterials] = useState<ReferenceMaterial[]>(() => restored.referenceMaterials ?? []);
   const [uploadingMaterialIds, setUploadingMaterialIds] = useState<Set<string>>(new Set());
   const [sourceUrlRawText, setSourceUrlRawText] = useState<string | undefined>(() => restored.sourceUrlRawText);
@@ -464,6 +485,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       approved,
       selectedHookText,
       furthest,
+      productLibraryContext,
     }),
     [
       productInput,
@@ -495,6 +517,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       approved,
       selectedHookText,
       furthest,
+      productLibraryContext,
     ]
   );
 
@@ -548,6 +571,28 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     }
   }
 
+  // The very first save creates the project AND does a one-time
+  // router.replace from the project-less "/" route into the persistent
+  // "/pipeline/[projectId]/..." layout — a real remount, unlike navigation
+  // between sibling stages once inside that layout (see
+  // PipelineProjectClient's comment). If that first save is still sitting in
+  // its normal debounce window when a long-running generation call (e.g.
+  // story situations, which can take 15s+) is kicked off, the remount tears
+  // down the component instance holding that in-flight request; when it
+  // resolves, setState + goTo() fire against a dead instance and the result
+  // is silently lost — the next screen renders from the pre-generation
+  // snapshot with no error and no visible sign anything went wrong. Firing
+  // the first save immediately (no debounce) the moment there's something
+  // worth saving closes that window: project creation is a couple of fast
+  // REST calls, reliably finishing well before any subsequent generation
+  // step, so the remount is done and settled before it could race anything.
+  useEffect(() => {
+    if (!projectIdRef.current && !creatingProjectRef.current && (structured || productInput)) {
+      void flushSave();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structured, productInput]);
+
   useEffect(() => {
     const signature = computeSignature();
     if (signature === lastSavedSignatureRef.current) return;
@@ -560,6 +605,13 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildSnapshot, stepIndex]);
+
+  useEffect(() => {
+    if (stepIndex !== 0 || productSourceMode !== "library" || ayushProducts !== null) return;
+    listAyushProducts()
+      .then(setAyushProducts)
+      .catch(() => setAyushProducts([]));
+  }, [stepIndex, productSourceMode, ayushProducts]);
 
   useEffect(() => {
     function handleFlushOnHide() {
@@ -674,6 +726,50 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     }
   }
 
+  async function handleSelectAyushProduct(product: AyushProduct) {
+    setInputLoading(true);
+    setInputError(null);
+    try {
+      const context = await getAyushProductContext(product.id);
+      setProductLibraryContext(context);
+      setCategory(context.category);
+      // Real, approved product knowledge — map directly into StructuredProduct
+      // so every existing downstream reader (Story/Script/Compliance) keeps
+      // working unchanged. No AI structuring call needed: this data is
+      // already ground truth, not something to re-derive.
+      setStructured({
+        product_name: context.name,
+        target_audience: context.target_audience,
+        ingredients: context.ingredients,
+        usp: context.usp,
+        tone: context.preferred_tone,
+        key_benefits: context.benefits,
+        industry: context.category,
+        pain_points: [],
+        marketing_angle: context.positioning,
+        key_emotions: [],
+        keywords: [],
+        missing_fields: [],
+        confidence: 1,
+      });
+      setProductInput({
+        product_name: context.name,
+        target_audience: context.target_audience,
+        source_type: "none",
+        manual_ingredients: context.ingredients.join(", "),
+        manual_usp: context.usp,
+      } as ProductInput);
+    } catch (e) {
+      setInputError(e instanceof ApiError ? e.message : "Couldn't load that product's knowledge.");
+    } finally {
+      setInputLoading(false);
+    }
+  }
+
+  function handleClearAyushProduct() {
+    setProductLibraryContext(null);
+  }
+
   async function handleImproveDescription(text: string): Promise<string> {
     setImprovingDescription(true);
     try {
@@ -774,6 +870,9 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
           format: formatValue,
           format_description: formatDescriptionValue,
           tone: toneValue,
+          avoid_repeating_hook: script?.hook.text || undefined,
+          avoid_repeating_mechanism: script?.creative_mechanism || undefined,
+          product_context: productLibraryContext ?? undefined,
         });
         setScript(result);
         setSelectedSituation(situation);
@@ -834,6 +933,8 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       selectedFormat,
       formatDescription,
       scriptTone,
+      script,
+      productLibraryContext,
     ]
   );
 
@@ -912,6 +1013,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         format_description: formatDescription,
         tone: options?.tone ?? scriptTone,
         target_scene_label: options?.targetSceneLabel,
+        product_context: productLibraryContext ?? undefined,
       });
       setScript(result);
       if (options?.tone) setScriptTone(options.tone);
@@ -1107,6 +1209,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         script_text: fullText,
         product_category: category,
         product_name: productInput.product_name,
+        structured_product: structured ?? undefined,
       });
       setCompliance(result);
       goTo(3);
@@ -1123,15 +1226,44 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     if (ok) goTo(2);
   }
 
-  const fetchAssetForLine = useCallback(async (id: string, tags: string[]) => {
-    setLoadingAssetIds((prev) => new Set(prev).add(id));
-    try {
-      const result = await sourceAsset({ line_id: id, visual_tags: tags });
-      setAssets((prev) => ({ ...prev, [id]: result }));
-    } catch {
+  const fetchAssetForLine = useCallback(async (id: string, tags: string[], excludeUrls: string[] = [], section?: string) => {
+    // The backend rejects an empty visual_tags list with a 422 before ever
+    // touching Pexels/Pixabay — catching that here avoids a guaranteed-to-fail
+    // request and, more importantly, avoids it landing in the generic catch
+    // below and rendering identically to a genuine "found nothing" result.
+    if (tags.length === 0) {
       setAssets((prev) => ({
         ...prev,
-        [id]: { line_id: id, tag_used: tags[0] ?? "", broadened: false, candidate: null, reasoning: "Request failed." },
+        [id]: {
+          line_id: id,
+          tag_used: "",
+          broadened: false,
+          candidate: null,
+          reasoning: "No visual search terms were generated for this line.",
+        },
+      }));
+      return;
+    }
+    setLoadingAssetIds((prev) => new Set(prev).add(id));
+    try {
+      const result = await sourceAsset({
+        line_id: id,
+        visual_tags: tags,
+        exclude_urls: excludeUrls,
+        section,
+        product_context: productLibraryContext ?? undefined,
+      });
+      setAssets((prev) => ({ ...prev, [id]: result }));
+    } catch (e) {
+      setAssets((prev) => ({
+        ...prev,
+        [id]: {
+          line_id: id,
+          tag_used: tags[0] ?? "",
+          broadened: false,
+          candidate: null,
+          reasoning: e instanceof ApiError ? `Request failed (HTTP ${e.status}).` : "Request failed.",
+        },
       }));
     } finally {
       setLoadingAssetIds((prev) => {
@@ -1140,20 +1272,27 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         return next;
       });
     }
-  }, []);
+  }, [productLibraryContext]);
 
   async function handleEnterAssetsStep() {
     if (!script) return;
     goTo(4);
     const lines = flattenScript(script);
-    await Promise.all(lines.map((l) => fetchAssetForLine(l.id, l.visual_tags)));
+    await Promise.all(lines.map((l) => fetchAssetForLine(l.id, l.visual_tags, [], l.section ?? undefined)));
   }
 
   async function handleRegenerateAssetLine(id: string) {
     if (!script) return;
     const line = flattenScript(script).find((l) => l.id === id);
     if (!line) return;
-    await fetchAssetForLine(id, line.visual_tags);
+    // Steer away from images already used on the script's OTHER lines —
+    // by regenerate time every other line has already resolved, so this is
+    // the one place the pipeline actually knows prior selections.
+    const excludeUrls = Object.entries(assets)
+      .filter(([lineId]) => lineId !== id)
+      .map(([, a]) => a?.candidate?.url)
+      .filter((url): url is string => Boolean(url));
+    await fetchAssetForLine(id, line.visual_tags, excludeUrls, line.section ?? undefined);
   }
 
   async function handleGenerateMotion(id: string) {
@@ -1266,12 +1405,20 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
       const lines = flattenScript(script).map((l) => {
         const vo = voiceovers[l.id];
         const motion = motions[l.id];
+        const asset = assets[l.id]?.candidate ?? null;
         return {
           text: l.text,
-          image_url: assets[l.id]?.candidate?.url ?? "",
+          image_url: asset?.url ?? "",
           video_url: motion ? motionFileUrl(motion.video_path) : undefined,
           audio_url: vo ? audioFileUrl(vo.audio_path) : undefined,
           min_duration_seconds: vo ? vo.duration_seconds + 0.5 : undefined,
+          section: l.section,
+          scene_label: l.scene_label,
+          on_screen_text: l.on_screen_text,
+          visual_direction: l.visual_direction,
+          camera_angle: l.camera_angle,
+          emotion: l.emotion,
+          is_product_asset: asset?.source === "product_library",
         };
       });
       const result = await renderVideo({
@@ -1364,6 +1511,97 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                 )}
 
                 {stepIndex === 0 && (
+                  <Card>
+                    <CardBody className="space-y-3 pt-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]/70">
+                        Product Source
+                      </p>
+                      <div className="flex gap-1.5">
+                        {(["manual", "library"] as const).map((mode) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            onClick={() => setProductSourceMode(mode)}
+                            className={`rounded-full border px-3.5 py-1.5 text-[12.5px] font-medium transition-colors ${
+                              productSourceMode === mode
+                                ? "border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[var(--accent)]"
+                                : "border-[var(--border-strong)] text-[var(--muted)] hover:text-[var(--foreground)]"
+                            }`}
+                          >
+                            {mode === "manual" ? "Manual Product" : "AyushWellness Product"}
+                          </button>
+                        ))}
+                      </div>
+
+                      {productSourceMode === "library" &&
+                        (productLibraryContext ? (
+                          <div className="flex items-center gap-3 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-4 py-3">
+                            {productLibraryContext.primary_asset_url && (
+                              <img
+                                src={productUploadFileUrl(
+                                  productLibraryContext.primary_asset_url.replace(/^\/product-uploads\//, "")
+                                )}
+                                alt={productLibraryContext.name}
+                                className="h-12 w-12 shrink-0 rounded-lg object-cover"
+                              />
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-[13px] font-medium text-[var(--foreground)]">
+                                {productLibraryContext.name}
+                              </p>
+                              <p className="text-[11.5px] text-[var(--muted)]">
+                                {PRODUCT_CATEGORIES.find((c) => c.value === productLibraryContext.category)?.label ??
+                                  productLibraryContext.category}
+                              </p>
+                            </div>
+                            <Button size="sm" variant="ghost" onClick={handleClearAyushProduct}>
+                              Change
+                            </Button>
+                          </div>
+                        ) : (
+                          <select
+                            defaultValue=""
+                            onChange={(e) => {
+                              const p = ayushProducts?.find((p) => p.id === e.target.value);
+                              if (p) void handleSelectAyushProduct(p);
+                            }}
+                            className="w-full rounded-xl border border-[var(--border-strong)] bg-[var(--surface-2)] px-3.5 py-2.5 text-[14px] text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+                          >
+                            <option value="" disabled>
+                              {ayushProducts === null ? "Loading products…" : "Select a product…"}
+                            </option>
+                            {PRODUCT_CATEGORIES.map((cat) => {
+                              const inCategory = (ayushProducts ?? []).filter((p) => p.category === cat.value);
+                              if (inCategory.length === 0) return null;
+                              return (
+                                <optgroup key={cat.value} label={cat.label}>
+                                  {inCategory.map((p) => (
+                                    <option key={p.id} value={p.id}>
+                                      {p.name}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              );
+                            })}
+                          </select>
+                        ))}
+                    </CardBody>
+                  </Card>
+                )}
+
+                {stepIndex === 0 && productSourceMode === "library" && productLibraryContext ? (
+                  <Card>
+                    <CardBody className="flex items-center justify-between gap-3 pt-5">
+                      <p className="text-[13px] text-[var(--muted)]">
+                        Using <span className="font-medium text-[var(--foreground)]">{productLibraryContext.name}</span>
+                        &apos;s approved product knowledge. Ready to discover story scenarios.
+                      </p>
+                      <Button onClick={handleGenerateSituations} loading={situationsLoading}>
+                        Continue to Story →
+                      </Button>
+                    </CardBody>
+                  </Card>
+                ) : stepIndex === 0 ? (
                   <ProductWorkspaceStep
                     onSubmit={handleInputSubmit}
                     inputLoading={inputLoading}
@@ -1383,7 +1621,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                     activityLog={activityLog}
                     onActivity={pushActivity}
                   />
-                )}
+                ) : null}
 
                 {stepIndex === 1 && scriptSetupPhase === null && selectedHookText && (
                   <HookBanner

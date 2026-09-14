@@ -654,6 +654,8 @@ export function HookStudioApp({ projectId, initialProject }: { projectId: string
           format: selectedFormat,
           format_description: formatDescription,
           tone: scriptTone,
+          avoid_repeating_hook: script.hook.text || undefined,
+          avoid_repeating_mechanism: script.creative_mechanism || undefined,
         });
         setScript(result);
         resetScriptHistory(result, "Regenerated");

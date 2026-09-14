@@ -228,6 +228,19 @@ def project_to_out(db: Session, project: Project) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def create_hook(
+    db: Session, text: str, category: str = "", platform: str = "", tone: str = "", product_id: Optional[str] = None
+) -> Hook:
+    stripped = (text or "").strip()
+    if not stripped:
+        raise ValueError("Hook text cannot be empty")
+    hook = Hook(text=stripped, category=category, platform=platform, tone=tone, product_id=product_id)
+    db.add(hook)
+    db.commit()
+    db.refresh(hook)
+    return hook
+
+
 def list_hooks(
     db: Session,
     q: Optional[str] = None,
@@ -235,6 +248,7 @@ def list_hooks(
     platform: Optional[str] = None,
     tone: Optional[str] = None,
     favorite: Optional[bool] = None,
+    product_id: Optional[str] = None,
     page: int = 1,
     page_size: int = 24,
 ) -> tuple[list[Hook], int]:
@@ -249,6 +263,8 @@ def list_hooks(
         query = query.filter(Hook.tone == tone)
     if favorite is not None:
         query = query.filter(Hook.is_favorite == favorite)
+    if product_id:
+        query = query.filter(Hook.product_id == product_id)
     total = query.count()
     page = max(page, 1)
     page_size = max(1, min(page_size, 200))

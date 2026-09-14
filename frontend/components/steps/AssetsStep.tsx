@@ -10,6 +10,12 @@ import type { FlatLine, MotionGenerationResult, SelectedAsset } from "@/lib/type
 
 const ROLE_LABEL: Record<string, string> = { hook: "Hook", body: "Body", cta: "CTA" };
 
+// Must match asset_service.py's genuine-empty-search message exactly — used
+// to tell a real "found nothing" result apart from any other reasoning
+// (e.g. a request-level failure) that should be shown verbatim instead of
+// collapsing into the same generic "No match found" text.
+const NO_CANDIDATES_MESSAGE = "No candidates found across any tag, even after broadening.";
+
 const gridVariants = { hidden: {}, show: { transition: { staggerChildren: 0.04 } } };
 const tileVariants = { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: { duration: 0.3 } } };
 
@@ -83,8 +89,12 @@ export function AssetsStep({
                       className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
                     />
                   ) : (
-                    <div className="flex h-full w-full items-center justify-center text-[12px] text-[var(--danger)]">
-                      No match found
+                    <div className="flex h-full w-full items-center justify-center px-2 text-center text-[12px] text-[var(--danger)]">
+                      {asset?.provider_error
+                        ? "Asset search provider is not configured correctly."
+                        : asset?.reasoning && asset.reasoning !== NO_CANDIDATES_MESSAGE
+                          ? asset.reasoning
+                          : "No match found"}
                     </div>
                   )}
 

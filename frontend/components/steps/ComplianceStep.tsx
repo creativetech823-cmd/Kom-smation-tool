@@ -52,9 +52,9 @@ export function ComplianceStep({
         ) : (
           <div className="space-y-4">
             {blockers.length > 0 && (
-              <ViolationGroup status="review" title="Needs Review" violations={blockers} />
+              <ViolationGroup status="review" title="Blocked" violations={blockers} />
             )}
-            {warnings.length > 0 && <ViolationGroup status="warning" title="Warnings" violations={warnings} />}
+            {warnings.length > 0 && <ViolationGroup status="warning" title="Needs Review" violations={warnings} />}
           </div>
         )}
 
@@ -96,6 +96,12 @@ function ViolationGroup({
         <div key={i} className="rounded-xl border border-[var(--border)] bg-[var(--surface-2)] px-4 py-3">
           <p className="mb-1 font-mono text-[12.5px] text-[var(--foreground)]">&quot;{v.phrase}&quot;</p>
           <p className="text-[13px] text-[var(--muted)]">{v.reason}</p>
+          {v.suggested_fix && (
+            <p className="mt-2 text-[12.5px] text-[var(--muted)]">
+              <span className="font-medium text-[var(--foreground)]">Suggested fix: </span>
+              {v.suggested_fix}
+            </p>
+          )}
         </div>
       ))}
     </div>
