@@ -9,6 +9,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -40,6 +41,81 @@ def _slugify(name: str, existing_id: Optional[str] = None) -> str:
     normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     slug = re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-") or "product"
     return slug[:300]
+
+
+# Tracking/session params that identify the visitor, not the product — safe
+# to strip when comparing two URLs for product identity. Deliberately
+# conservative: anything not on this list survives normalization, so two
+# distinct products/variants are never accidentally merged.
+_URL_TRACKING_PARAMS = {
+    "variant", "ref", "_pos", "_psq", "_psid", "_ss", "_fid",
+    "fbclid", "gclid", "gbraid", "wbraid", "msclkid",
+    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+}
+
+
+def normalize_product_url(url: Optional[str]) -> Optional[str]:
+    """Canonical form of a product URL for duplicate detection — same host
+    (www.-insensitive), scheme-insensitive, trailing slash stripped, tracking
+    params removed, remaining params sorted, fragment dropped. Two URLs that
+    point at the same product page (with different campaign/variant tracking)
+    normalize to the same string; two URLs for genuinely different pages or
+    products never do."""
+    if not url or not url.strip():
+        return None
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = parsed.path.rstrip("/") or "/"
+    kept_params = sorted(
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _URL_TRACKING_PARAMS
+    )
+    query = urlencode(kept_params)
+    return urlunparse(("https", netloc, path, "", query, ""))
+
+
+def find_by_normalized_url(db: Session, url: Optional[str]) -> Optional[AyushProduct]:
+    """Strong duplicate signal: an active product whose product_url
+    normalizes to the same canonical page as `url`."""
+    target = normalize_product_url(url)
+    if target is None:
+        return None
+    candidates = (
+        db.query(AyushProduct)
+        .filter(AyushProduct.product_url.isnot(None), AyushProduct.status != "archived")
+        .all()
+    )
+    for candidate in candidates:
+        if normalize_product_url(candidate.product_url) == target:
+            return candidate
+    return None
+
+
+def find_possible_duplicate_by_name(
+    db: Session, name: str, category: str, exclude_id: Optional[str] = None
+) -> Optional[AyushProduct]:
+    """Weak, non-blocking signal: an active product with the same name
+    (case/whitespace-insensitive) in the same category. Never used to block
+    creation — only to surface a warning."""
+    normalized_name = " ".join(name.strip().lower().split())
+    if not normalized_name:
+        return None
+    query = db.query(AyushProduct).filter(
+        AyushProduct.category == category, AyushProduct.status != "archived"
+    )
+    if exclude_id:
+        query = query.filter(AyushProduct.id != exclude_id)
+    for candidate in query.all():
+        if " ".join((candidate.name or "").strip().lower().split()) == normalized_name:
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -143,15 +219,19 @@ def restore_product(db: Session, product_id: str) -> Optional[AyushProduct]:
 
 
 def _primary_asset(db: Session, product_id: str) -> Optional[ProductAsset]:
-    # A URL-only reference asset (no file_path) can never stand in as the
-    # product's primary image — that slot is reserved for a real, renderable
-    # uploaded photo (what Assets/Render actually display).
+    # The product's primary/header image must be a real, renderable product
+    # photo — never reference material (a URL-only asset with no file_path,
+    # or a file-backed reference_image/advertisement/reference_video/other,
+    # e.g. one uploaded before this asset-type guard existed). Both
+    # conditions are enforced here so no caller can end up with a stock
+    # photo, ad, or reference clip as the header/pipeline hero image.
     return (
         db.query(ProductAsset)
         .filter(
             ProductAsset.product_id == product_id,
             ProductAsset.is_active.is_(True),
             ProductAsset.file_path.isnot(None),
+            ProductAsset.asset_type.in_(REAL_PRODUCT_ASSET_TYPES),
         )
         .order_by(ProductAsset.is_primary.desc(), ProductAsset.sort_order.asc(), ProductAsset.created_at.asc())
         .first()
@@ -223,6 +303,19 @@ def product_to_out(db: Session, product: AyushProduct) -> dict:
 # Product assets
 # ---------------------------------------------------------------------------
 
+# The single source of truth for "is this genuine product photography, or
+# reference/inspiration material" — everywhere primary-eligibility, header
+# image selection, and pipeline asset-sourcing priority matters reads this
+# same set, so the distinction can never drift between call sites.
+REAL_PRODUCT_ASSET_TYPES = frozenset(
+    {"product_image", "product_packshot", "product_lifestyle", "ingredient_image"}
+)
+
+
+def is_real_product_asset_type(asset_type: object) -> bool:
+    value = asset_type.value if hasattr(asset_type, "value") else asset_type
+    return value in REAL_PRODUCT_ASSET_TYPES
+
 
 def create_asset(
     db: Session,
@@ -236,8 +329,24 @@ def create_asset(
     reference_state: Optional[str] = None,
     learning_notes: str = "",
     style_notes: str = "",
+    source_url: Optional[str] = None,
 ) -> ProductAsset:
-    is_first = db.query(ProductAsset).filter(ProductAsset.product_id == product_id).count() == 0
+    # Auto-primary is deliberately narrow: only the first REAL product asset
+    # for a product becomes primary automatically, and only when no active
+    # real product asset with a file already exists. Reference material
+    # (ads, reference videos/images, "other") is never auto-promoted, no
+    # matter what order things were uploaded in — closing the exact gap that
+    # let the very first asset of ANY type become primary before this fix.
+    auto_primary = is_real_product_asset_type(asset_type) and not (
+        db.query(ProductAsset)
+        .filter(
+            ProductAsset.product_id == product_id,
+            ProductAsset.is_active.is_(True),
+            ProductAsset.file_path.isnot(None),
+            ProductAsset.asset_type.in_(REAL_PRODUCT_ASSET_TYPES),
+        )
+        .first()
+    )
     asset = ProductAsset(
         product_id=product_id,
         asset_type=asset_type,
@@ -249,7 +358,8 @@ def create_asset(
         reference_state=reference_state,
         learning_notes=learning_notes,
         style_notes=style_notes,
-        is_primary=is_first,  # the first uploaded asset becomes primary by default
+        source_url=source_url,
+        is_primary=auto_primary,
     )
     db.add(asset)
     db.commit()
@@ -321,6 +431,16 @@ def update_asset(db: Session, asset_id: str, fields: dict) -> Optional[ProductAs
         if value is not None:
             setattr(asset, key, value)
     if make_primary:
+        # Structural guarantee, not just a UI convention: reference material
+        # can never become the primary product asset, even via a direct API
+        # call — checked against the (possibly just-updated) asset_type, and
+        # a real product asset must have a real file, not a bare reference URL.
+        if not is_real_product_asset_type(asset.asset_type):
+            raise ValueError(
+                f"'{asset.asset_type}' is reference material, not a real product asset — it can never be primary."
+            )
+        if not asset.file_path:
+            raise ValueError("An asset needs an uploaded/downloaded file to become primary.")
         # Exactly one primary asset per product — demote any current holder.
         db.query(ProductAsset).filter(
             ProductAsset.product_id == asset.product_id, ProductAsset.id != asset.id
@@ -335,7 +455,36 @@ def update_asset(db: Session, asset_id: str, fields: dict) -> Optional[ProductAs
 
 
 def deactivate_asset(db: Session, asset_id: str) -> Optional[ProductAsset]:
-    return update_asset(db, asset_id, {"is_active": False, "is_primary": False})
+    asset = db.get(ProductAsset, asset_id)
+    if asset is None:
+        return None
+    was_primary_real_asset = bool(asset.is_primary) and is_real_product_asset_type(asset.asset_type)
+    product_id = asset.product_id
+
+    deactivated = update_asset(db, asset_id, {"is_active": False, "is_primary": False})
+
+    if was_primary_real_asset:
+        # Deleting/archiving the primary product image must never leave the
+        # product headless while another real product photo exists — promote
+        # the next-best one (same ordering _primary_asset uses). Reference
+        # material is never a candidate here; if none remain, primary is
+        # simply unset (product_to_out's primary_asset becomes None).
+        next_best = (
+            db.query(ProductAsset)
+            .filter(
+                ProductAsset.product_id == product_id,
+                ProductAsset.id != asset_id,
+                ProductAsset.is_active.is_(True),
+                ProductAsset.file_path.isnot(None),
+                ProductAsset.asset_type.in_(REAL_PRODUCT_ASSET_TYPES),
+            )
+            .order_by(ProductAsset.sort_order.asc(), ProductAsset.created_at.asc())
+            .first()
+        )
+        if next_best is not None:
+            update_asset(db, next_best.id, {"is_primary": True})
+
+    return deactivated
 
 
 def asset_to_out(asset: ProductAsset) -> dict:
@@ -355,6 +504,7 @@ def asset_to_out(asset: ProductAsset) -> dict:
         "sort_order": asset.sort_order or 0,
         "is_primary": bool(asset.is_primary),
         "is_active": bool(asset.is_active),
+        "is_real_product_asset": is_real_product_asset_type(asset.asset_type),
         "created_at": asset.created_at,
         "updated_at": asset.updated_at,
     }

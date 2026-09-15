@@ -6,6 +6,7 @@ import type {
   ProductAssetType,
   ProductContext,
   ProductCreativeAngle,
+  ProductImportResult,
   ProductReferenceScript,
   ContentAsset,
   ContentAssetType,
@@ -593,6 +594,17 @@ export function restoreAyushProduct(id: string) {
 
 export function getAyushProductContext(id: string) {
   return get<ProductContext>(`/product-library/products/${id}/context`);
+}
+
+export function importProductFromUrl(url: string) {
+  return post<ProductImportResult>("/product-library/import-url", { url });
+}
+
+export function importProductAssetFromUrl(
+  productId: string,
+  payload: { asset_type: ProductAssetType; source_url: string; title?: string }
+) {
+  return post<ProductAsset>(`/product-library/products/${productId}/assets/import-url`, payload);
 }
 
 export function listProductAssets(productId: string, params: { asset_type?: string; include_inactive?: boolean } = {}) {

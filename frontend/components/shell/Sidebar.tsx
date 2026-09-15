@@ -198,8 +198,17 @@ function AyushProductTree({
     );
   }
 
-  const byCategory = new Map<string, AyushProduct[]>();
+  // Defensive, ID-keyed dedup — the product's stable id is the identity,
+  // never its display name. Guards the render even if the API ever returned
+  // the same row twice; the actual fix for duplicate DATA is server-side
+  // (normalized product_url matching in POST /product-library/products).
+  const byId = new Map<string, AyushProduct>();
   for (const p of products ?? []) {
+    if (!byId.has(p.id)) byId.set(p.id, p);
+  }
+
+  const byCategory = new Map<string, AyushProduct[]>();
+  for (const p of byId.values()) {
     const list = byCategory.get(p.category);
     if (list) list.push(p);
     else byCategory.set(p.category, [p]);
@@ -254,19 +263,21 @@ function AyushProductTree({
                       catProducts.map((p) => {
                         const href = `/ayush-products/${p.id}`;
                         const active = pathname === href;
+                        const fullName = p.display_name || p.name;
                         return (
                           <Link
                             key={p.id}
                             href={href}
-                            title={p.display_name || p.name}
+                            title={fullName}
+                            aria-label={fullName}
                             className={cn(
-                              "truncate rounded-lg px-2 py-1.5 text-[12.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+                              "block rounded-lg px-2 py-1.5 text-[12.5px] leading-[1.35] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
                               active
                                 ? "bg-[var(--accent-soft)] font-medium text-[var(--accent)]"
                                 : "text-[var(--muted)] hover:bg-[var(--foreground)]/[0.05] hover:text-[var(--foreground)]"
                             )}
                           >
-                            {p.display_name || p.name}
+                            <span className="line-clamp-2 break-words">{fullName}</span>
                           </Link>
                         );
                       })

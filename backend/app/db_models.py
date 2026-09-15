@@ -150,10 +150,24 @@ class ProductCategory(str, enum.Enum):
 
 
 class ProductAssetType(str, enum.Enum):
+    """Two disjoint groups — see product_library_service.REAL_PRODUCT_ASSET_TYPES
+    for the authoritative classification used everywhere primary-eligibility
+    matters (header image, pipeline product context, asset sourcing).
+
+    REAL PRODUCT (genuine photography of the actual product — eligible to
+    become the primary/hero asset):
+        product_image, product_packshot, product_lifestyle, ingredient_image
+
+    REFERENCE MATERIAL (inspiration/context — never eligible to become
+    primary, no matter how it was added):
+        reference_image, advertisement, reference_video, other
+    """
+
     product_image = "product_image"
     product_packshot = "product_packshot"
     product_lifestyle = "product_lifestyle"
     ingredient_image = "ingredient_image"
+    reference_image = "reference_image"
     advertisement = "advertisement"
     reference_video = "reference_video"
     other = "other"

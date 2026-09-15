@@ -718,6 +718,22 @@ def _product_library_block(ctx) -> str:
         lines.extend(f"  - {c}" for c in ctx.prohibited_claims)
     if ctx.mandatory_wording:
         lines.append(f"Mandatory wording (must appear somewhere in the script): {ctx.mandatory_wording}")
+    if ctx.never_say:
+        lines.append(f"NEVER SAY (brand-voice guardrail, distinct from the claims above): {ctx.never_say}")
+    if ctx.words_to_use:
+        lines.append(f"Words/phrases to favor: {', '.join(ctx.words_to_use)}")
+    if ctx.words_to_avoid:
+        lines.append(f"Words/phrases to avoid: {', '.join(ctx.words_to_avoid)}")
+    if ctx.creative_angles:
+        lines.append("Approved creative angles for this product (pick the one that fits the chosen format/situation):")
+        lines.extend(f"  - {a}" for a in ctx.creative_angles)
+    if ctx.approved_hooks:
+        lines.append("Product-specific approved hooks (style reference only, do not reuse verbatim unless one is explicitly selected as the opening hook elsewhere in this prompt):")
+        lines.extend(f"  - {h}" for h in ctx.approved_hooks)
+    if ctx.preferred_visual_style:
+        lines.append(f"Preferred visual style (for visual_direction/ai_image_prompt fields): {ctx.preferred_visual_style}")
+    if ctx.visual_exclusions:
+        lines.append(f"Visual exclusions (never depict): {ctx.visual_exclusions}")
     if ctx.reference_script_excerpts:
         lines.append(
             "Approved reference script excerpts — STYLE/PACING/TONE reference only. Learn the voice, "

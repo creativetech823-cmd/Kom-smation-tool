@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   ApiError,
   archiveAyushProduct,
@@ -36,15 +38,23 @@ import { useToast } from "@/components/shell/ToastProvider";
 const TABS = ["Overview", "Product Knowledge", "Claims", "Assets", "Reference Scripts", "Creative Angles", "Hooks"] as const;
 type Tab = (typeof TABS)[number];
 
-const ASSET_TYPES: { value: ProductAssetType; label: string }[] = [
-  { value: "product_packshot", label: "Product Packshot" },
+const REAL_ASSET_TYPES: { value: ProductAssetType; label: string }[] = [
   { value: "product_image", label: "Product Image" },
+  { value: "product_packshot", label: "Product Packshot" },
   { value: "product_lifestyle", label: "Product Lifestyle" },
   { value: "ingredient_image", label: "Ingredient Image" },
-  { value: "advertisement", label: "Advertisement" },
-  { value: "reference_video", label: "Reference Video" },
-  { value: "other", label: "Other" },
 ];
+const REFERENCE_ASSET_TYPES: { value: ProductAssetType; label: string }[] = [
+  { value: "reference_image", label: "Reference Image" },
+  { value: "advertisement", label: "Reference Advertisement" },
+  { value: "reference_video", label: "Reference Video" },
+  { value: "other", label: "Other Reference" },
+];
+const ASSET_TYPES: { value: ProductAssetType; label: string }[] = [...REAL_ASSET_TYPES, ...REFERENCE_ASSET_TYPES];
+
+function assetTypeLabel(type: ProductAssetType): string {
+  return ASSET_TYPES.find((t) => t.value === type)?.label ?? type;
+}
 
 function listField(value: string): string[] {
   return value.split("\n").map((l) => l.trim()).filter(Boolean);
@@ -55,9 +65,13 @@ function toLines(items: string[]): string {
 
 export function ProductDetailClient({ productId }: { productId: string }) {
   const { showToast } = useToast();
+  const router = useRouter();
   const [product, setProduct] = useState<AyushProduct | null>(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<Tab>("Overview");
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [showImagePicker, setShowImagePicker] = useState(false);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -81,6 +95,23 @@ export function ProductDetailClient({ productId }: { productId: string }) {
       showToast(updated.status === "archived" ? "Product archived" : "Product restored", "success");
     } catch (e) {
       showToast(e instanceof ApiError ? e.message : "Couldn't update product.", "danger");
+    }
+  }
+
+  async function handleDeleteProduct() {
+    if (!product) return;
+    setDeleting(true);
+    try {
+      // Soft-delete: the same lifecycle mechanism "Archive" already uses —
+      // this app has no destructive hard-delete for products, and archived
+      // products are already excluded from the sidebar/list by default.
+      await archiveAyushProduct(product.id);
+      showToast(`"${product.name}" deleted`, "success");
+      router.push("/ayush-products");
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't delete product.", "danger");
+      setDeleting(false);
+      setShowDeleteModal(false);
     }
   }
 
@@ -110,12 +141,22 @@ export function ProductDetailClient({ productId }: { productId: string }) {
       <Card>
         <CardBody className="flex flex-wrap items-start justify-between gap-4 pt-6">
           <div className="flex items-start gap-4">
-            <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--surface-2)]">
+            <div className="group relative h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-[var(--surface-2)]">
               {product.primary_asset?.file_path ? (
                 <img src={productUploadFileUrl(product.primary_asset.file_path)} alt={product.name} className="h-full w-full object-cover" />
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-[10px] text-[var(--muted)]">No image</div>
               )}
+              <button
+                type="button"
+                onClick={() => setShowImagePicker(true)}
+                aria-label="Change profile image"
+                title="Change profile image"
+                className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-black/70 py-1 text-[9.5px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none"
+              >
+                <IconCamera />
+                Change
+              </button>
             </div>
             <div>
               <div className="flex items-center gap-2">
@@ -140,9 +181,14 @@ export function ProductDetailClient({ productId }: { productId: string }) {
               )}
             </div>
           </div>
-          <Button size="sm" variant="secondary" onClick={handleArchiveToggle}>
-            {product.status === "archived" ? "Restore" : "Archive"}
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={handleArchiveToggle}>
+              {product.status === "archived" ? "Restore" : "Archive"}
+            </Button>
+            <Button size="sm" variant="danger" onClick={() => setShowDeleteModal(true)}>
+              Delete Product
+            </Button>
+          </div>
         </CardBody>
       </Card>
 
@@ -170,7 +216,243 @@ export function ProductDetailClient({ productId }: { productId: string }) {
       {tab === "Reference Scripts" && <ReferenceScriptsTab productId={product.id} />}
       {tab === "Creative Angles" && <CreativeAnglesTab productId={product.id} />}
       {tab === "Hooks" && <HooksTab productId={product.id} />}
+
+      {showDeleteModal && (
+        <DeleteProductModal
+          product={product}
+          deleting={deleting}
+          onCancel={() => setShowDeleteModal(false)}
+          onConfirm={handleDeleteProduct}
+        />
+      )}
+      {showImagePicker && (
+        <ChangeProfileImageModal
+          productId={product.id}
+          onClose={() => setShowImagePicker(false)}
+          onChanged={() => void refresh()}
+        />
+      )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Delete Product (confirmation) — reuses the same archive/soft-delete
+// mechanism as the "Archive" button; this app has no destructive hard
+// delete for products, so "delete" here means "leave the active Product
+// Library, stay recoverable" rather than an irreversible removal.
+// ---------------------------------------------------------------------------
+
+function DeleteProductModal({
+  product,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  product: AyushProduct;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape" && !deleting) onCancel();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [onCancel, deleting]);
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={() => !deleting && onCancel()}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      >
+        <motion.div
+          initial={{ scale: 0.97, opacity: 0, y: 8 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.97, opacity: 0, y: 8 }}
+          transition={{ duration: 0.16 }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-md rounded-2xl border border-[var(--border-strong)] bg-[var(--surface)] p-5 shadow-[0_40px_100px_-20px_var(--shadow-color)]"
+        >
+          <h3 className="text-[15px] font-semibold text-[var(--foreground)]">Delete Product</h3>
+          <p className="mt-2 text-[13px] text-[var(--muted)]">
+            Delete <span className="font-semibold text-[var(--foreground)]">&quot;{product.name}&quot;</span>? It will
+            be removed from the active Product Library — the sidebar, product list, and Content Pipeline product
+            picker will no longer show it. Its assets, reference scripts, creative angles, and hooks are kept, not
+            destroyed.
+          </p>
+          <div className="mt-4 flex justify-end gap-2">
+            <Button size="sm" variant="secondary" onClick={onCancel} disabled={deleting}>
+              Cancel
+            </Button>
+            <Button size="sm" variant="danger" onClick={onConfirm} loading={deleting}>
+              Delete Product
+            </Button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Change Profile Image — picks among the product's existing REAL product
+// assets (never reference material) to become primary, or uploads a new one.
+// Reuses the exact same primary-assignment endpoint (PATCH /assets/{id})
+// the Assets tab's "Set Primary" button already uses — one source of truth.
+// ---------------------------------------------------------------------------
+
+function ChangeProfileImageModal({
+  productId,
+  onClose,
+  onChanged,
+}: {
+  productId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const { showToast } = useToast();
+  const [assets, setAssets] = useState<ProductAsset[] | null>(null);
+  const [settingId, setSettingId] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    listProductAssets(productId)
+      .then((all) => setAssets(all.filter((a) => a.is_real_product_asset && !!a.file_path)))
+      .catch(() => showToast("Couldn't load product images.", "danger"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productId]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  async function handleSelect(asset: ProductAsset) {
+    if (asset.is_primary || settingId) return;
+    setSettingId(asset.id);
+    try {
+      await updateProductAsset(asset.id, { is_primary: true });
+      showToast("Profile image updated", "success");
+      onChanged();
+      onClose();
+    } catch (e) {
+      showToast(e instanceof ApiError ? e.message : "Couldn't set that as the profile image.", "danger");
+      setSettingId(null);
+    }
+  }
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const asset = await uploadProductAsset(productId, file, { asset_type: "product_image" });
+      // Force primary explicitly — an upload from this dialog should always
+      // become the profile image, not just when it happens to be the
+      // product's first-ever real asset (create_asset's usual auto-primary rule).
+      if (!asset.is_primary) await updateProductAsset(asset.id, { is_primary: true });
+      showToast("Profile image uploaded", "success");
+      onChanged();
+      onClose();
+    } catch (err) {
+      showToast(err instanceof ApiError ? err.message : "Upload failed.", "danger");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm"
+      >
+        <motion.div
+          initial={{ scale: 0.97, opacity: 0, y: 8 }}
+          animate={{ scale: 1, opacity: 1, y: 0 }}
+          exit={{ scale: 0.97, opacity: 0, y: 8 }}
+          transition={{ duration: 0.16 }}
+          onClick={(e) => e.stopPropagation()}
+          className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-[var(--border-strong)] bg-[var(--surface)] p-5 shadow-[0_40px_100px_-20px_var(--shadow-color)]"
+        >
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="text-[14px] font-semibold text-[var(--foreground)]">Change Profile Image</h3>
+            <button type="button" onClick={onClose} className="text-[13px] text-[var(--muted)] hover:text-[var(--foreground)]">
+              ✕
+            </button>
+          </div>
+          <p className="mb-4 text-[12px] text-[var(--muted)]">
+            Only real product photos can become the profile image — reference material never appears here.
+          </p>
+
+          {assets === null ? (
+            <p className="text-[13px] text-[var(--muted)]">Loading…</p>
+          ) : assets.length === 0 ? (
+            <p className="text-[13px] text-[var(--muted)]">No real product images yet — upload one below.</p>
+          ) : (
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4">
+              {assets.map((asset) => (
+                <button
+                  type="button"
+                  key={asset.id}
+                  disabled={asset.is_primary || settingId === asset.id}
+                  onClick={() => handleSelect(asset)}
+                  className={`relative overflow-hidden rounded-xl border-2 transition-colors disabled:cursor-default ${
+                    asset.is_primary ? "border-[var(--accent)]" : "border-transparent hover:border-[var(--border-strong)]"
+                  }`}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={productUploadFileUrl(asset.file_path as string)}
+                    alt={asset.title}
+                    className="aspect-square w-full bg-black/20 object-cover"
+                  />
+                  {asset.is_primary && (
+                    <span className="absolute left-1 top-1 rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--on-accent)]">
+                      Primary
+                    </span>
+                  )}
+                  {settingId === asset.id && (
+                    <span className="absolute inset-0 flex items-center justify-center bg-black/50">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-4 border-t border-[var(--border)] pt-4">
+            <input ref={fileInputRef} type="file" accept="image/*" hidden onChange={handleUpload} />
+            <Button size="sm" variant="secondary" onClick={() => fileInputRef.current?.click()} loading={uploading}>
+              Upload New Image
+            </Button>
+          </div>
+        </motion.div>
+      </motion.div>
+    </AnimatePresence>
   );
 }
 
@@ -570,7 +852,17 @@ function ClaimsTab({ product, onSaved }: { product: AyushProduct; onSaved: (p: A
 // Assets
 // ---------------------------------------------------------------------------
 
-const REFERENCE_TYPES: ProductAssetType[] = ["advertisement", "reference_video"];
+const REFERENCE_TYPES: ProductAssetType[] = ["reference_image", "advertisement", "reference_video"];
+
+function groupAssets(assets: ProductAsset[]) {
+  return {
+    real: assets.filter((a) => a.is_real_product_asset),
+    referenceImages: assets.filter((a) => a.asset_type === "reference_image"),
+    referenceAds: assets.filter((a) => a.asset_type === "advertisement"),
+    referenceVideos: assets.filter((a) => a.asset_type === "reference_video"),
+    other: assets.filter((a) => a.asset_type === "other"),
+  };
+}
 
 function AssetsTab({ productId, onPrimaryChanged }: { productId: string; onPrimaryChanged: () => void }) {
   const { showToast } = useToast();
@@ -688,11 +980,20 @@ function AssetsTab({ productId, onPrimaryChanged }: { productId: string; onPrima
                 onChange={(e) => setAssetType(e.target.value as ProductAssetType)}
                 className="rounded-xl border border-[var(--border-strong)] bg-[var(--surface-2)] px-3 py-2 text-[13px] text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
               >
-                {ASSET_TYPES.map((t) => (
-                  <option key={t.value} value={t.value}>
-                    {t.label}
-                  </option>
-                ))}
+                <optgroup label="Real Product">
+                  {REAL_ASSET_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Reference Material">
+                  {REFERENCE_ASSET_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
             </div>
             <div className="flex-1 min-w-[160px]">
@@ -721,6 +1022,11 @@ function AssetsTab({ productId, onPrimaryChanged }: { productId: string; onPrima
               onChange={handleFileSelected}
             />
           </div>
+          <p className="text-[11px] text-[var(--muted)]">
+            {isReferenceType
+              ? "Reference material — inspiration/context for the AI. It can never become the product's primary image."
+              : "Real product photography — eligible to appear in the header and be used directly by the Content Pipeline."}
+          </p>
 
           {isReferenceType && (
             <div className="grid gap-2 sm:grid-cols-2">
@@ -766,72 +1072,154 @@ function AssetsTab({ productId, onPrimaryChanged }: { productId: string; onPrima
         {loading ? (
           <p className="text-[13px] text-[var(--muted)]">Loading…</p>
         ) : assets.length === 0 ? (
-          <p className="text-[13px] text-[var(--muted)]">No assets yet — upload the real product packshot to get started.</p>
+          <p className="text-[13px] text-[var(--muted)]">No assets yet — upload or import the real product packshot to get started.</p>
         ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-            {assets.map((asset) => (
-              <div key={asset.id} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]">
-                <div className="relative aspect-square w-full bg-black/20">
-                  {asset.file_path ? (
-                    asset.asset_type === "reference_video" || asset.file_path.match(/\.(mp4|mov|webm)$/i) ? (
-                      <video src={productUploadFileUrl(asset.file_path)} className="h-full w-full object-cover" muted controls />
-                    ) : (
-                      <img src={productUploadFileUrl(asset.file_path)} alt={asset.title} className="h-full w-full object-cover" />
-                    )
-                  ) : asset.source_url ? (
-                    <a
-                      href={asset.source_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-3 text-center text-[var(--accent)] hover:bg-[var(--accent-soft)]"
-                    >
-                      <IconExternalLink />
-                      <span className="text-[11.5px] font-medium">View reference ↗</span>
-                    </a>
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center text-[11px] text-[var(--muted)]">
-                      No preview
-                    </div>
-                  )}
-                  {asset.is_primary && (
-                    <span className="absolute left-1.5 top-1.5 rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--on-accent)]">
-                      Primary
-                    </span>
-                  )}
-                </div>
-                <div className="p-2">
-                  <p className="truncate text-[12px] font-medium text-[var(--foreground)]">{asset.title || ASSET_TYPES.find((t) => t.value === asset.asset_type)?.label}</p>
-                  <p className="text-[10.5px] text-[var(--muted)]">{ASSET_TYPES.find((t) => t.value === asset.asset_type)?.label}</p>
-                  {asset.learning_notes && (
-                    <p className="mt-1 line-clamp-2 text-[10.5px] text-[var(--muted)]" title={asset.learning_notes}>
-                      Learn: {asset.learning_notes}
-                    </p>
-                  )}
-                  <div className="mt-2 flex gap-1.5">
-                    {!asset.is_primary && asset.file_path && (
-                      <button
-                        type="button"
-                        onClick={() => handleSetPrimary(asset.id)}
-                        className="rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[10.5px] text-[var(--muted)] hover:text-[var(--foreground)]"
-                      >
-                        Set Primary
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => handleDeactivate(asset.id)}
-                      className="rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[10.5px] text-[var(--danger)] hover:bg-[var(--danger)]/10"
-                    >
-                      Remove
-                    </button>
+          (() => {
+            const grouped = groupAssets(assets);
+            const hasReference =
+              grouped.referenceImages.length + grouped.referenceAds.length + grouped.referenceVideos.length + grouped.other.length > 0;
+            return (
+              <div className="space-y-6">
+                <AssetSection
+                  title="Real Product Assets"
+                  subtitle="The actual product — eligible to appear as the header image and to be used directly by the Content Pipeline."
+                  emptyText="No real product images yet — upload one or import it from a product URL."
+                  assets={grouped.real}
+                  onSetPrimary={handleSetPrimary}
+                  onDeactivate={handleDeactivate}
+                />
+                {hasReference && (
+                  <div className="space-y-5 border-t border-[var(--border)] pt-5">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--muted)]/70">Reference Material</p>
+                    <AssetSection title="Reference Images" assets={grouped.referenceImages} onSetPrimary={handleSetPrimary} onDeactivate={handleDeactivate} compact />
+                    <AssetSection title="Reference Ads" assets={grouped.referenceAds} onSetPrimary={handleSetPrimary} onDeactivate={handleDeactivate} compact />
+                    <AssetSection title="Reference Videos" assets={grouped.referenceVideos} onSetPrimary={handleSetPrimary} onDeactivate={handleDeactivate} compact />
+                    <AssetSection title="Other Reference" assets={grouped.other} onSetPrimary={handleSetPrimary} onDeactivate={handleDeactivate} compact />
                   </div>
-                </div>
+                )}
               </div>
-            ))}
-          </div>
+            );
+          })()
         )}
       </CardBody>
     </Card>
+  );
+}
+
+function AssetSection({
+  title,
+  subtitle,
+  emptyText,
+  assets,
+  onSetPrimary,
+  onDeactivate,
+  compact,
+}: {
+  title: string;
+  subtitle?: string;
+  emptyText?: string;
+  assets: ProductAsset[];
+  onSetPrimary: (id: string) => void;
+  onDeactivate: (id: string) => void;
+  compact?: boolean;
+}) {
+  if (compact && assets.length === 0) return null;
+  return (
+    <div>
+      <p className="text-[13px] font-semibold text-[var(--foreground)]">{title}</p>
+      {subtitle && <p className="mt-0.5 text-[11.5px] text-[var(--muted)]">{subtitle}</p>}
+      {assets.length === 0 ? (
+        <p className="mt-2 text-[12.5px] text-[var(--muted)]">{emptyText}</p>
+      ) : (
+        <div className="mt-2.5 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {assets.map((asset) => (
+            <AssetCard key={asset.id} asset={asset} onSetPrimary={onSetPrimary} onDeactivate={onDeactivate} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetCard({
+  asset,
+  onSetPrimary,
+  onDeactivate,
+}: {
+  asset: ProductAsset;
+  onSetPrimary: (id: string) => void;
+  onDeactivate: (id: string) => void;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--surface-2)]">
+      <div className="relative aspect-square w-full bg-black/20">
+        {asset.file_path ? (
+          asset.asset_type === "reference_video" || asset.file_path.match(/\.(mp4|mov|webm)$/i) ? (
+            <video src={productUploadFileUrl(asset.file_path)} className="h-full w-full object-cover" muted controls />
+          ) : (
+            <img src={productUploadFileUrl(asset.file_path)} alt={asset.title} className="h-full w-full object-cover" />
+          )
+        ) : asset.source_url ? (
+          <a
+            href={asset.source_url}
+            target="_blank"
+            rel="noreferrer"
+            className="flex h-full w-full flex-col items-center justify-center gap-1.5 p-3 text-center text-[var(--accent)] hover:bg-[var(--accent-soft)]"
+          >
+            <IconExternalLink />
+            <span className="text-[11.5px] font-medium">View reference ↗</span>
+          </a>
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-[11px] text-[var(--muted)]">No preview</div>
+        )}
+        {asset.is_primary && (
+          <span className="absolute left-1.5 top-1.5 rounded-full bg-[var(--accent)] px-2 py-0.5 text-[10px] font-semibold text-[var(--on-accent)]">
+            Primary
+          </span>
+        )}
+      </div>
+      <div className="p-2">
+        <p className="truncate text-[12px] font-medium text-[var(--foreground)]">{asset.title || assetTypeLabel(asset.asset_type)}</p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-1">
+          <p className="text-[10.5px] text-[var(--muted)]">{assetTypeLabel(asset.asset_type)}</p>
+          {asset.is_real_product_asset ? (
+            <span className="rounded-full bg-[var(--success)]/15 px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-[var(--success)]">
+              Real Product
+            </span>
+          ) : (
+            <span className="rounded-full bg-[var(--border-strong)]/40 px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide text-[var(--muted)]">
+              Reference
+            </span>
+          )}
+        </div>
+        {asset.learning_notes && (
+          <p className="mt-1 line-clamp-2 text-[10.5px] text-[var(--muted)]" title={asset.learning_notes}>
+            Learn: {asset.learning_notes}
+          </p>
+        )}
+        <div className="mt-2 flex gap-1.5">
+          {/* Set Primary is only ever offered for a real product asset with a
+              file — mirrors the backend guard exactly, so a user never hits
+              the 400 from trying to primary reference material. */}
+          {!asset.is_primary && asset.file_path && asset.is_real_product_asset && (
+            <button
+              type="button"
+              onClick={() => onSetPrimary(asset.id)}
+              className="rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[10.5px] text-[var(--muted)] hover:text-[var(--foreground)]"
+            >
+              Set Primary
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onDeactivate(asset.id)}
+            className="rounded-lg border border-[var(--border-strong)] px-2 py-1 text-[10.5px] text-[var(--danger)] hover:bg-[var(--danger)]/10"
+          >
+            Remove
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1200,6 +1588,20 @@ function HooksTab({ productId }: { productId: string }) {
         )}
       </CardBody>
     </Card>
+  );
+}
+
+function IconCamera() {
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+      <path
+        d="M4 8h3l1.5-2h7L17 8h3a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="14" r="3.2" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
   );
 }
 

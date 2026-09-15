@@ -9,14 +9,18 @@ Sourcing). Mirrors routers/library.py's structure.
 import logging
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
+import httpx
+
 from app.config import settings
 from app.db import get_db
 from app.models.product_library import (
+    ProductAssetImportUrlCreate,
     ProductAssetLinkCreate,
     ProductAssetOut,
     ProductAssetUpdate,
@@ -25,13 +29,16 @@ from app.models.product_library import (
     ProductCreativeAngleCreate,
     ProductCreativeAngleOut,
     ProductCreativeAngleUpdate,
+    ProductImportRequest,
+    ProductImportResult,
     ProductOut,
     ProductReferenceScriptCreate,
     ProductReferenceScriptOut,
     ProductReferenceScriptUpdate,
     ProductUpdate,
 )
-from app.services import product_library_service as svc
+from app.services import product_import_service, product_library_service as svc
+from app.services.content_extraction_service import ExtractionError
 
 logger = logging.getLogger("product_library")
 
@@ -72,8 +79,27 @@ def list_products(
 
 @router.post("/products", response_model=ProductOut)
 def create_product(payload: ProductCreate, db: Session = Depends(get_db)) -> dict:
+    # Strong signal: the same product page (by normalized URL) already has an
+    # active product record — reuse it instead of creating a near-duplicate.
+    # Covers the double-click / resubmit-after-refresh / re-import-with-
+    # tracking-params cases without a hard DB unique constraint.
+    if payload.product_url:
+        existing = svc.find_by_normalized_url(db, payload.product_url)
+        if existing is not None:
+            out = svc.product_to_out(db, existing)
+            out["is_existing"] = True
+            return out
+
     product = svc.create_product(db, payload.model_dump())
-    return svc.product_to_out(db, product)
+    out = svc.product_to_out(db, product)
+
+    # Weak signal: same name + category, no URL to match on (or a different
+    # URL) — never blocks creation, just a heads-up for the caller.
+    possible_dup = svc.find_possible_duplicate_by_name(db, payload.name, payload.category, exclude_id=product.id)
+    if possible_dup is not None:
+        out["possible_duplicate"] = {"id": possible_dup.id, "name": possible_dup.name}
+
+    return out
 
 
 @router.get("/products/{product_id}", response_model=ProductOut)
@@ -116,6 +142,21 @@ def get_product_context(product_id: str, db: Session = Depends(get_db)) -> dict:
     if context is None:
         raise HTTPException(404, "Product not found")
     return context
+
+
+@router.post("/import-url", response_model=ProductImportResult)
+def import_product_url(payload: ProductImportRequest) -> ProductImportResult:
+    """Add Product's URL-import step — fetches a public product page and
+    returns a best-effort, editable draft. Never saves anything; the
+    frontend shows this as a review step before POST /products actually
+    creates a product."""
+    try:
+        return product_import_service.import_product_from_url(payload.url)
+    except ExtractionError as e:
+        raise HTTPException(502, str(e))
+    except Exception as e:
+        logger.exception("Unhandled error importing product from URL")
+        raise HTTPException(502, f"Couldn't import that product page: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +256,64 @@ def link_product_asset(product_id: str, payload: ProductAssetLinkCreate, db: Ses
     return svc.asset_to_out(asset)
 
 
+@router.post("/products/{product_id}/assets/import-url", response_model=ProductAssetOut)
+def import_product_asset_from_url(
+    product_id: str, payload: ProductAssetImportUrlCreate, db: Session = Depends(get_db)
+) -> dict:
+    """Fetches an externally-hosted image server-side (e.g. one of the URL
+    importer's discovered product photos) and stores it exactly like a
+    direct upload — a real file_path, eligible to become the primary/real-
+    product asset. Distinct from /assets/link, which only stores the URL
+    itself for reference material (ads, videos) with no preview file."""
+    if svc.get_product(db, product_id) is None:
+        raise HTTPException(404, "Product not found")
+
+    clean_path = Path(urlparse(payload.source_url).path)
+    ext = clean_path.suffix.lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Unsupported image type '{ext or clean_path.name}'.")
+
+    try:
+        with httpx.stream("GET", payload.source_url, timeout=20.0, follow_redirects=True) as resp:
+            resp.raise_for_status()
+            uploads_dir = Path(settings.product_uploads_dir).resolve() / product_id
+            uploads_dir.mkdir(parents=True, exist_ok=True)
+            stored_name = _safe_stored_name(ext)
+            stored_path = uploads_dir / stored_name
+            total = 0
+            try:
+                with open(stored_path, "wb") as out:
+                    for chunk in resp.iter_bytes(_CHUNK_SIZE):
+                        total += len(chunk)
+                        if total > _MAX_BYTES:
+                            out.close()
+                            stored_path.unlink(missing_ok=True)
+                            raise HTTPException(
+                                400, f"Image is larger than the {settings.max_product_upload_mb}MB limit."
+                            )
+                        out.write(chunk)
+            except HTTPException:
+                raise
+            except Exception:
+                stored_path.unlink(missing_ok=True)
+                raise
+    except HTTPException:
+        raise
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Couldn't fetch that image: {e}")
+
+    relative_path = f"{product_id}/{stored_name}"
+    asset = svc.create_asset(
+        db,
+        product_id=product_id,
+        asset_type=payload.asset_type,
+        file_path=relative_path,
+        title=payload.title,
+        source_url=payload.source_url,
+    )
+    return svc.asset_to_out(asset)
+
+
 @router.get("/products/{product_id}/assets", response_model=list[ProductAssetOut])
 def list_product_assets(
     product_id: str,
@@ -228,7 +327,11 @@ def list_product_assets(
 
 @router.patch("/assets/{asset_id}", response_model=ProductAssetOut)
 def update_product_asset(asset_id: str, payload: ProductAssetUpdate, db: Session = Depends(get_db)) -> dict:
-    asset = svc.update_asset(db, asset_id, payload.model_dump(exclude_unset=True))
+    try:
+        asset = svc.update_asset(db, asset_id, payload.model_dump(exclude_unset=True))
+    except ValueError as e:
+        # Reference material can never become primary — see update_asset's guard.
+        raise HTTPException(400, str(e))
     if asset is None:
         raise HTTPException(404, "Asset not found")
     return svc.asset_to_out(asset)

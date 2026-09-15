@@ -183,6 +183,15 @@ class ProductOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    # Duplicate-prevention signals (POST /products only — always default on
+    # every other response). is_existing=True means this POST didn't create
+    # a new row: a product with the same normalized product_url already
+    # existed, so that existing product was returned instead. possible_duplicate
+    # is a non-blocking heads-up (name+category match, no URL match) — the
+    # product WAS created; the frontend just surfaces a warning.
+    is_existing: bool = False
+    possible_duplicate: Optional[dict] = None
+
 
 class ProductAssetCreate(BaseModel):
     """Metadata accompanying a multipart file upload — sent as form fields
@@ -242,6 +251,7 @@ class ProductAssetOut(BaseModel):
     sort_order: int
     is_primary: bool
     is_active: bool
+    is_real_product_asset: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -358,3 +368,47 @@ class ProductContext(BaseModel):
     # record itself).
     approved_hooks: list[str] = Field(default_factory=list)
     has_real_product_asset: bool = False
+
+
+class ProductImportImageCandidate(BaseModel):
+    url: str
+    alt: str = ""
+
+
+class ProductImportResult(BaseModel):
+    """V1 URL-based product import — best-effort extraction only, nothing
+    invented. Any field that couldn't be confidently read off the page comes
+    back empty/default; the frontend always shows this as an editable review
+    step before anything is saved to a real product. See ProductImporter in
+    product_import_service.py for the extraction strategy (this is the "URL
+    importer" — a future Shopify Admin API importer would return this same
+    shape so the frontend/review-step code doesn't need to change)."""
+
+    source_url: str
+    name: str = ""
+    short_description: str = ""
+    description: str = ""
+    price: Optional[str] = None
+    brand: str = ""
+    ingredients: list[str] = Field(default_factory=list)
+    benefits: list[str] = Field(default_factory=list)
+    usage: str = ""
+    variants: list[str] = Field(default_factory=list)
+    images: list[ProductImportImageCandidate] = Field(default_factory=list)
+    confidence: float = 0.0
+    warnings: list[str] = Field(default_factory=list)
+
+
+class ProductImportRequest(BaseModel):
+    url: str = Field(..., min_length=1)
+
+
+class ProductAssetImportUrlCreate(BaseModel):
+    """Fetch an externally-hosted image (e.g. one of a URL import's
+    discovered product photos) server-side and store it as a real uploaded
+    asset — gets a genuine file_path so it can become the primary/real-
+    product asset, unlike /assets/link's URL-only reference assets."""
+
+    asset_type: str
+    source_url: str = Field(..., min_length=1)
+    title: str = ""

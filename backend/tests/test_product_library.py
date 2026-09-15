@@ -311,6 +311,106 @@ def test_url_only_reference_asset_is_not_primary(db):
     assert context["primary_asset_url"] == "/product-uploads/real/pack.png"
 
 
+# --- Real Product Asset vs Reference Material classification (Product Asset
+# Architecture fix) ---
+
+
+def test_reference_asset_never_becomes_primary_automatically(db):
+    """Uploading a reference-type asset FIRST for a brand-new product must
+    NOT make it primary — only a genuine product photo auto-promotes. Before
+    this fix, "first asset of any type" became primary."""
+    product = _make_product(db, "ref-not-auto-primary")
+    ad = svc.create_asset(db, product.id, "advertisement", "ad.jpg")
+    assert ad.is_primary is False
+    out = svc.product_to_out(db, product)
+    assert out["primary_asset"] is None  # no real product asset exists yet
+
+    ref_img = svc.create_asset(db, product.id, "reference_image", "style-ref.jpg")
+    assert ref_img.is_primary is False
+
+    video = svc.create_asset(db, product.id, "reference_video", "clip.mp4")
+    assert video.is_primary is False
+
+    other = svc.create_asset(db, product.id, "other", "misc.jpg")
+    assert other.is_primary is False
+
+    # Now the first REAL product photo shows up — it, and only it, auto-primaries.
+    real = svc.create_asset(db, product.id, "product_image", "real.jpg")
+    assert real.is_primary is True
+    out = svc.product_to_out(db, product)
+    assert out["primary_asset"]["id"] == real.id
+
+
+def test_update_asset_rejects_making_reference_material_primary(db):
+    product = _make_product(db, "ref-reject-primary")
+    ad = svc.create_asset(db, product.id, "advertisement", "ad.jpg")
+    with pytest.raises(ValueError):
+        svc.update_asset(db, ad.id, {"is_primary": True})
+    db.refresh(ad)
+    assert ad.is_primary is False  # the rejected attempt left it untouched
+
+
+def test_update_asset_rejects_primary_without_file(db):
+    product = _make_product(db, "no-file-reject-primary")
+    link = svc.create_asset_link(db, product.id, asset_type="product_image", source_url="https://example.com/x.jpg")
+    assert link.file_path is None
+    with pytest.raises(ValueError):
+        svc.update_asset(db, link.id, {"is_primary": True})
+
+
+def test_reference_asset_excluded_from_primary_even_if_manually_flagged(db):
+    """Defense in depth: even if a row somehow has is_primary=True on a
+    reference type (e.g. legacy data from before this fix), _primary_asset
+    must never surface it — verified through the public product_to_out API."""
+    product = _make_product(db, "legacy-bad-primary")
+    ad = svc.create_asset(db, product.id, "advertisement", "ad.jpg")
+    # Simulate stale/legacy data bypassing the update_asset guard entirely.
+    ad.is_primary = True
+    db.commit()
+
+    out = svc.product_to_out(db, product)
+    assert out["primary_asset"] is None
+
+    real = svc.create_asset(db, product.id, "product_packshot", "real.jpg")
+    out = svc.product_to_out(db, product)
+    assert out["primary_asset"]["id"] == real.id
+
+
+def test_deactivating_primary_promotes_next_best_real_asset(db):
+    product = _make_product(db, "auto-promote")
+    first = svc.create_asset(db, product.id, "product_image", "a.jpg")
+    second = svc.create_asset(db, product.id, "product_packshot", "b.jpg")
+    assert first.is_primary is True
+    assert second.is_primary is False
+
+    svc.deactivate_asset(db, first.id)
+    db.refresh(second)
+    assert second.is_primary is True
+    out = svc.product_to_out(db, product)
+    assert out["primary_asset"]["id"] == second.id
+
+
+def test_deactivating_primary_never_promotes_a_reference_asset(db):
+    product = _make_product(db, "no-promote-reference")
+    real = svc.create_asset(db, product.id, "product_image", "a.jpg")
+    svc.create_asset(db, product.id, "advertisement", "ad.jpg")
+    svc.create_asset(db, product.id, "reference_video", "clip.mp4")
+    assert real.is_primary is True
+
+    svc.deactivate_asset(db, real.id)
+    out = svc.product_to_out(db, product)
+    # No real product asset remains — primary must be null, never a reference asset.
+    assert out["primary_asset"] is None
+
+
+def test_asset_to_out_reports_is_real_product_asset(db):
+    product = _make_product(db, "is-real-flag")
+    real = svc.create_asset(db, product.id, "product_lifestyle", "a.jpg")
+    ref = svc.create_asset(db, product.id, "reference_image", "b.jpg")
+    assert svc.asset_to_out(real)["is_real_product_asset"] is True
+    assert svc.asset_to_out(ref)["is_real_product_asset"] is False
+
+
 # --- create_hook (Hook Studio) with an optional product association ---
 def test_create_hook_with_and_without_product(db):
     product = _make_product(db, "hook-create")

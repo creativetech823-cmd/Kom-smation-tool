@@ -592,11 +592,16 @@ export type HistoryEvent = {
 
 export type ProductCategory = "herbal_health" | "nutraceuticals" | string;
 
+// REAL PRODUCT (genuine photography — eligible to become the primary/hero
+// asset): product_image, product_packshot, product_lifestyle, ingredient_image
+// REFERENCE MATERIAL (inspiration/context — never eligible to become
+// primary): reference_image, advertisement, reference_video, other
 export type ProductAssetType =
   | "product_image"
   | "product_packshot"
   | "product_lifestyle"
   | "ingredient_image"
+  | "reference_image"
   | "advertisement"
   | "reference_video"
   | "other";
@@ -617,6 +622,10 @@ export type ProductAsset = {
   sort_order: number;
   is_primary: boolean;
   is_active: boolean;
+  // Backend-authoritative classification — real product photography vs
+  // reference/inspiration material. Always trust this over re-deriving the
+  // same distinction from asset_type in the frontend.
+  is_real_product_asset: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -679,6 +688,10 @@ export type AyushProduct = {
 
   created_at: string;
   updated_at: string;
+
+  // Duplicate-prevention signals — only meaningful right after POST /products.
+  is_existing?: boolean;
+  possible_duplicate?: { id: string; name: string } | null;
 };
 
 export type ProductReferenceScript = {
@@ -737,6 +750,27 @@ export type ProductContext = {
   creative_angles: string[];
   approved_hooks: string[];
   has_real_product_asset: boolean;
+};
+
+export type ProductImportImageCandidate = {
+  url: string;
+  alt: string;
+};
+
+export type ProductImportResult = {
+  source_url: string;
+  name: string;
+  short_description: string;
+  description: string;
+  price: string | null;
+  brand: string;
+  ingredients: string[];
+  benefits: string[];
+  usage: string;
+  variants: string[];
+  images: ProductImportImageCandidate[];
+  confidence: number;
+  warnings: string[];
 };
 
 export const PRODUCT_CATEGORIES: { value: ProductCategory; label: string; description: string }[] = [
