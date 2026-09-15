@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { ApiError, createAyushProduct } from "@/lib/api";
@@ -17,7 +17,7 @@ function listField(value: string): string[] {
     .filter(Boolean);
 }
 
-export default function NewAyushProductPage() {
+function NewAyushProductForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { showToast } = useToast();
@@ -352,5 +352,13 @@ export default function NewAyushProductPage() {
         </div>
       </form>
     </div>
+  );
+}
+
+export default function NewAyushProductPage() {
+  return (
+    <Suspense fallback={null}>
+      <NewAyushProductForm />
+    </Suspense>
   );
 }
