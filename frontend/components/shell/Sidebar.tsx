@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -22,6 +22,12 @@ export function Sidebar() {
     () => new Set(PRODUCT_CATEGORIES.map((c) => c.value))
   );
   const [ayushProducts, setAyushProducts] = useState<AyushProduct[] | null>(null);
+  const [ayushProductsFailed, setAyushProductsFailed] = useState(false);
+  const [retryTick, setRetryTick] = useState(0);
+  // Caps the automatic retry to once per failure streak — never hammers a
+  // genuinely-down backend, just smooths over a one-off blip (e.g. the dev
+  // server mid-restart from `uvicorn --reload`) without the user noticing.
+  const autoRetriedRef = useRef(false);
 
   useEffect(() => {
     // Deferred to after mount, not a lazy useState initializer: the server has no
@@ -36,18 +42,46 @@ export function Sidebar() {
     // (the Add Product page, archiving from the detail page) is reflected
     // here without needing a global event bus — this is a small catalog, so
     // a GET per navigation is cheap.
+    //
+    // A transient failure (e.g. the dev backend mid-restart from
+    // `uvicorn --reload`, or a brief network blip) must never be silently
+    // treated as "this category genuinely has zero products" — that used to
+    // collapse a failed fetch straight to an empty array, which rendered
+    // identically to "No products yet" with no way to recover short of
+    // navigating to a different route and back. Now it's a distinct,
+    // honest "couldn't load" state with a one-click retry, and only ever
+    // falls back to an empty list if a PRIOR successful fetch actually
+    // returned one (a real, confirmed "no products" case).
     let cancelled = false;
     listAyushProducts()
       .then((products) => {
-        if (!cancelled) setAyushProducts(products);
+        if (cancelled) return;
+        setAyushProducts(products);
+        setAyushProductsFailed(false);
+        autoRetriedRef.current = false; // a real success resets the retry budget for next time
       })
       .catch(() => {
-        if (!cancelled) setAyushProducts((prev) => prev ?? []);
+        if (cancelled) return;
+        setAyushProductsFailed(true);
+        // A transient blip (classic case: this dev backend restarts on every
+        // file save) is usually gone within a second — one silent, automatic
+        // retry recovers from that without the user ever seeing an error.
+        if (!autoRetriedRef.current) {
+          autoRetriedRef.current = true;
+          setTimeout(() => {
+            if (!cancelled) setRetryTick((t) => t + 1);
+          }, 1500);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [pathname]);
+  }, [pathname, retryTick]);
+
+  function retryAyushProducts() {
+    autoRetriedRef.current = false;
+    setRetryTick((t) => t + 1);
+  }
 
   function toggleCategory(value: string) {
     setOpenCategories((prev) => {
@@ -138,6 +172,8 @@ export function Sidebar() {
                 openCategories={openCategories}
                 toggleCategory={toggleCategory}
                 products={ayushProducts}
+                failed={ayushProductsFailed}
+                onRetry={retryAyushProducts}
               />
             )}
           </div>
@@ -176,6 +212,8 @@ function AyushProductTree({
   openCategories,
   toggleCategory,
   products,
+  failed,
+  onRetry,
 }: {
   collapsed: boolean;
   pathname: string;
@@ -184,6 +222,8 @@ function AyushProductTree({
   openCategories: Set<string>;
   toggleCategory: (value: string) => void;
   products: AyushProduct[] | null;
+  failed: boolean;
+  onRetry: () => void;
 }) {
   if (collapsed) {
     // Icon-only mode: a single nav item to the flat list page, matching how
@@ -255,7 +295,15 @@ function AyushProductTree({
 
                 {open && (
                   <div className="ml-2 flex max-h-[260px] flex-col gap-0.5 overflow-y-auto border-l border-[var(--border)] pl-2.5">
-                    {products === null ? (
+                    {products === null && failed ? (
+                      <button
+                        type="button"
+                        onClick={onRetry}
+                        className="px-2 py-1 text-left text-[11.5px] text-[var(--danger)] hover:underline"
+                      >
+                        Couldn&apos;t load — retry
+                      </button>
+                    ) : products === null ? (
                       <p className="px-2 py-1 text-[11.5px] text-[var(--muted)]">Loading…</p>
                     ) : catProducts.length === 0 ? (
                       <p className="px-2 py-1 text-[11.5px] text-[var(--muted)]">No products yet</p>
