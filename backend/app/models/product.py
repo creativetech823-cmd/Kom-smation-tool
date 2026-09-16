@@ -323,6 +323,14 @@ class GeneratedScript(BaseModel):
     # regenerate can be steered away from repeating it. Never surfaced in
     # the UI. Empty on scripts generated before this field existed.
     creative_mechanism: str = ""
+    # AHM Creative DNA pipeline artifacts (see script_service._run_creative_pre_stages) —
+    # the specific human insight the story was built around, and which
+    # creative_architecture.ARCHITECTURES key was selected to structure it.
+    # Both additive/optional: empty on any script where pre-stage discovery
+    # didn't run or failed (narrow regenerations, older scripts, or a
+    # silent fallback) — never required, never surfaced as a hard gate.
+    human_insight: str = ""
+    creative_architecture: str = ""
 
     @property
     def full_text(self) -> str:

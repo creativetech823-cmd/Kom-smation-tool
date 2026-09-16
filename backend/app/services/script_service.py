@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 from pydantic import ValidationError
 
@@ -14,6 +15,15 @@ from app.models.product import (
     ScriptSectionRegenerateInput,
 )
 from app.services import content_formats, script_length, script_quality
+from app.services import (
+    architecture_validation_service,
+    beat_outline_service,
+    creative_architecture,
+    creative_insight_service,
+    creative_premise_service,
+    creative_reference_dna,
+    hook_generation_service,
+)
 from app.services.compliance_rules import rules_for_category
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
@@ -73,9 +83,24 @@ _SECTION_PROSE: dict[str, str] = {
 }
 
 
-def _structure_block(bucket: str) -> str:
+def _structure_block(bucket: str, has_outline: bool = False) -> str:
     included = script_length.included_sections(bucket)
     numbered = "\n".join(f"{i}. {_SECTION_PROSE[section]}" for i, section in enumerate(included, start=1))
+    if has_outline:
+        return (
+            "SECTION TAGGING — the APPROVED BEAT OUTLINE below (not this list) determines the actual "
+            "sequence, number, and content of beats. This list only exists so every block can still "
+            "carry a \"section\" tag for the editing UI — after you've written each of the outline's "
+            "beats, tag it with whichever of these values fits best; do NOT force a "
+            "problem→science→story→product_intro→ingredients→benefits→objection_handling ordering "
+            "if the outline's actual causal sequence differs, do NOT insert a beat just to use an "
+            "unused tag, and it's fine for a tag to be skipped entirely or for one outline beat to "
+            "span more than one block of the same tag:\n"
+            f"{numbered}\n\n"
+            "FORMAT — cinematic blocks, not paragraphs: each outline beat becomes one or more short, "
+            "punchy, individually timed script blocks (a sentence or two each), the way a real "
+            "shooting script reads, never a wall of text in one block."
+        )
     return (
         "STRUCTURE — build the script across these beats, in order, tagging every body block with "
         "the matching \"section\" value. This duration is too short for the full nine-part "
@@ -212,7 +237,25 @@ def _creative_mechanisms_prose() -> str:
     return ", ".join(_MECHANISM_DESCRIPTIONS.get(m, m) for m in script_quality.CREATIVE_MECHANISMS)
 
 
-def _creative_direction_block() -> str:
+def _creative_direction_block(has_outline: bool = False) -> str:
+    if has_outline:
+        return f"""CREATIVE STRATEGY — the CREATIVE PREMISE, ARCHITECTURE, and APPROVED BEAT OUTLINE
+given below have ALREADY made these decisions. Do NOT re-derive a different hook idea, mechanism, or
+story arc, and do NOT quietly drift the outline's specific situation back toward a safer, more
+generic version of itself. Your job here is EXECUTION, not re-invention:
+1. Read the premise, the architecture's required beats/prohibited patterns, and the outline's beats
+   as a single locked plan.
+2. Write each outline beat as real, specific dialogue/narration/action — turn the outline's
+   structural description of "what happens" into the actual spoken lines and visuals, in this exact
+   product/audience's voice, without adding filler or generic advertising language to fill space.
+3. Still report which single label from this list your execution actually reads as, verbatim, in the
+   top-level "creative_mechanism" JSON field (it must describe what you actually wrote, not restart
+   the creative decision): {_creative_mechanisms_prose()}.
+4. HOOK -> PAYOFF — the approved hook opened a specific promise or curiosity gap; the body must
+   actually resolve it specifically, in a way that couldn't be guessed from the hook alone.
+5. CTA -> IDEA — the closing line must connect back to the outline's payoff beat and the premise's
+   actual idea, not a generic sign-off that could close any script in this category.
+Only after this, write the actual script — do not hedge between the given plan and a different one."""
     return f"""CREATIVE STRATEGY — work through this silently before writing (never
 show this reasoning, never output it as text; return only the final script JSON):
 1. PRODUCT — what does it actually do, what makes it different, and which given benefit is
@@ -275,7 +318,7 @@ def _tone_block(tone: str) -> str:
     )
 
 
-def _video_structure(bucket: str, format_value: str, format_description: str) -> str:
+def _video_structure(bucket: str, format_value: str, format_description: str, has_outline: bool = False) -> str:
     """The default Video Ad structure unless a different video format was
     requested — "video_ad" itself and an empty/unrecognized format both fall
     through to the original duration-quota ad structure unchanged."""
@@ -283,10 +326,10 @@ def _video_structure(bucket: str, format_value: str, format_description: str) ->
         structure = content_formats.video_structure_block(format_value, format_description)
         if structure:
             return structure
-    return _structure_block(bucket)
+    return _structure_block(bucket, has_outline)
 
 
-def _system_prompt(bucket: str, format_value: str = "", format_description: str = "", tone: str = "") -> str:
+def _system_prompt(bucket: str, format_value: str = "", format_description: str = "", tone: str = "", has_outline: bool = False) -> str:
     return (
         "You are a senior short-form video ad creative team in one — creative director, advertising "
         "strategist, senior copywriter, direct-response marketer, and visual storyteller — for a "
@@ -297,9 +340,9 @@ def _system_prompt(bucket: str, format_value: str = "", format_description: str 
         "you are given ONE specific, already-chosen story situation (a persona, a conflict, an "
         "emotional arc) — but you choose HOW to tell it: the mechanism, the structure, the line-by-"
         "line execution. Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
-        + _creative_direction_block()
+        + _creative_direction_block(has_outline)
         + "\n\n"
-        + _video_structure(bucket, format_value, format_description)
+        + _video_structure(bucket, format_value, format_description, has_outline)
         + "\n\n"
         + _FIELDS_BLOCK
         + "\n\nYou MUST NOT make claims outside the approved category rules given to you — you are "
@@ -314,7 +357,7 @@ def _system_prompt(bucket: str, format_value: str = "", format_description: str 
     )
 
 
-def _static_system_prompt(format_value: str, format_description: str, tone: str) -> str:
+def _static_system_prompt(format_value: str, format_description: str, tone: str, has_outline: bool = False) -> str:
     return (
         "You are a senior creative director and copywriter for a content factory pipeline, writing "
         "static ad creative (a single graphic or a short slide set), as sharp and professional as a "
@@ -323,7 +366,7 @@ def _static_system_prompt(format_value: str, format_description: str, tone: str)
         "chosen story situation (a persona, a conflict, an emotional arc) — but you choose HOW to "
         "distill it into the requested static format's copy plus a detailed image-generation prompt. "
         "Stay faithful to the given persona, emotion, and marketing angle throughout.\n\n"
-        + _creative_direction_block()
+        + _creative_direction_block(has_outline)
         + "\n\n"
         + content_formats.static_structure_block(format_value, format_description)
         + "\n\n"
@@ -876,7 +919,13 @@ def _generate_with_recovery(
     return data
 
 
-def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
+def _finish(
+    data: dict,
+    payload,
+    target_duration: str,
+    human_insight: str = "",
+    creative_architecture_key: str = "",
+) -> GeneratedScript:
     # Normalize against the canonical mechanism list here — the one choke
     # point every generation/regeneration path passes through — so an
     # off-list value the model happens to self-report (e.g. "transformation"
@@ -895,6 +944,8 @@ def _finish(data: dict, payload, target_duration: str) -> GeneratedScript:
         format=payload.format,
         format_description=payload.format_description,
         tone=payload.tone,
+        human_insight=human_insight,
+        creative_architecture=creative_architecture_key,
     )
 
 
@@ -905,15 +956,24 @@ def _rewrite_for_quality(
     target_word_count: int | None,
     reason: str,
     content_type: ContentType,
+    creative_context_block: str = "",
 ) -> dict:
-    """The quality gate's one allowed rewrite pass. Reuses the same
-    full-rewrite scaffolding as a normal "full" regenerate — same prefix and
-    scope guidance ("keep the same story/hook/persona/product facts, build
-    on it"), so a selected Hooks-library hook or the current creative
-    direction is preserved by default; the `reason` argument is what
-    actually steers the fix, and only overrides that default when the
-    flagged issue is specifically about the hook itself."""
+    """The quality/architecture gates' one allowed rewrite pass. Reuses the
+    same full-rewrite scaffolding as a normal "full" regenerate — same
+    prefix and scope guidance ("keep the same story/hook/persona/product
+    facts, build on it"), so a selected Hooks-library hook or the current
+    creative direction is preserved by default; the `reason` argument is
+    what actually steers the fix, and only overrides that default when the
+    flagged issue is specifically about the hook itself.
+
+    `creative_context_block` re-attaches the approved premise/architecture/
+    beat outline (when a fresh generation produced one) so a rewrite
+    triggered by e.g. "architecture_abandoned" has the actual outline to
+    snap back to, instead of only a vague reason string — without this, the
+    rewrite pass has no memory of what the approved plan even was."""
     context = _context_block(payload, target_duration, target_word_count)
+    if creative_context_block:
+        context += f"\n\n{creative_context_block}"
     current_script_json = json.dumps(data, ensure_ascii=False)
     user_message = (
         f"{context}\n\n"
@@ -933,6 +993,7 @@ def _apply_quality_gate(
     target_word_count: int | None,
     content_type: ContentType,
     run_semantic_check: bool,
+    creative_context_block: str = "",
 ) -> dict:
     """Draft -> Quality Gate -> (rewrite once if weak) -> Final script. Layer
     1 (banned-phrase/structural/product-relevance checks) is free and always
@@ -950,7 +1011,9 @@ def _apply_quality_gate(
             return data
         logger.info("Quality gate flagged %s — attempting one rewrite pass", issues)
         reason = script_quality.rewrite_reason(issues)
-        return _rewrite_for_quality(data, payload, target_duration, target_word_count, reason, content_type)
+        return _rewrite_for_quality(
+            data, payload, target_duration, target_word_count, reason, content_type, creative_context_block
+        )
     except Exception as e:
         logger.warning("Quality gate rewrite failed, keeping original draft: %s", e)
         return data
@@ -1003,6 +1066,204 @@ def _apply_narrow_quality_gate(
         return data
 
 
+def _brief_fields(payload) -> tuple[str, str, str, str, list[str], str]:
+    """product_name, category, target_audience, usp, benefits, primary_problem —
+    preferring the richer Product Library context when a library product is
+    selected, falling back to the manually structured product otherwise."""
+    ctx = getattr(payload, "product_context", None)
+    p = payload.structured_product
+    if ctx is not None:
+        return (
+            ctx.name,
+            ctx.category or payload.product_category,
+            ctx.target_audience or p.target_audience,
+            ctx.usp or p.usp,
+            list(ctx.benefits) or list(p.key_benefits),
+            ctx.primary_problem,
+        )
+    return (p.product_name, payload.product_category, p.target_audience, p.usp, list(p.key_benefits), "")
+
+
+@dataclass
+class CreativePreStageResult:
+    prompt_block: str = ""
+    payload: object = None
+    insight_statement: str = ""
+    architecture: "creative_architecture.Architecture | None" = None
+    outline: "beat_outline_service.BeatOutline | None" = None
+    premise: "creative_premise_service.CreativePremise | None" = None
+    reference_dna_notes: str = ""
+    product_name: str = ""
+    target_audience: str = ""
+
+
+def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageResult:
+    """Human insight discovery -> architecture selection -> hook generation/
+    evaluation -> BEAT OUTLINE generation + validation (Parts 3, 1, 4, then
+    the outline-enforcement upgrade) — runs once, before the main generation
+    call, ONLY for a fresh/from-scratch script (see _generate_full_script's
+    two callers). Never raises: any failure at any stage returns a
+    default-valued CreativePreStageResult(payload=payload) unchanged, so
+    generation always proceeds exactly as it did before this pipeline
+    existed — the outline (and everything after it) is additive, not a hard
+    dependency for generation to succeed at all."""
+    try:
+        product_name, category, target_audience, usp, benefits, primary_problem = _brief_fields(payload)
+
+        insight = creative_insight_service.discover_insight(
+            product_name=product_name,
+            category=category,
+            target_audience=target_audience,
+            usp=usp,
+            benefits=benefits,
+            primary_problem=primary_problem,
+        )
+        insight_statement = insight.insight_statement if insight else ""
+
+        available_proof = ", ".join(benefits) or usp
+        architecture = creative_architecture.select_architecture(
+            product_category=category,
+            target_audience=target_audience,
+            objective=f"{payload.content_type.value} ad on {payload.platform}",
+            available_proof=available_proof,
+            tone=payload.tone,
+            platform=payload.platform,
+            insight_statement=insight_statement,
+        )
+
+        # brief_text is checked (in addition to the coarse product_category
+        # string) so a product whose real audience/brief genuinely describes
+        # a tobacco/gutka/pan-masala switching situation isn't misclassified
+        # as an unrelated category just because its stored category label
+        # (e.g. the Product Library's "herbal_health") doesn't say so.
+        brief_text = " ".join([product_name, target_audience, usp, " ".join(benefits)])
+        ref_notes = creative_reference_dna.relevant_notes(architecture.key, category, brief_text=brief_text)
+
+        # CREATIVE PREMISE — the missing link between the insight (a topic)
+        # and the beat outline (a structure). Generates several genuinely
+        # distinct candidate premises, self-scores them, and keeps only the
+        # strongest — never exposed to the user, never shown as 10 scripts.
+        premise = creative_premise_service.generate_and_select_premise(
+            product_name=product_name,
+            category=category,
+            target_audience=target_audience,
+            usp=usp,
+            benefits=benefits,
+            insight_block=insight.prompt_block() if insight else "",
+            architecture_name=architecture.name,
+            architecture_purpose=architecture.creative_purpose,
+            reference_dna_notes=ref_notes,
+        )
+
+        blocks = []
+        if insight is not None:
+            blocks.append(insight.prompt_block())
+        if ref_notes:
+            blocks.append(ref_notes)
+        if premise is not None:
+            blocks.append(premise.prompt_block())
+
+        # Only generate a machine hook if the user hasn't already picked one
+        # from the Hooks library — a human-selected hook always wins.
+        selected_hook_text = getattr(payload, "selected_hook_text", "")
+        if not selected_hook_text:
+            reveal_early = "early" in architecture.product_reveal_logic.lower() or "immediate" in architecture.product_reveal_logic.lower()
+            language_label = payload.script_language.value if hasattr(payload.script_language, "value") else str(payload.script_language)
+            hook = hook_generation_service.generate_and_select_hook(
+                product_name=product_name,
+                category=category,
+                target_audience=target_audience,
+                insight_block=insight.prompt_block() if insight else "",
+                architecture_hook_pattern=architecture.hook_pattern,
+                product_reveal_early=reveal_early,
+                language=language_label,
+                premise_block=premise.prompt_block() if premise else "",
+            )
+            if hook is not None:
+                payload = payload.model_copy(update={"selected_hook_text": hook.text})
+                selected_hook_text = hook.text
+
+        # BEAT OUTLINE — the story blueprint the writing call must follow,
+        # now built from (and validated against) the selected premise, not
+        # just the raw insight. Falls back to architecture.prompt_block()
+        # alone (the previous, advisory-only behavior) if outline
+        # generation/validation never produces a usable outline —
+        # generation still proceeds either way.
+        outline, remaining_outline_issues = beat_outline_service.generate_and_validate_outline(
+            architecture=architecture,
+            hook=selected_hook_text,
+            human_insight=insight_statement,
+            product_name=product_name,
+            category=category,
+            target_audience=target_audience,
+            target_duration_bucket=target_duration,
+            premise=premise,
+        )
+        if outline is not None and outline.beats:
+            blocks.append(outline.prompt_block())
+            if remaining_outline_issues:
+                logger.info(
+                    "Beat outline used despite unresolved issues after max attempts: %s", remaining_outline_issues
+                )
+        else:
+            blocks.append(architecture.prompt_block())
+
+        return CreativePreStageResult(
+            prompt_block="\n\n".join(blocks),
+            payload=payload,
+            insight_statement=insight_statement,
+            architecture=architecture,
+            outline=outline,
+            premise=premise,
+            reference_dna_notes=ref_notes,
+            product_name=product_name,
+            target_audience=target_audience,
+        )
+    except Exception as e:
+        logger.warning("Creative pre-stages (insight/architecture/hook/outline) failed, proceeding without them: %s", e)
+        return CreativePreStageResult(payload=payload)
+
+
+def _apply_architecture_gate(
+    data: dict,
+    pre: CreativePreStageResult,
+    payload,
+    target_duration: str,
+    target_word_count: int | None,
+    content_type: ContentType,
+) -> dict:
+    """Post-script validation (Parts 5-7 of the outline-enforcement upgrade)
+    — runs ONLY when an architecture was actually selected (i.e. the
+    creative pre-stages succeeded). Cheap deterministic checks first (hook
+    intact, product-reveal timing, beat count), then ONE combined LLM call
+    covering architecture compliance + the "creative director" evaluation +
+    the strengthened competitor-swappable test. At most one targeted
+    rewrite, same "never raises, fall back to draft" convention as
+    _apply_quality_gate. Runs AFTER (not instead of) the existing quality
+    gate — a script only reaches here once the generic checks already
+    passed."""
+    if pre.architecture is None:
+        return data
+    try:
+        issues = architecture_validation_service.validate_script_against_outline_deterministic(
+            data, pre.outline, pre.architecture, pre.product_name
+        )
+        if not issues:
+            issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
+                data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes
+            )
+        if not issues:
+            return data
+        logger.info("Architecture/creative-director gate flagged %s — attempting one targeted rewrite", issues)
+        reason = script_quality.rewrite_reason(issues)
+        return _rewrite_for_quality(
+            data, payload, target_duration, target_word_count, reason, content_type, pre.prompt_block
+        )
+    except Exception as e:
+        logger.warning("Architecture gate failed, keeping prior draft: %s", e)
+        return data
+
+
 def _generate_full_script(
     payload,
     target_duration: str,
@@ -1011,7 +1272,11 @@ def _generate_full_script(
     avoid_repeating_hook: str = "",
     avoid_repeating_mechanism: str = "",
 ) -> GeneratedScript:
+    pre = _run_creative_pre_stages(payload, target_duration)
+    payload = pre.payload
     user_message = _context_block(payload, target_duration, target_word_count)
+    if pre.prompt_block:
+        user_message += f"\n\n{pre.prompt_block}"
     if avoid_repeating_hook:
         mechanism_note = (
             f' (creative mechanism: "{avoid_repeating_mechanism}")' if avoid_repeating_mechanism else ""
@@ -1029,17 +1294,21 @@ def _generate_full_script(
         )
     if custom_instruction:
         user_message += f"\n\nADDITIONAL INSTRUCTION: {custom_instruction}\n"
+    has_outline = pre.outline is not None and bool(pre.outline.beats)
     if payload.content_type == ContentType.static:
-        system = _static_system_prompt(payload.format, payload.format_description, payload.tone)
+        system = _static_system_prompt(payload.format, payload.format_description, payload.tone, has_outline)
     else:
-        system = _system_prompt(target_duration, payload.format, payload.format_description, payload.tone)
+        system = _system_prompt(target_duration, payload.format, payload.format_description, payload.tone, has_outline)
     data = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type
     )
     data = _apply_quality_gate(
-        data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True
+        data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
+        creative_context_block=pre.prompt_block,
     )
-    return _finish(data, payload, target_duration)
+    data = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
+    architecture_key = pre.architecture.key if pre.architecture else ""
+    return _finish(data, payload, target_duration, pre.insight_statement, architecture_key)
 
 
 def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:

@@ -75,6 +75,15 @@ BANNED_PHRASES: list[str] = [
     "unlock karo",
     "zindagi badal",
     "life badal do",
+    # Generic-opener patterns (AHM Creative DNA §2/§5) — an ad that could be
+    # for any product/brand in this category, not this one specifically.
+    "every mother wants",
+    "we all know health is important",
+    "your child's health matters",
+    "take care of your family",
+    "health is wealth",
+    "because your health matters",
+    "in today's fast paced life",
 ]
 
 # Patterns that need a wildcard, not a plain substring.
@@ -256,6 +265,82 @@ def _significant_tokens(*phrases: str) -> set[str]:
     return tokens
 
 
+# Deterministic safety net for AHM Creative DNA §8 ("do not overfit to
+# Herbal Masala") — the insight/hook/outline prompts already carry an
+# explicit instruction not to default to these terms, but a model can still
+# drift, so this catches it after the fact for any product whose category
+# genuinely has nothing to do with tobacco/gutka.
+_CATEGORY_OVERFIT_TERMS = [
+    "gutka", "gutkha", "tobacco", "paan masala", "pan masala", "pan shop", "paan shop",
+    "supari", "quitting addiction", "quit smoking", "chewing tobacco",
+]
+_TOBACCO_CATEGORY_SIGNALS = ("tobacco", "gutka", "gutkha", "pan masala", "paan masala", "supari")
+
+
+def category_overfit_terms_present(text: str, product_category: str, brief_text: str = "") -> list[str]:
+    """Returns which banned surface-content terms appear in `text`, but only
+    when this product genuinely ISN'T tobacco/gutka-related — checked
+    against `product_category` AND `brief_text` (product name/target
+    audience/USP/benefits), not the category string alone. A product can be
+    stored under a generic category label (e.g. the Product Library's
+    "herbal_health") while its actual given audience/brief genuinely is
+    gutka/tobacco habit-replacement — in that case this must NOT strip the
+    correct content back out."""
+    category_low = (product_category or "").lower()
+    brief_low = (brief_text or "").lower()
+    if any(sig in category_low for sig in _TOBACCO_CATEGORY_SIGNALS) or any(
+        sig in brief_low for sig in _TOBACCO_CATEGORY_SIGNALS
+    ):
+        return []
+    low = text.lower()
+    return [term for term in _CATEGORY_OVERFIT_TERMS if term in low]
+
+
+# Ingredient-dumping (AHM Creative DNA §6): a line that just lists product
+# ingredients/features joined by commas/"and", with no surrounding sentence
+# connecting them to a story beat — "Contains Amlaki, Elderberry, Echinacea
+# and many natural ingredients" — the exact failure pattern named in the brief.
+_INGREDIENT_DUMP_PATTERN = re.compile(
+    r"\b(contains?|ingredients?|made with|formulated with|packed with)\b"
+    r"[^.!?]{0,15}([A-Za-z][A-Za-z\s]{1,20},\s*){2,}[A-Za-z][A-Za-z\s]{1,20}\b(and|&)\b",
+    re.IGNORECASE,
+)
+
+
+# Per-ingredient benefit-attachment signals — when each ingredient in a list
+# is immediately followed by its own reason ("Mulethi for natural
+# sweetness, Amla for freshness..."), that is the "name it, then its
+# one-line benefit" pattern the generation prompt's own _VOICE_STRUCTURE_GUIDE
+# explicitly recommends — NOT the bare "contains X, Y, Z" dump this check
+# exists to catch. Only a list where ingredients genuinely outnumber
+# attached benefit phrases counts as a real dump.
+_BENEFIT_ATTACHMENT_SIGNALS = re.compile(
+    r"\bfor\b|\bke liye\b|\bjo\b|\bhelps?\b|\bsupports?\b|\bkarta hai\b|\bkarti hai\b|\bfor\b", re.IGNORECASE
+)
+
+
+def _has_ingredient_dump(text: str, given_ingredients: list[str]) -> bool:
+    if _INGREDIENT_DUMP_PATTERN.search(text):
+        return True
+    if len(given_ingredients) < 3:
+        return False
+    # Or: 3+ of the ACTUAL given ingredient names crammed into one short
+    # (<20 word) span, with fewer attached benefit phrases than ingredients
+    # (i.e. at least one ingredient has no reason attached — a real dump,
+    # not the recommended "ingredient -> one-line benefit" parallel pattern).
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        words = sentence.split()
+        if len(words) > 20:
+            continue
+        hits = sum(1 for ing in given_ingredients if ing.lower() in sentence.lower())
+        if hits < 3:
+            continue
+        benefit_signals = len(_BENEFIT_ATTACHMENT_SIGNALS.findall(sentence))
+        if benefit_signals < hits:
+            return True
+    return False
+
+
 def claim_grounded_in_product_data(payload) -> bool:
     """True if the SUPPLIED product data itself already contains
     claim-shaped language (a timeframe, a percentage, or one of the
@@ -314,11 +399,30 @@ def deterministic_issues(data: dict, payload) -> list[str]:
     if len(non_empty) != len(set(non_empty)) and len(non_empty) > 1:
         issues.append("duplicate_lines")
 
+    product_category = getattr(payload, "product_category", "")
     p = getattr(payload, "structured_product", None)
+    brief_text = " ".join(
+        [
+            getattr(p, "target_audience", "") or "",
+            getattr(p, "usp", "") or "",
+            " ".join(getattr(p, "key_benefits", []) or []),
+        ]
+    ) if p is not None else ""
+    if category_overfit_terms_present(combined, product_category, brief_text):
+        issues.append("category_overfit")
+
     if p is not None:
         tokens = _significant_tokens(p.product_name, *p.ingredients, *p.key_benefits, p.usp)
         if tokens and not any(t in combined_low for t in tokens):
             issues.append("weak_product_relevance")
+        if p.ingredients and any(_has_ingredient_dump(t, p.ingredients) for t in texts):
+            issues.append("ingredient_dump")
+
+    hook_text = texts[0].strip() if texts else ""
+    if hook_text and p is not None and p.product_name:
+        first_words = hook_text.split()[:5]
+        if any(tok.lower() in " ".join(first_words).lower() for tok in _significant_tokens(p.product_name)):
+            issues.append("product_first_hook")
 
     return issues
 
@@ -414,6 +518,21 @@ problem, and only from this exact list of codes:
   presence of an ingredient is not proof of a specific outcome. Do NOT flag ordinary benefit
   language ("helps", "supports", "designed for", naming a given ingredient/benefit) — only flag a
   claim that goes beyond what was actually given.
+- "competitor_swappable": this exact script (with only the brand/product name swapped) could run
+  unchanged for a directly competing product with a different real formulation — nothing in the
+  hook, story, or benefits is actually specific to THIS product's given facts.
+- "interchangeable_beats": two or more body beats could swap order (or be deleted) without the
+  story losing meaning or causal logic — a checklist of points rather than a sequence where each
+  beat happens BECAUSE of the one before it.
+- "filler_padding": length was added by restating an already-made point in different words, a
+  generic motivational line, or repeating the product name, rather than a genuinely new beat
+  (situation, objection, escalation, proof, consequence, or emotional turn).
+- "generic_insight": the story's underlying premise is a restated category-level truth ("parents
+  want their kids healthy") rather than a specific, narrow, recognizable human situation.
+- "generic_creative_premise": strip away the wording — the underlying idea is still just "problem,
+  then product, then benefit" with no specific situation, device, or reversal driving it.
+- "slogan_as_hook": the hook reads like a title or tagline for the ad (e.g. a short capitalized
+  phrase) rather than a real line, moment, or piece of dialogue a viewer would actually hear/see.
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"pass": boolean, "issues": [string]}
@@ -524,6 +643,126 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
     "missing_cta": "the CTA is missing or empty — write a real closing line",
     "empty_body": "the body is empty or missing — write the actual story beats",
     "duplicate_lines": "some blocks repeat the exact same line — rewrite so every block says something distinct",
+    "ingredient_dump": (
+        "one or more lines just list ingredients/features joined by commas ('contains X, Y, Z and "
+        "W') with no story connecting them — rebuild that beat as: the problem it answers, then the "
+        "one relevant property, then why that specific property matters to THIS audience, not a "
+        "label read aloud"
+    ),
+    "competitor_swappable": (
+        "this script could run unchanged for a directly competing product with the brand name "
+        "swapped — make the hook, story, and benefits specifically true of THIS product's given "
+        "facts and THIS audience's exact situation, not generic category language"
+    ),
+    "interchangeable_beats": (
+        "two or more beats could be reordered or deleted without the story losing meaning — rewrite "
+        "so each beat is caused by or motivates the one before it, not a checklist of separate points"
+    ),
+    "filler_padding": (
+        "length was added by restating an already-made point, a generic motivational line, or "
+        "repeating the product name — replace the padding with one genuinely new beat (a new "
+        "objection, escalation, proof point, consequence, or emotional turn) instead"
+    ),
+    "generic_insight": (
+        "the story's underlying premise is a restated category-level truth rather than a specific, "
+        "narrow, recognizable human situation — rebuild the story around a more specific behavior, "
+        "moment, or contradiction this exact audience would recognize"
+    ),
+    # Beat-outline / architecture-enforcement issue codes (post-script pass,
+    # see architecture_validation_service.py) — reuse this same instruction
+    # map and rewrite_reason() so the existing single-rewrite mechanism
+    # handles them with no new plumbing.
+    "missing_required_beat": (
+        "a beat required by the chosen creative architecture is missing or only superficially "
+        "present — add it back as a genuine, causally-connected beat, not a token line"
+    ),
+    "architecture_abandoned": (
+        "the script doesn't actually use the required format/interaction style of the chosen "
+        "architecture (e.g. it was supposed to be a real two-voice dialogue and became a monologue) "
+        "— rewrite it to genuinely use that format, not just narrate around it"
+    ),
+    "no_emotional_progression": (
+        "the architecture's expected emotional arc doesn't actually happen — the tone stays flat "
+        "instead of moving through the stages it's supposed to (e.g. skeptical -> reassured -> "
+        "convinced) — rewrite so each beat's emotional register is genuinely different from the last"
+    ),
+    "proof_mechanism_missing": (
+        "the architecture's required proof/demonstration approach isn't actually used — add a "
+        "concrete, testable detail (a number, a before/after, a named specific) instead of an "
+        "asserted claim"
+    ),
+    "weak_creative_idea": (
+        "there's no specific human observation here — it reads as a category-level generality; "
+        "rebuild around a sharper, more specific insight that only makes sense for this exact "
+        "audience and situation"
+    ),
+    "no_memorable_device": (
+        "nothing here is distinctive — no device, line, or structural twist a viewer would actually "
+        "remember or repeat; add one genuine memorable element that supports the idea, don't just "
+        "decorate it"
+    ),
+    "no_curiosity": (
+        "the story doesn't create a real question the viewer wants answered — sharpen the hook/setup "
+        "so there's a genuine, specific curiosity gap"
+    ),
+    "story_static": (
+        "nothing changes or evolves across the beats — rewrite so the situation, the character's "
+        "understanding, or the stakes genuinely shift as the story progresses"
+    ),
+    "unearned_cta": (
+        "the ending is reached, not earned — there's no real payoff before the CTA lands; add a "
+        "genuine resolution beat before closing"
+    ),
+    "hook_not_intact": (
+        "the hook drifted too far from the approved hook line — restore its core wording/structure "
+        "(a faithful translation/localization is fine, an unrelated new opening is not)"
+    ),
+    "product_reveal_moved": (
+        "the product appeared at a different point than the chosen architecture's reveal timing "
+        "calls for — move the product's first mention back to where the approved outline placed it"
+    ),
+    "category_overfit": (
+        "the script uses tobacco/gutka/pan-masala-specific situations or vocabulary that don't "
+        "belong to this product's actual category — rebuild the relevant beat(s) around a situation "
+        "genuinely specific to THIS product and audience instead"
+    ),
+    "generic_creative_premise": (
+        "underneath the wording, this is still a generic problem-then-product-then-benefit ad with "
+        "no specific situation, device, or reversal — rebuild it around one concrete, original "
+        "situation with an actual turn in it, not a topic"
+    ),
+    "slogan_as_hook": (
+        "the hook reads like a title/tagline for the ad, not a real line a viewer would hear or "
+        "see — rewrite it as an actual moment, line of dialogue, or observation, not a name for the "
+        "concept"
+    ),
+    "product_first_hook": (
+        "the hook opens with the product/brand name itself — open on the human situation instead "
+        "and let the product enter later, at the point the story actually earns it"
+    ),
+    "missing_turning_point": (
+        "there's no moment where something is realized, discovered, or decided — add a genuine "
+        "turning point before the resolution, not just situation then product then done"
+    ),
+    "missing_payoff": (
+        "the story sets something up but never resolves or lands it — add a concrete payoff beat "
+        "that actually pays off what the hook and setup promised"
+    ),
+    "generic_cta": (
+        "the CTA doesn't connect to this script's specific premise or decision — it would fit any "
+        "script in this category unchanged; rewrite it to close on the exact decision/idea this "
+        "story was actually about"
+    ),
+    "product_forced_into_story": (
+        "the product's entry doesn't feel inevitable — it reads as placed there to be mentioned "
+        "rather than because the situation needed it; rebuild the moment before it so the product is "
+        "the obvious next step, not an announcement"
+    ),
+    "reference_dna_mismatch": (
+        "the script ignores the reference-DNA mechanism given for this architecture (its hook "
+        "device, proof device, reveal timing, or CTA style) and defaults to a generic, unrelated ad "
+        "shape instead — rebuild the relevant beat(s) to actually use that mechanism"
+    ),
 }
 
 
