@@ -11,6 +11,7 @@ import { useToast } from "@/components/shell/ToastProvider";
 import { useActiveProject } from "@/lib/project-context";
 import { ACTIVE_TEMPLATE_KEY, type ActiveTemplateHint } from "@/lib/constants";
 import { useSceneVisuals, type SceneVisualsContext } from "@/lib/useSceneVisuals";
+import { useAyushProducts } from "@/lib/useAyushProducts";
 import { HookPickerModal } from "@/components/library/HookPickerModal";
 import { HookBanner } from "@/components/pipeline/HookBanner";
 import { ProductWorkspaceStep } from "@/components/steps/ProductWorkspaceStep";
@@ -38,7 +39,6 @@ import {
   generateVoiceover,
   getAyushProductContext,
   getScriptSuggestions,
-  listAyushProducts,
   logHistoryEvent,
   motionFileUrl,
   productUploadFileUrl,
@@ -275,10 +275,18 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
   const [productLibraryContext, setProductLibraryContext] = useState<ProductContext | null>(
     () => restored.productLibraryContext
   );
-  const [ayushProducts, setAyushProducts] = useState<AyushProduct[] | null>(null);
   const [productSourceMode, setProductSourceMode] = useState<"manual" | "library">(() =>
     restored.productLibraryContext ? "library" : "manual"
   );
+  // Shared with Sidebar.tsx's AyushWellness category tree — same fetch,
+  // same loading/failed/retry semantics, so the two can never disagree about
+  // which products exist. Only fetches while this mode is actually selected
+  // (and re-fetches each time the user switches back into it), rather than
+  // once-ever-per-mount, so a product created/restored elsewhere is picked
+  // up without needing a full page reload.
+  const { products: ayushProducts, failed: ayushProductsFailed, refresh: retryAyushProducts } = useAyushProducts({
+    enabled: productSourceMode === "library",
+  });
   const [referenceMaterials, setReferenceMaterials] = useState<ReferenceMaterial[]>(() => restored.referenceMaterials ?? []);
   const [uploadingMaterialIds, setUploadingMaterialIds] = useState<Set<string>>(new Set());
   const [sourceUrlRawText, setSourceUrlRawText] = useState<string | undefined>(() => restored.sourceUrlRawText);
@@ -605,13 +613,6 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buildSnapshot, stepIndex]);
-
-  useEffect(() => {
-    if (stepIndex !== 0 || productSourceMode !== "library" || ayushProducts !== null) return;
-    listAyushProducts()
-      .then(setAyushProducts)
-      .catch(() => setAyushProducts([]));
-  }, [stepIndex, productSourceMode, ayushProducts]);
 
   useEffect(() => {
     function handleFlushOnHide() {
@@ -1557,6 +1558,17 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
                             <Button size="sm" variant="ghost" onClick={handleClearAyushProduct}>
                               Change
                             </Button>
+                          </div>
+                        ) : ayushProducts === null && ayushProductsFailed ? (
+                          <div className="flex items-center justify-between gap-3 rounded-xl border border-[var(--danger)]/30 bg-[var(--danger)]/10 px-3.5 py-2.5">
+                            <p className="text-[13px] text-[var(--danger)]">Couldn&apos;t load AyushWellness products.</p>
+                            <button
+                              type="button"
+                              onClick={retryAyushProducts}
+                              className="text-[12.5px] font-medium text-[var(--accent)] hover:underline"
+                            >
+                              Retry
+                            </button>
                           </div>
                         ) : (
                           <select

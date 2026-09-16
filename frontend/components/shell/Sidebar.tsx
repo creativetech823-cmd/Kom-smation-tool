@@ -1,10 +1,10 @@
 "use client";
 
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { listAyushProducts } from "@/lib/api";
+import { useAyushProducts } from "@/lib/useAyushProducts";
 import { PRODUCT_CATEGORIES, type AyushProduct } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -21,13 +21,13 @@ export function Sidebar() {
   const [openCategories, setOpenCategories] = useState<Set<string>>(
     () => new Set(PRODUCT_CATEGORIES.map((c) => c.value))
   );
-  const [ayushProducts, setAyushProducts] = useState<AyushProduct[] | null>(null);
-  const [ayushProductsFailed, setAyushProductsFailed] = useState(false);
-  const [retryTick, setRetryTick] = useState(0);
-  // Caps the automatic retry to once per failure streak — never hammers a
-  // genuinely-down backend, just smooths over a one-off blip (e.g. the dev
-  // server mid-restart from `uvicorn --reload`) without the user noticing.
-  const autoRetriedRef = useRef(false);
+  // Refetches on every navigation so a product created/archived elsewhere
+  // (the Add Product page, archiving from the detail page) is reflected here
+  // without needing a global event bus — the shared hook handles the
+  // loading/failed/retry distinction identically to the Pipeline's dropdown.
+  const { products: ayushProducts, failed: ayushProductsFailed, refresh: retryAyushProducts } = useAyushProducts({
+    refreshKey: pathname,
+  });
 
   useEffect(() => {
     // Deferred to after mount, not a lazy useState initializer: the server has no
@@ -36,52 +36,6 @@ export function Sidebar() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setCollapsed(window.localStorage.getItem("cf:sidebar-collapsed") === "1");
   }, []);
-
-  useEffect(() => {
-    // Refetch on every navigation so a product created/archived elsewhere
-    // (the Add Product page, archiving from the detail page) is reflected
-    // here without needing a global event bus — this is a small catalog, so
-    // a GET per navigation is cheap.
-    //
-    // A transient failure (e.g. the dev backend mid-restart from
-    // `uvicorn --reload`, or a brief network blip) must never be silently
-    // treated as "this category genuinely has zero products" — that used to
-    // collapse a failed fetch straight to an empty array, which rendered
-    // identically to "No products yet" with no way to recover short of
-    // navigating to a different route and back. Now it's a distinct,
-    // honest "couldn't load" state with a one-click retry, and only ever
-    // falls back to an empty list if a PRIOR successful fetch actually
-    // returned one (a real, confirmed "no products" case).
-    let cancelled = false;
-    listAyushProducts()
-      .then((products) => {
-        if (cancelled) return;
-        setAyushProducts(products);
-        setAyushProductsFailed(false);
-        autoRetriedRef.current = false; // a real success resets the retry budget for next time
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setAyushProductsFailed(true);
-        // A transient blip (classic case: this dev backend restarts on every
-        // file save) is usually gone within a second — one silent, automatic
-        // retry recovers from that without the user ever seeing an error.
-        if (!autoRetriedRef.current) {
-          autoRetriedRef.current = true;
-          setTimeout(() => {
-            if (!cancelled) setRetryTick((t) => t + 1);
-          }, 1500);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [pathname, retryTick]);
-
-  function retryAyushProducts() {
-    autoRetriedRef.current = false;
-    setRetryTick((t) => t + 1);
-  }
 
   function toggleCategory(value: string) {
     setOpenCategories((prev) => {
