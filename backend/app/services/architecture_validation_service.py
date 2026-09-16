@@ -112,8 +112,11 @@ supposed to follow, and its required beats. Check:
 - Is the emotional progression the architecture calls for actually present?
 - Is the proof mechanism the architecture calls for actually used?
 
-REVIEWER 2 — CREATIVE DIRECTOR. Do not ask "is this award-winning" — instead evaluate whether this
-demonstrates the real characteristics of campaign-quality advertising:
+REVIEWER 2 — CREATIVE DIRECTOR. Do not ask "is this award-winning" — instead apply two concrete tests
+first: (1) Would a viewer remember the IDEA tomorrow, not just recall that an ad played? (2) Remove the
+brand/product name entirely — is what's left still an interesting film idea, or is there nothing there
+without the product? If test 2 fails, the premise itself is weak, not just the execution. Then also
+evaluate whether this demonstrates the real characteristics of campaign-quality advertising:
 - Is there a specific human observation, not a category-level generality?
 - Is there a fresh perspective, not the most obvious angle for this product?
 - Is the central idea immediately understandable?
@@ -128,6 +131,21 @@ demonstrates the real characteristics of campaign-quality advertising:
 - If REFERENCE-DNA NOTES are given below, does this script's hook/proof/reveal-timing/CTA style
   reflect that mechanism at all, or does it ignore the reference material entirely and default to a
   completely generic ad shape instead?
+- Is this script VISUALLY EXECUTABLE — could a director actually shoot this (concrete actions,
+  settings, product moments), not just a voice reading lines with nothing to film? A static/graphic
+  format should specify what appears on-screen, not only read like spoken copy.
+
+REVIEWER 3 — TERRITORY COMPLIANCE (only applies if an APPROVED CREATIVE TERRITORY is given below).
+The territory is the underlying human/behavioural LENS the script was supposed to explore — a level
+above the specific premise. Check:
+- Does the ACTUAL WRITTEN SCRIPT genuinely express the territory's human tension and creative
+  question, or did it quietly drift into a generic product story, an ingredient list, generic
+  testimonial language, or a standard problem-then-product-then-benefits-then-CTA shape? A territory
+  that exists only in the given metadata but isn't actually visible in the script text fails this.
+- If RECENTLY USED TERRITORIES are given below, is this script's actual realized idea (not just its
+  wording) fundamentally the same underlying territory as one of those, with only the character/
+  setting/device changed? Apply the same-idea-different-clothes test: would swapping the character/
+  setting/device of the recent one produce this same script? If yes, that's a real problem.
 
 Return ONLY issue codes from this exact list, nothing invented:
 - "missing_required_beat": a required beat isn't genuinely present, even if superficially labeled
@@ -151,10 +169,18 @@ Return ONLY issue codes from this exact list, nothing invented:
   script would work almost unchanged
 - "reference_dna_mismatch": reference-DNA notes were given but the script's execution ignores that
   mechanism entirely and defaults to a generic, unrelated ad shape instead
+- "not_visually_executable": this reads as conversation/narration with nothing a camera could
+  actually shoot — no concrete action, setting, or product moment, just lines being said
+- "territory_mismatch": an approved territory was given but the actual script doesn't express it —
+  it drifted into a generic product story, ingredient list, testimonial language, or standard
+  problem/product/benefits/CTA shape instead
+- "same_idea_different_clothes": the script's REALIZED idea is fundamentally the same underlying
+  territory as one of the RECENTLY USED TERRITORIES given below, just with the character/setting/
+  device changed
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"issues": [string]}
-issues=[] when the script is genuinely fine on both fronts."""
+issues=[] when the script is genuinely fine on all fronts."""
 
 
 def _eval_user_message(
@@ -164,12 +190,16 @@ def _eval_user_message(
     product_name: str,
     audience: str,
     reference_dna_notes: str = "",
+    territory_block: str = "",
+    recent_territories_block: str = "",
 ) -> str:
     hook_text = (data.get("hook") or {}).get("text", "") if isinstance(data.get("hook"), dict) else ""
     body_texts = [b.get("text", "") for b in (data.get("body") or []) if isinstance(b, dict)]
     cta_text = (data.get("cta") or {}).get("text", "") if isinstance(data.get("cta"), dict) else ""
     required = "\n".join(f"- {b}" for b in architecture.required_beats)
     ref_block = f"\nReference-DNA notes for this architecture:\n{reference_dna_notes}\n" if reference_dna_notes else ""
+    territory_section = f"\nAPPROVED CREATIVE TERRITORY:\n{territory_block}\n" if territory_block else ""
+    recent_section = f"\n{recent_territories_block}\n" if recent_territories_block else ""
     return (
         f"Architecture: {architecture.name}\n"
         f"Required beats:\n{required}\n"
@@ -177,7 +207,9 @@ def _eval_user_message(
         f"Expected proof mechanism: {architecture.proof_mechanism}\n"
         f"Product: {product_name}\n"
         f"Audience: {audience}\n"
-        f"{ref_block}\n"
+        f"{ref_block}"
+        f"{territory_section}"
+        f"{recent_section}\n"
         f"Generated hook: {hook_text}\n"
         f"Generated body:\n" + "\n".join(f"- {t}" for t in body_texts) + "\n"
         f"Generated CTA: {cta_text}"
@@ -191,14 +223,19 @@ def llm_architecture_and_creative_director_issues(
     product_name: str,
     audience: str,
     reference_dna_notes: str = "",
+    territory_block: str = "",
+    recent_territories_block: str = "",
 ) -> list[str]:
     try:
         text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_EVAL_SYSTEM_PROMPT,
-                contents=[_eval_user_message(data, outline, architecture, product_name, audience, reference_dna_notes)],
+                contents=[_eval_user_message(
+                    data, outline, architecture, product_name, audience, reference_dna_notes,
+                    territory_block, recent_territories_block,
+                )],
                 model=settings.openrouter_text_model,
-                max_output_tokens=300,
+                max_output_tokens=350,
                 json_mode=True,
             ),
             label="architecture_creative_director_eval",
@@ -206,7 +243,17 @@ def llm_architecture_and_creative_director_issues(
         )
         result = json.loads(text)
         issues = result.get("issues") or []
-        return [i for i in issues if isinstance(i, str)]
+        issues = [i for i in issues if isinstance(i, str)]
+        # Deterministic safety net: these two codes are only meaningful when
+        # there was something to check against. Live testing showed the
+        # model can still return them speculatively even with no territory
+        # section in its prompt at all (territory generation failed/wasn't
+        # available for this run) — strip rather than trust self-restraint.
+        if not territory_block:
+            issues = [i for i in issues if i != "territory_mismatch"]
+        if not recent_territories_block:
+            issues = [i for i in issues if i != "same_idea_different_clothes"]
+        return issues
     except Exception as e:
         logger.warning("Architecture/creative-director evaluation failed, treating as pass: %s", e)
         return []

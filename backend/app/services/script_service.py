@@ -20,8 +20,10 @@ from app.services import (
     beat_outline_service,
     creative_architecture,
     creative_insight_service,
+    creative_memory_service,
     creative_premise_service,
     creative_reference_dna,
+    creative_territory_service,
     hook_generation_service,
 )
 from app.services.compliance_rules import rules_for_category
@@ -61,8 +63,9 @@ _SECTION_PROSE: dict[str, str] = {
         "like an ad read."
     ),
     "ingredients": (
-        'Ingredients / Features (section "ingredients") — why each ingredient/feature matters, '
-        "written conversationally, not like reading a label."
+        'Ingredients / Features (section "ingredients") — only the ONE (at most two) ingredient/feature '
+        "this specific creative idea actually needs, and why it matters to the story just told, written "
+        "conversationally. Do not enumerate every given ingredient — a label read aloud, not a story."
     ),
     "benefits": (
         'Benefits (section "benefits") — the clearest, most compelling benefit(s): immediate, '
@@ -570,8 +573,16 @@ brands like this actually sound. Structurally (regardless of script):
   natural spoken pauses, not paragraphs. This creates rhythm when read aloud.
 - It's fine (often good) to use a "problem reframe" beat — restating what the problem ISN'T before
   landing what it actually IS — when it genuinely fits, not as a forced formula every time.
-- When introducing ingredients or specifics, use the pattern: name the ingredient/spec, its
-  dose/detail if known, then the one-line benefit.
+- Ingredients exist to serve the STORY, not to be enumerated. Before naming any ingredient, ask: does
+  THIS premise/creative idea actually need this specific ingredient named, or is a general phrase
+  ("natural ingredients", "a herbal blend") enough here? Most scripts should name at most ONE, maybe
+  two, ingredients — whichever one the premise's own logic makes relevant (e.g. the one the visual
+  device shows, the one the payoff turns on) — never all of the given ones back-to-back. When an
+  ingredient does earn a mention, the chain is: name it -> the one relevant property (not a definition)
+  -> why THIS property matters to what just happened in the story, in the same breath, not as a
+  separate label-then-benefit line. Do NOT write a line-per-ingredient pattern (ingredient, ingredient,
+  ingredient, then benefit, benefit) even if several are given — that reads as a label being read
+  aloud, not a story.
 - Land the CTA/closing on a short, rhythmic brand line — often 2-3 short parallel phrases — rather
   than a generic "buy now."
 """
@@ -986,6 +997,46 @@ def _rewrite_for_quality(
     )
 
 
+def _rewrite_context_for_issues(pre: "CreativePreStageResult | None", issues: list[str]) -> str:
+    """Decides how much of the creative pre-stage context survives into a
+    quality/architecture-gate rewrite, based on WHAT was flagged — never
+    just "escalated or not":
+    - territory_mismatch/same_idea_different_clothes: the TERRITORY itself
+      is the problem (never expressed, or indistinguishable from a recent
+      one) — drop everything (territory+premise+outline) and instead tell
+      the rewrite which territories (including the one that just failed)
+      to avoid, so it picks a genuinely different lens.
+    - other 3+-issue escalation: the EXECUTION is the problem, not the
+      lens — keep the territory as context (it wasn't at fault) but drop
+      the premise/outline specifics, so the rewrite finds a new situation
+      inside the same approved territory rather than blindly patching or
+      discarding something that wasn't flagged.
+    - <3 issues, no territory problem: ordinary targeted patch — keep the
+      full pre-stage context exactly as before this function existed.
+    Returns "" when pre is None (the narrow/no-pre-stages callers)."""
+    if pre is None:
+        return ""
+    if script_quality.is_territory_weak(issues):
+        recent = list(creative_memory_service.recent_concepts(pre.memory_key)) if pre.memory_key else []
+        if pre.territory is not None:
+            recent = recent + [{
+                "territory_name": pre.territory.territory_name,
+                "human_tension": pre.territory.human_tension,
+                "creative_question": pre.territory.creative_question,
+            }]
+        block = creative_memory_service.recent_territories_prompt_block(recent)
+        if not block:
+            return ""
+        return (
+            f"\n\n{block}\n\nThe previous attempt's territory did not survive into the script (or was "
+            "too close to a recent one) — pick a genuinely different underlying creative territory for "
+            "this rewrite, not just a different execution of the same one."
+        )
+    if script_quality.is_premise_escalation(issues):
+        return pre.territory.prompt_block() if pre.territory is not None else ""
+    return pre.prompt_block
+
+
 def _apply_quality_gate(
     data: dict,
     payload,
@@ -993,7 +1044,7 @@ def _apply_quality_gate(
     target_word_count: int | None,
     content_type: ContentType,
     run_semantic_check: bool,
-    creative_context_block: str = "",
+    pre: "CreativePreStageResult | None" = None,
 ) -> dict:
     """Draft -> Quality Gate -> (rewrite once if weak) -> Final script. Layer
     1 (banned-phrase/structural/product-relevance checks) is free and always
@@ -1011,8 +1062,9 @@ def _apply_quality_gate(
             return data
         logger.info("Quality gate flagged %s — attempting one rewrite pass", issues)
         reason = script_quality.rewrite_reason(issues)
+        context = _rewrite_context_for_issues(pre, issues)
         return _rewrite_for_quality(
-            data, payload, target_duration, target_word_count, reason, content_type, creative_context_block
+            data, payload, target_duration, target_word_count, reason, content_type, context
         )
     except Exception as e:
         logger.warning("Quality gate rewrite failed, keeping original draft: %s", e)
@@ -1092,9 +1144,12 @@ class CreativePreStageResult:
     architecture: "creative_architecture.Architecture | None" = None
     outline: "beat_outline_service.BeatOutline | None" = None
     premise: "creative_premise_service.CreativePremise | None" = None
+    territory: "creative_territory_service.CreativeTerritory | None" = None
     reference_dna_notes: str = ""
     product_name: str = ""
     target_audience: str = ""
+    memory_key: str = ""
+    recent_territories_block: str = ""
 
 
 def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageResult:
@@ -1110,6 +1165,21 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
     try:
         product_name, category, target_audience, usp, benefits, primary_problem = _brief_fields(payload)
 
+        # CREATIVE DIVERSITY MEMORY — what recent FRESH generations for this
+        # exact product already used, so this call can diverge from it
+        # rather than converging on the same "safest" device every time (the
+        # gap the pre-existing avoid_repeating_hook/mechanism never covered,
+        # since that only threads forward on an explicit regenerate of an
+        # existing script, not a brand-new generate_script() call).
+        ctx = getattr(payload, "product_context", None)
+        memory_key = creative_memory_service.product_key(
+            getattr(ctx, "product_id", "") or "", product_name, category
+        )
+        recent_concepts = creative_memory_service.recent_concepts(memory_key)
+        recent_architectures = [c["architecture_key"] for c in recent_concepts if c.get("architecture_key")]
+        recent_territory_block = creative_memory_service.recent_territory_prompt_block(recent_concepts)
+        recent_territories_block = creative_memory_service.recent_territories_prompt_block(recent_concepts)
+
         insight = creative_insight_service.discover_insight(
             product_name=product_name,
             category=category,
@@ -1120,6 +1190,26 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
         )
         insight_statement = insight.insight_statement if insight else ""
 
+        # CREATIVE TERRITORY — decided BEFORE architecture/premise: the
+        # underlying human/behavioural LENS this ad will explore (one level
+        # more abstract than a premise). Uses only the category-agnostic
+        # anti-pattern notes here (not the architecture-specific reference
+        # notes below) since architecture hasn't been chosen yet — the full
+        # mechanism-specific reference notes still flow into premise
+        # generation once architecture is known.
+        territory = creative_territory_service.generate_and_select_territory(
+            product_name=product_name,
+            category=category,
+            target_audience=target_audience,
+            usp=usp,
+            benefits=benefits,
+            insight_block=insight.prompt_block() if insight else "",
+            reference_dna_notes=creative_reference_dna.anti_pattern_notes(),
+            recent_territory_block=recent_territories_block,
+            recent_concepts=recent_concepts,
+        )
+        territory_block = territory.prompt_block() if territory else ""
+
         available_proof = ", ".join(benefits) or usp
         architecture = creative_architecture.select_architecture(
             product_category=category,
@@ -1129,6 +1219,8 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             tone=payload.tone,
             platform=payload.platform,
             insight_statement=insight_statement,
+            recently_used_architectures=recent_architectures,
+            territory_context=territory_block,
         )
 
         # brief_text is checked (in addition to the coarse product_category
@@ -1139,10 +1231,12 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
         brief_text = " ".join([product_name, target_audience, usp, " ".join(benefits)])
         ref_notes = creative_reference_dna.relevant_notes(architecture.key, category, brief_text=brief_text)
 
-        # CREATIVE PREMISE — the missing link between the insight (a topic)
-        # and the beat outline (a structure). Generates several genuinely
-        # distinct candidate premises, self-scores them, and keeps only the
-        # strongest — never exposed to the user, never shown as 10 scripts.
+        # CREATIVE PREMISE — dramatizes the approved territory (when one was
+        # selected) into one specific situation; the missing link between the
+        # insight/territory (a lens) and the beat outline (a structure).
+        # Generates several genuinely distinct candidate premises, self-
+        # scores them, and keeps only the strongest — never exposed to the
+        # user, never shown as 10 scripts.
         premise = creative_premise_service.generate_and_select_premise(
             product_name=product_name,
             category=category,
@@ -1153,11 +1247,15 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             architecture_name=architecture.name,
             architecture_purpose=architecture.creative_purpose,
             reference_dna_notes=ref_notes,
+            recent_territory_block=recent_territory_block,
+            territory_block=territory_block,
         )
 
         blocks = []
         if insight is not None:
             blocks.append(insight.prompt_block())
+        if territory is not None:
+            blocks.append(territory.prompt_block())
         if ref_notes:
             blocks.append(ref_notes)
         if premise is not None:
@@ -1215,9 +1313,12 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             architecture=architecture,
             outline=outline,
             premise=premise,
+            territory=territory,
             reference_dna_notes=ref_notes,
             product_name=product_name,
             target_audience=target_audience,
+            memory_key=memory_key,
+            recent_territories_block=recent_territories_block,
         )
     except Exception as e:
         logger.warning("Creative pre-stages (insight/architecture/hook/outline) failed, proceeding without them: %s", e)
@@ -1249,15 +1350,18 @@ def _apply_architecture_gate(
             data, pre.outline, pre.architecture, pre.product_name
         )
         if not issues:
+            territory_block = pre.territory.prompt_block() if pre.territory is not None else ""
             issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
-                data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes
+                data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes,
+                territory_block, pre.recent_territories_block,
             )
         if not issues:
             return data
         logger.info("Architecture/creative-director gate flagged %s — attempting one targeted rewrite", issues)
         reason = script_quality.rewrite_reason(issues)
+        context = _rewrite_context_for_issues(pre, issues)
         return _rewrite_for_quality(
-            data, payload, target_duration, target_word_count, reason, content_type, pre.prompt_block
+            data, payload, target_duration, target_word_count, reason, content_type, context
         )
     except Exception as e:
         logger.warning("Architecture gate failed, keeping prior draft: %s", e)
@@ -1304,11 +1408,29 @@ def _generate_full_script(
     )
     data = _apply_quality_gate(
         data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
-        creative_context_block=pre.prompt_block,
+        pre=pre,
     )
     data = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
     architecture_key = pre.architecture.key if pre.architecture else ""
-    return _finish(data, payload, target_duration, pre.insight_statement, architecture_key)
+    result = _finish(data, payload, target_duration, pre.insight_statement, architecture_key)
+    # Record this generation's territory AFTER it actually succeeded, so the
+    # NEXT independent fresh generation for this product can diverge from
+    # it. Never raises (creative_memory_service is fail-open internally).
+    if pre.memory_key and pre.premise is not None:
+        creative_memory_service.record_concept(
+            pre.memory_key,
+            architecture_key=architecture_key,
+            creative_device=pre.premise.creative_device,
+            visual_device=pre.premise.visual_device,
+            emotional_engine=pre.premise.emotional_engine,
+            narrative_device=pre.premise.narrative_device,
+            insight_statement=pre.insight_statement,
+            premise_statement=pre.premise.statement,
+            territory_name=pre.territory.territory_name if pre.territory else "",
+            human_tension=pre.territory.human_tension if pre.territory else "",
+            creative_question=pre.territory.creative_question if pre.territory else "",
+        )
+    return result
 
 
 def generate_script(payload: ScriptGenerationInput) -> GeneratedScript:

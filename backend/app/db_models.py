@@ -337,3 +337,35 @@ class ProductReferenceScript(Base):
     updated_at = Column(DateTime, default=_now, onupdate=_now)
 
     product = relationship("AyushProduct", back_populates="reference_scripts")
+
+
+class CreativeConceptRecord(Base):
+    """One row per fresh script generation's chosen creative territory —
+    the "creative diversity memory" premise generation and architecture
+    selection consult before the NEXT fresh generation for the same
+    product, so independent generate_script() calls (not just an explicit
+    regenerate) stop converging on the same device. Deliberately not tied
+    to ayush_products via a FK: a manually-entered product (no Product
+    Library entry) still needs this tracked, keyed by a stable signature
+    derived from product name + category instead (see
+    creative_memory_service.product_key())."""
+
+    __tablename__ = "creative_concept_records"
+
+    id = Column(String(32), primary_key=True, default=_uuid)
+    product_key = Column(String(200), nullable=False, index=True)
+    architecture_key = Column(String(64), default="")
+    creative_device = Column(Text, default="")
+    visual_device = Column(Text, default="")
+    emotional_engine = Column(Text, default="")
+    narrative_device = Column(Text, default="")
+    insight_statement = Column(Text, default="")
+    premise_statement = Column(Text, default="")
+    # Territory-level fields (creative_territory_service) — one abstraction
+    # level above premise/device: the underlying human/behavioural lens, not
+    # the specific situation or execution. Added after this table already
+    # shipped — see db.run_lightweight_migrations().
+    territory_name = Column(Text, default="")
+    human_tension = Column(Text, default="")
+    creative_question = Column(Text, default="")
+    created_at = Column(DateTime, default=_now, index=True)

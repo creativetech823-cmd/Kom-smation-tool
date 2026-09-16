@@ -763,14 +763,99 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "device, proof device, reveal timing, or CTA style) and defaults to a generic, unrelated ad "
         "shape instead — rebuild the relevant beat(s) to actually use that mechanism"
     ),
+    "not_visually_executable": (
+        "this reads as pure narration/conversation with nothing a camera could actually shoot — "
+        "rewrite it so each beat implies a concrete visual (an action, a setting, a product moment), "
+        "not just a line being said"
+    ),
+    "territory_mismatch": (
+        "the script does not actually express the approved creative territory — it silently slid back "
+        "into a generic product story, an ingredient list, generic testimonial language, or a standard "
+        "problem-then-product-then-benefits-then-CTA shape instead of genuinely dramatizing the "
+        "territory's human tension and creative question"
+    ),
+    "same_idea_different_clothes": (
+        "despite a new setting/character/device, this is fundamentally the same underlying creative "
+        "territory as a recently generated concept for this product — the underlying human tension and "
+        "creative question need to genuinely change, not just the surface execution"
+    ),
 }
+
+# "FINAL CREATIVE DIRECTOR TEST" threshold — when an evaluation call returns
+# this many or more distinct weak dimensions, a line-level patch is treated
+# as insufficient; rewrite_reason() escalates its single instruction to
+# "write a new premise" instead of "fix these specific lines". Still just
+# ONE rewrite call via the existing mechanism — this only changes what that
+# one call is told to do, never how many calls happen.
+PREMISE_ESCALATION_THRESHOLD = 3
+
+
+# A script can fail the ordinary "3+ issues" threshold on execution alone
+# (weak hook, filler, disconnected beats) while the underlying creative
+# TERRITORY it was asked to dramatize was fine — patch execution, keep the
+# territory. These two codes specifically mean the TERRITORY itself is the
+# problem (the script never actually expressed it, or it's indistinguishable
+# from a recently used one) — even a single occurrence means the territory,
+# not just the writing, needs to change. See script_service._rewrite_context_for_issues.
+TERRITORY_WEAK_CODES = {"territory_mismatch", "same_idea_different_clothes"}
+
+
+def is_territory_weak(issues: list[str]) -> bool:
+    return any(i in TERRITORY_WEAK_CODES for i in issues)
+
+
+def is_premise_escalation(issues: list[str]) -> bool:
+    """True when rewrite_reason(issues) will produce the escalated "write a
+    new premise" instruction rather than a targeted patch instruction — the
+    caller (script_service._apply_quality_gate/_apply_architecture_gate)
+    uses this to decide whether the OLD premise/outline may still be
+    attached to the rewrite call as mandatory context. Attaching it during
+    an escalation is a direct contradiction (the premise block says
+    "mandatory — execute it, do not replace it" in the same prompt as an
+    instruction to discard it), observed live: whenever both fired together,
+    the rewrite call received self-contradictory instructions.
+
+    Also true whenever is_territory_weak(issues) — a single territory_mismatch/
+    same_idea_different_clothes finding means the LENS itself is wrong, which
+    a line-level patch can never fix, regardless of how many other issues
+    happen to be present."""
+    return len(dict.fromkeys(issues)) >= PREMISE_ESCALATION_THRESHOLD or is_territory_weak(issues)
 
 
 def rewrite_reason(issues: list[str]) -> str:
     """Turns issue codes into one instruction for a single targeted rewrite
-    pass. Never exposed to the user — internal to the generation pipeline."""
+    pass. Never exposed to the user — internal to the generation pipeline.
+
+    When `len(issues) >= PREMISE_ESCALATION_THRESHOLD` (3+ distinct weak
+    dimensions — the "final creative director test" failing on multiple
+    fronts at once), the instruction escalates from "fix these specific
+    things" to "the current creative premise itself doesn't work — write a
+    genuinely new one", since patching individual lines can't fix a script
+    that's fundamentally generic. Still exactly one rewrite call either way —
+    this only changes the instruction given to that one call."""
     unique = list(dict.fromkeys(issues))
     sentences = [_ISSUE_INSTRUCTIONS[i] for i in unique if i in _ISSUE_INSTRUCTIONS]
     if not sentences:
         return "Rewrite this script — the current draft feels generic and needs a sharper, more specific creative pass."
-    return "Rewrite this script because " + "; and because ".join(sentences) + "."
+    reason_list = "; and ".join(sentences)
+    if is_territory_weak(unique):
+        return (
+            "The creative TERRITORY this script was supposed to dramatize did not survive into the "
+            "actual writing (or is indistinguishable from a recently used one) — patching lines cannot "
+            "fix this. Do NOT just edit the existing draft — pick a genuinely different underlying "
+            "creative territory (a different human tension and creative question, not just a different "
+            "character/setting/device for the same one) and write from it. Keep only the product's "
+            "given facts and the target duration/format/language/tone. Specifically, the previous "
+            "attempt failed because " + reason_list + "."
+        )
+    if len(unique) >= PREMISE_ESCALATION_THRESHOLD:
+        return (
+            "This draft is weak on 3 or more fundamental creative dimensions, so patching individual "
+            "lines will not fix it. Do NOT just edit the existing draft — throw out the current "
+            "creative premise entirely and write a genuinely NEW one: a different human insight, a "
+            "different hook, a different story angle and turning point. Keep only the product's given "
+            "facts, the target duration/format/language/tone, and (if a beat outline or architecture "
+            "was given) its required beats — everything else about the creative idea should change. "
+            "Specifically, the previous attempt failed because " + reason_list + "."
+        )
+    return "Rewrite this script because " + reason_list + "."

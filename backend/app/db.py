@@ -92,6 +92,22 @@ def run_lightweight_migrations() -> None:
                 if column not in existing_asset_columns:
                     conn.execute(text(statement))
 
+    # creative_concept_records gained territory-level columns after the
+    # table already shipped (creative_memory_service's device-level fields
+    # came first; territory_name/human_tension/creative_question were added
+    # when creative_territory_service introduced the territory stage).
+    if "creative_concept_records" in table_names:
+        existing_concept_columns = {col["name"] for col in inspector.get_columns("creative_concept_records")}
+        concept_statements = {
+            "territory_name": "ALTER TABLE creative_concept_records ADD COLUMN territory_name TEXT",
+            "human_tension": "ALTER TABLE creative_concept_records ADD COLUMN human_tension TEXT",
+            "creative_question": "ALTER TABLE creative_concept_records ADD COLUMN creative_question TEXT",
+        }
+        with engine.begin() as conn:
+            for column, statement in concept_statements.items():
+                if column not in existing_concept_columns:
+                    conn.execute(text(statement))
+
         # file_path was originally NOT NULL — a URL-only reference asset
         # (advertisement/reference_video with no uploaded file) needs it
         # nullable. SQLite can't drop a NOT NULL constraint with a plain

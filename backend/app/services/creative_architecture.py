@@ -485,7 +485,11 @@ statistic or real photographed evidence must not be chosen if none is available;
 real behavioral contradiction must not be chosen if none exists.
 
 Do not default to the same architecture out of habit — actually weigh the brief against each
-architecture's WHEN TO USE/WHEN NOT conditions before choosing.
+architecture's WHEN TO USE/WHEN NOT conditions before choosing. If RECENTLY USED ARCHITECTURES are
+given below, treat repeating one of them as a real cost, not a neutral choice — only repeat one if
+every other architecture's WHEN TO USE conditions are genuinely unmet by this brief (not just less
+convenient); a repeat must be the only architecture that actually fits, never the safest/most-common
+default.
 
 Return ONLY this JSON, no prose, no markdown fences. Keep "reasoning" to ONE short sentence (under
 20 words) — this field exists for a debug log, not an essay, and a long reasoning field risks
@@ -521,13 +525,33 @@ def select_architecture(
     tone: str,
     platform: str,
     insight_statement: str = "",
+    recently_used_architectures: list[str] | None = None,
+    territory_context: str = "",
 ) -> Architecture:
     """LLM-assisted selection with a deterministic, always-safe fallback —
     never raises. Falls back to DEFAULT_ARCHITECTURE_KEY (a broadly
     applicable, low-risk architecture) on any failure so a caller can always
-    proceed."""
+    proceed.
+
+    recently_used_architectures (from creative_memory_service) biases
+    selection away from repeating a recent choice for the SAME product on
+    independent fresh generations — empty by default, so behavior is
+    unchanged unless a caller has history to pass.
+
+    territory_context (from creative_territory_service, when available) is
+    the approved creative territory — the architecture must be capable of
+    actually serving that lens (e.g. a confrontation-shaped territory needs
+    an architecture with two voices in conflict), not chosen independently
+    of it."""
     fallback = ARCHITECTURES[DEFAULT_ARCHITECTURE_KEY]
     try:
+        recent = [a for a in (recently_used_architectures or []) if a]
+        recent_line = (
+            f"RECENTLY USED ARCHITECTURES for this exact product (avoid repeating unless genuinely "
+            f"necessary — see instructions above): {', '.join(recent)}\n\n"
+            if recent else ""
+        )
+        territory_line = f"APPROVED CREATIVE TERRITORY (the architecture must be able to serve this lens):\n{territory_context}\n\n" if territory_context else ""
         user_msg = (
             f"Product category: {product_category}\n"
             f"Target audience: {target_audience}\n"
@@ -536,6 +560,8 @@ def select_architecture(
             f"Tone: {tone or 'unspecified'}\n"
             f"Platform: {platform or 'short-form video'}\n"
             f"Human insight already discovered: {insight_statement or 'none discovered — pick an architecture that does not strictly require one'}\n\n"
+            f"{territory_line}"
+            f"{recent_line}"
             f"Architecture library:\n{architecture_catalog_prompt_block()}"
         )
         text = call_openrouter_with_retry(
