@@ -792,6 +792,43 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "territory as a recently generated concept for this product — the underlying human tension and "
         "creative question need to genuinely change, not just the surface execution"
     ),
+    # Phase 3C — story-to-film execution codes (architecture_validation_service's
+    # Creative Director eval, REVIEWER 2.5). These target the specific gap
+    # where a script is product-correct, on-category, and safely claimed, but
+    # still converts the selected creative idea into generic ad copy.
+    "title_story_mismatch": (
+        "the selected story situation's title names a concrete concept, but the script's actual "
+        "content never delivers it — rebuild the script so the concept the title names (the specific "
+        "relationship, scene, or event it implies) genuinely happens in the script, not just a loosely "
+        "related theme"
+    ),
+    "metaphor_not_embodied": (
+        "a metaphor or feeling is stated or explained in narration rather than shown — rebuild it so "
+        "the metaphor is embodied through a specific character, a concrete event, and a visual "
+        "progression the script actually describes, not just asserted as a line of narration"
+    ),
+    "no_concrete_event": (
+        "for this format, an actual event should be happening (a discovery, confrontation, reversal, "
+        "unexpected action, reveal, social reaction, decision, interruption, or demonstration) and "
+        "instead this is purely explanatory narration — rebuild the middle of the script around one "
+        "real, specific event"
+    ),
+    "announcement_mode": (
+        "the underlying structure is problem -> product introduction -> features/ingredients -> "
+        "generic positive-lifestyle statement -> CTA, with the product entering as an announcement — "
+        "rebuild it so the product's entry is caused by a specific moment in the situation, not "
+        "introduced as news"
+    ),
+    "hook_abstract_not_situational": (
+        "the hook restates or explains the product category/theme in the abstract instead of opening "
+        "on a character, situation, unexpected behavior, curiosity gap, or visual event — rewrite the "
+        "hook to open on something specific happening, not a category-level statement"
+    ),
+    "payoff_repeats_setup": (
+        "the ending just restates the opening metaphor/feeling in different words instead of paying it "
+        "off — rebuild the ending as a genuine escalation, reveal/reversal, or resolution that actually "
+        "happened, not a repeated statement of the same idea"
+    ),
 }
 
 # "FINAL CREATIVE DIRECTOR TEST" threshold — when an evaluation call returns

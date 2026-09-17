@@ -8,6 +8,7 @@ from app.services.creative_angles import catalog_prompt_block, valid_angle_label
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 from app.services.product_context_service import build_product_creative_contract
 from app.services.product_context_validator import detect_category_drift_signal
+from app.services.semantic_story_judge_service import dedupe_by_cluster, judge_story_situations
 
 logger = logging.getLogger("story_situation_service")
 
@@ -221,6 +222,46 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         # defeat the entire filter in exactly the case that matters most:
         # every candidate genuinely misunderstood the product.
         raw_items = safe_items
+
+        # Phase 3 — Semantic Story Judge: catches drift that uses none of
+        # the deterministic detector's known patterns (e.g. "gets ready for
+        # his morning routine before his workout" — no food/fitness-
+        # supplement keyword, but the product's role has still quietly
+        # become a generic wellness item). Only ever runs for a product
+        # whose contract already flagged a real risk — same cost-control
+        # gate as the deterministic check.
+        judgments = judge_story_situations(contract, raw_items) if raw_items else []
+        if judgments is None:
+            # Judge unavailable this run (Phase 3 §K) — conservative
+            # degrade to the deterministic-only result already computed
+            # above. NEVER "judge failed -> trust the raw candidates";
+            # that would reopen exactly the fail-open hole Phase 2C closed.
+            logger.warning(
+                "Semantic story judge unavailable for %s — keeping deterministic-only result (%d candidates)",
+                p.product_name, len(raw_items),
+            )
+        else:
+            # UNCERTAIN and CLEAR_DRIFT are both excluded — "uncertain" is
+            # never silently accepted (§A6). Any candidate the judge didn't
+            # return a judgment for at all is also excluded, not trusted.
+            clear_pass_judgments = [j for j in judgments if j.decision == "clear_pass" and j.candidate_index < len(raw_items)]
+            semantic_dropped = len(raw_items) - len(clear_pass_judgments)
+            if semantic_dropped:
+                logger.info(
+                    "Semantic judge filtered %d additional story situation(s) for %s (clear_drift or uncertain)",
+                    semantic_dropped, p.product_name,
+                )
+            # Semantic deduplication ("same idea, different clothes", Phase
+            # 3 Part C) over whatever survived judging — dedupe_by_cluster
+            # returns original candidate_index values, no re-indexing needed.
+            keep_indices = dedupe_by_cluster(clear_pass_judgments)
+            dedup_dropped = len(clear_pass_judgments) - len(keep_indices)
+            if dedup_dropped:
+                logger.info(
+                    "Semantic dedup removed %d near-duplicate story situation(s) for %s",
+                    dedup_dropped, p.product_name,
+                )
+            raw_items = [item for i, item in enumerate(raw_items) if i in keep_indices]
 
     situations = []
     for item in raw_items[:payload.count]:

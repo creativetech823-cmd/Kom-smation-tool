@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     max_reference_upload_mb: int = 30
     jina_reader_timeout_seconds: int = 25
 
+    # Bounded concurrency for the offline Creative Quality Benchmark runner
+    # (app/services/creative_benchmark_runner.py) ONLY — never read by the
+    # production request-serving pipeline, which already handles concurrent
+    # requests via normal FastAPI/uvicorn worker concurrency. Independent
+    # benchmark cases each run one full, unmodified generate_script() call
+    # in their own worker thread; this just bounds how many run at once.
+    creative_benchmark_concurrency: int = 3
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

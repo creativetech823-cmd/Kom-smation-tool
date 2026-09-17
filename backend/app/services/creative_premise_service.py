@@ -71,6 +71,15 @@ class CreativePremise:
     product_role: str = ""
     payoff: str = ""
     narrative_device: str = ""
+    # FILMABLE CONCEPT (Phase 3C) — "what is the film?" must be answerable
+    # BEFORE "what are the lines?". These four, together with visual_device
+    # (WHAT WILL WE SEE) and payoff (THE REVEAL), are the concrete questions
+    # a premise must answer or it's a metaphor/topic, not yet a story — see
+    # _is_filmable_concept_weak().
+    who: str = ""  # WHO — the specific character/persona this plays out through
+    concrete_event: str = ""  # WHAT HAPPENS — an actual event, not a stated feeling
+    human_tension: str = ""  # WHAT IS THE TENSION — specific and observable, not "wants a better life"
+    what_changes: str = ""  # WHAT CHANGES — the before/after this event causes
     scores: dict = field(default_factory=dict)
     total_score: int = 0
 
@@ -81,16 +90,23 @@ class CreativePremise:
             f'Premise: "{self.statement}"\n'
             f"Creative device/mechanism: {self.creative_device}\n"
             f"Narrative device: {self.narrative_device}\n"
-            f"Visual device: {self.visual_device}\n"
+            f"WHO: {self.who}\n"
+            f"WHAT HAPPENS (the concrete event): {self.concrete_event}\n"
+            f"THE TENSION: {self.human_tension}\n"
+            f"WHAT CHANGES: {self.what_changes}\n"
+            f"Visual device (what a camera actually shows): {self.visual_device}\n"
             f"Emotional engine: {self.emotional_engine}\n"
             f"Product role in the story: {self.product_role}\n"
-            f"Payoff: {self.payoff}\n"
+            f"Payoff/reveal: {self.payoff}\n"
             f"Concrete situation it plays out in: {self.situation}\n"
             f"Why this creates curiosity: {self.why_curious}\n"
             f"Why a competitor's product couldn't just swap in unchanged: {self.why_not_swappable}\n"
             "This premise is not a topic and not a restated benefit — every beat below must exist "
             "because it serves THIS specific idea. If a beat could be written the same way for any "
-            "other product in this category, it isn't executing the premise yet.\n"
+            "other product in this category, it isn't executing the premise yet. If a metaphor is "
+            "used anywhere (statement, situation, or elsewhere), WHAT HAPPENS/WHO/WHAT CHANGES above "
+            "describe how that metaphor is FILMED through a character and an event — the script must "
+            "dramatize it, not explain it in narration.\n"
         )
 
 
@@ -103,6 +119,30 @@ territory into one specific situation — the territory is the lens (the underly
 creative question), the premise is one concrete example of it. Do not invent a different territory or
 quietly drift back to a generic angle; every candidate should be a genuinely different SITUATION
 inside the same approved lens, not a different lens.
+
+If a CHOSEN STORY SITUATION is given below, it is not optional background — it is the user's own
+already-made creative decision, and every candidate premise MUST be a genuine dramatization of THAT
+exact concept. Its title is a compressed name for a concrete concept (e.g. a title like "Doctor ki
+Advice, Healthy Life" means an actual doctor-patient scene — a consultation, an observation, unexpected
+advice — must be part of the premise; a title naming a mother and son means an actual mother/son
+relationship and an observable change must be part of it). Do not invent an unrelated premise that only
+loosely gestures at the title's theme while actually being about something else — that is exactly the
+failure this instruction exists to prevent. If the given description is more abstract than the title
+(e.g. a mood or a metaphor), your job is to give it a WHO, a concrete EVENT, and a VISUAL mechanism —
+FILM the metaphor through a character and something happening, never just restate or explain it.
+
+EVERY premise, whether or not a chosen situation was given, must answer these concretely — if you
+cannot answer one specifically, the premise is not ready yet:
+- WHO does this happen to? (a specific person/persona, not "people" or "consumers")
+- WHAT HAPPENS? (an actual event — a discovery, confrontation, reversal, unexpected action, reveal,
+  social reaction, decision, interruption, demonstration — not just a feeling being described)
+- WHAT IS THE TENSION? (something specific and observable — e.g. "hiding a habit from a colleague",
+  not "wants a better life")
+- WHAT CHANGES? (a concrete before/after this event causes)
+A metaphor is not yet a story: "life feels colourless" is a feeling, not an event. It only becomes a
+premise once it's embodied through a character, a situation, a concrete event, and a visual
+progression — e.g. someone's world visually monochrome until a specific moment interrupts it. State
+the concrete event, not the abstraction alone.
 
 BAD premise (a topic, not an idea): "A mother wants her child to eat healthy."
 BETTER premise (a situation with a reversal): "Turn an everyday family argument about food into a
@@ -168,13 +208,14 @@ generic category assumption:
   smell) that belong to an unrelated product.
 
 For each candidate, explicitly record its HUMAN INSIGHT (already given below — restate which part
-this candidate actually dramatizes), CREATIVE IDEA (the one-sentence premise), VISUAL DEVICE (the
-specific thing a camera shows — not "a person talking"), EMOTIONAL ENGINE (the feeling driving the
-piece: e.g. dread, pride, relief, embarrassment, defiance, nostalgia — not just "positive"),
-NARRATIVE DEVICE (the structural shape: e.g. confrontation, reveal, demonstration, mystery, montage,
-confession — the abstraction that stays the same even if characters/objects change), PRODUCT ROLE
-(what specific job the product does inside the idea, not "it's mentioned"), and PAYOFF (what the
-ending actually resolves or reveals).
+this candidate actually dramatizes), CREATIVE IDEA (the one-sentence premise), WHO, WHAT HAPPENS (the
+concrete event), THE TENSION, WHAT CHANGES, VISUAL DEVICE (the specific thing a camera shows — not "a
+person talking"), EMOTIONAL ENGINE (the feeling driving the piece: e.g. dread, pride, relief,
+embarrassment, defiance, nostalgia — not just "positive"), NARRATIVE DEVICE (the structural shape:
+e.g. confrontation, reveal, demonstration, mystery, montage, confession — the abstraction that stays
+the same even if characters/objects change), PRODUCT ROLE (what specific job the product does inside
+the idea, not "it's mentioned"), and PAYOFF (what the ending actually resolves or reveals — must
+escalate/reveal/resolve the setup, not just restate it).
 
 Then also self-score it honestly, 1-5 each, on: originality (a device that's the obvious first-instinct
 choice for this exact problem type — see above — scores at most 3 here even if well-executed; true
@@ -195,6 +236,10 @@ Return ONLY this JSON, no prose, no markdown fences:
       "statement": string,
       "creative_device": string,
       "narrative_device": string,
+      "who": string,
+      "concrete_event": string,
+      "human_tension": string,
+      "what_changes": string,
       "visual_device": string,
       "emotional_engine": string,
       "product_role": string,
@@ -223,6 +268,7 @@ def _user_message(
     recent_territory_block: str = "",
     territory_block: str = "",
     contract_block: str = "",
+    situation_block: str = "",
 ) -> str:
     return (
         f"{contract_block}\n"
@@ -233,6 +279,9 @@ def _user_message(
         f"Key benefits: {', '.join(benefits) or 'not given'}\n\n"
         f"{insight_block}\n"
         + (f"\nAPPROVED CREATIVE TERRITORY:\n{territory_block}\n" if territory_block else "")
+        + (f"\nCHOSEN STORY SITUATION (the user's own creative decision — every candidate must "
+           f"genuinely dramatize this exact concept, not just gesture at its theme):\n{situation_block}\n"
+           if situation_block else "")
         + f"Chosen architecture: {architecture_name} — {architecture_purpose}\n"
         f"{reference_dna_notes}\n"
         + (f"\n{recent_territory_block}\n" if recent_territory_block else "")
@@ -258,9 +307,33 @@ def _parse_candidate(raw: dict) -> CreativePremise | None:
         product_role=str(raw.get("product_role") or ""),
         payoff=str(raw.get("payoff") or ""),
         narrative_device=str(raw.get("narrative_device") or ""),
+        who=str(raw.get("who") or ""),
+        concrete_event=str(raw.get("concrete_event") or ""),
+        human_tension=str(raw.get("human_tension") or ""),
+        what_changes=str(raw.get("what_changes") or ""),
         scores=scores,
         total_score=sum(scores.values()),
     )
+
+
+# FILMABLE CONCEPT gate (Phase 3C, Part 4) — a deterministic safety net, same
+# convention as _is_restated_insight: don't just trust the model's own
+# self-scoring, check the structural fields it was required to fill in
+# actually got filled in with something real. A candidate missing 2+ of its
+# four required filmable-concept answers is still a topic/metaphor, not yet a
+# story, regardless of how well it scored itself.
+_GENERIC_PLACEHOLDER_SIGNALS = ("n/a", "none", "not applicable", "tbd", "-")
+
+
+def _is_answered(value: str) -> bool:
+    v = value.strip().lower()
+    return len(v) >= 8 and v not in _GENERIC_PLACEHOLDER_SIGNALS
+
+
+def _is_filmable_concept_weak(premise: CreativePremise) -> bool:
+    required = (premise.who, premise.concrete_event, premise.human_tension, premise.what_changes)
+    unanswered = sum(1 for v in required if not _is_answered(v))
+    return unanswered >= 2
 
 
 # A generated premise that's really just the insight restated ("a mother
@@ -297,9 +370,16 @@ def select_strongest_premise(
     device shows the deterministic category-drift signal (only checked at
     all for a product whose contract flags a known risky role) is excluded
     before scoring, same fail-open convention as the restated-insight
-    filter — category correctness is a prerequisite, not a score."""
+    filter — category correctness is a prerequisite, not a score.
+
+    FILMABLE CONCEPT filter: a candidate that never answers who/what-happens/
+    tension/what-changes concretely (see _is_filmable_concept_weak) is
+    excluded next, same fail-open fallback — prefer a candidate that
+    actually answers "what is the film?" over one that only sounds good."""
     valid = [c for c in candidates if not _is_restated_insight(c.statement)]
     pool = valid or candidates  # if everything got filtered, fall back rather than return nothing
+    filmable = [c for c in pool if not _is_filmable_concept_weak(c)]
+    pool = filmable or pool
     if contract is not None and contract.role_risk_keys:
         category_safe = [
             c for c in pool
@@ -325,6 +405,7 @@ def generate_premises(
     recent_territory_block: str = "",
     territory_block: str = "",
     contract_block: str = "",
+    situation_block: str = "",
 ) -> list[CreativePremise]:
     """Never raises — returns [] on any failure, caller proceeds without a
     premise (same fail-open convention as every other stage).
@@ -339,12 +420,21 @@ def generate_premises(
     stage succeeded) is the approved creative territory every candidate
     premise must dramatize — empty when territory selection failed/was
     unavailable, in which case premise generation proceeds exactly as it
-    did before the territory stage existed."""
+    did before the territory stage existed.
+
+    situation_block (Phase 3C — from the user's OWN chosen Story Situation
+    card, payload.selected_situation) is what every candidate premise must
+    actually dramatize when one was picked; this is the fix for the root
+    cause where premise generation used to run completely disconnected from
+    the concept the user already chose (e.g. a "Doctor ki Advice" card
+    producing a script with no doctor in it) — empty when no situation was
+    selected yet (e.g. Choose-Your-Story card generation itself), in which
+    case premise generation proceeds exactly as it did before."""
     try:
         user_msg = _user_message(
             product_name, category, target_audience, usp, benefits or [], insight_block,
             architecture_name, architecture_purpose, reference_dna_notes, recent_territory_block,
-            territory_block, contract_block,
+            territory_block, contract_block, situation_block,
         )
         text = call_openrouter_with_retry(
             lambda: generate_text(

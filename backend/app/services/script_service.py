@@ -1182,6 +1182,25 @@ def _apply_narrow_quality_gate(
         return data
 
 
+def _story_situation_block(situation) -> str:
+    """Renders the user's chosen Story Situation card as prompt text —
+    shared by premise generation (Phase 3C grounding fix) and the post-
+    script Creative Director gate (title/story integrity check). Empty when
+    no situation is given (defensive; every real caller has one)."""
+    if situation is None:
+        return ""
+    title = getattr(situation, "title", "") or ""
+    if not title:
+        return ""
+    return (
+        f"Title: {title}\n"
+        f"Description: {getattr(situation, 'description', '') or ''}\n"
+        f"Persona: {getattr(situation, 'persona', '') or ''}\n"
+        f"Emotion: {getattr(situation, 'emotion', '') or ''}\n"
+        f"Marketing angle: {getattr(situation, 'marketing_angle', '') or ''}"
+    )
+
+
 def _brief_fields(payload) -> tuple[str, str, str, str, list[str], str]:
     """product_name, category, target_audience, usp, benefits, primary_problem —
     preferring the richer Product Library context when a library product is
@@ -1215,6 +1234,7 @@ class CreativePreStageResult:
     target_audience: str = ""
     memory_key: str = ""
     recent_territories_block: str = ""
+    situation_block: str = ""
 
 
 def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageResult:
@@ -1322,6 +1342,16 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
         # Generates several genuinely distinct candidate premises, self-
         # scores them, and keeps only the strongest — never exposed to the
         # user, never shown as 10 scripts.
+        #
+        # situation_block (Phase 3C root-cause fix): the user's OWN chosen
+        # Story Situation card. Before this, premise/territory/outline
+        # generation ran completely disconnected from it — the premise
+        # invented its own unrelated "situation" field, and the writer was
+        # then told the (situation-blind) premise/outline had "ALREADY made
+        # these decisions", so a card titled e.g. "Doctor ki Advice, Healthy
+        # Life" could produce a script with no doctor in it at all. Grounding
+        # premise generation in the actual chosen card closes that gap.
+        situation_block = _story_situation_block(payload.selected_situation)
         premise = creative_premise_service.generate_and_select_premise(
             product_name=product_name,
             category=category,
@@ -1336,6 +1366,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             territory_block=territory_block,
             contract=contract,
             contract_block=contract_block,
+            situation_block=situation_block,
         )
 
         # PRODUCT TRUTH goes first — every stage below builds inside it, per
@@ -1411,6 +1442,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             target_audience=target_audience,
             memory_key=memory_key,
             recent_territories_block=recent_territories_block,
+            situation_block=situation_block,
         )
     except Exception as e:
         logger.warning("Creative pre-stages (insight/architecture/hook/outline) failed, proceeding without them: %s", e)
@@ -1438,24 +1470,53 @@ def _apply_architecture_gate(
     if pre.architecture is None:
         return data
     try:
+        territory_block = pre.territory.prompt_block() if pre.territory is not None else ""
+        contract_block = pre.contract.prompt_block() if pre.contract is not None else ""
         issues = architecture_validation_service.validate_script_against_outline_deterministic(
             data, pre.outline, pre.architecture, pre.product_name, pre.contract
         )
         if not issues:
-            territory_block = pre.territory.prompt_block() if pre.territory is not None else ""
-            contract_block = pre.contract.prompt_block() if pre.contract is not None else ""
             issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
                 data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes,
                 territory_block, pre.recent_territories_block, contract_block,
+                situation_block=pre.situation_block,
+                content_type=content_type.value if hasattr(content_type, "value") else str(content_type),
+                format_value=payload.format,
             )
         if not issues:
             return data
         logger.info("Architecture/creative-director gate flagged %s — attempting one targeted rewrite", issues)
         reason = script_quality.rewrite_reason(issues)
         context = _rewrite_context_for_issues(pre, issues)
-        return _rewrite_for_quality(
+        rewritten = _rewrite_for_quality(
             data, payload, target_duration, target_word_count, reason, content_type, context
         )
+        # Bounded re-verification (Phase 3C Part 17): confirm the ONE allowed
+        # rewrite actually fixed what was flagged, rather than accepting it
+        # unconditionally. Deliberately does NOT trigger a second rewrite
+        # either way — a still-failing re-check is logged as a bounded
+        # failure and the rewritten draft is still returned (strictly better
+        # odds than the pre-rewrite draft, never worse), matching "maximum
+        # retries must remain bounded, no infinite loops, do not silently
+        # downgrade from Pro".
+        try:
+            recheck_issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
+                rewritten, pre.outline, pre.architecture, pre.product_name, pre.target_audience,
+                pre.reference_dna_notes, territory_block, pre.recent_territories_block, contract_block,
+                situation_block=pre.situation_block,
+                content_type=content_type.value if hasattr(content_type, "value") else str(content_type),
+                format_value=payload.format,
+            )
+            if recheck_issues:
+                logger.warning(
+                    "Architecture/creative-director gate still flags %s after the one allowed rewrite — "
+                    "bounded failure, keeping the rewritten draft (no further retry)", recheck_issues
+                )
+            else:
+                logger.info("Architecture/creative-director gate re-check passed after rewrite")
+        except Exception as e:
+            logger.warning("Post-rewrite re-check failed, keeping rewritten draft: %s", e)
+        return rewritten
     except Exception as e:
         logger.warning("Architecture gate failed, keeping prior draft: %s", e)
         return data

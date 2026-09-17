@@ -6,10 +6,38 @@ Healthy Meals" positioning the product as a cooking ingredient."""
 import json
 from unittest.mock import patch
 
+import pytest
+
 from app.config import settings
 from app.models.product import ScriptLanguage, StorySituationsInput, StructuredProduct
-from app.services import story_situation_service as svc
+from app.services import openrouter_utils, story_situation_service as svc
 from app.services.product_context_service import build_product_creative_contract
+
+
+@pytest.fixture(autouse=True)
+def block_all_live_openrouter_calls():
+    """Hard safety net: semantic_story_judge_service.py has its OWN
+    generate_text binding, separate from story_situation_service.py's —
+    patching one does not patch the other. A test that only mocks
+    svc.generate_text and forgets this will otherwise make a real,
+    unintended live call the moment a role-risk product reaches the
+    semantic-judge stage. Fail loudly instead."""
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("A real OpenRouter HTTP call was attempted in a test that must stay fully offline.")
+
+    with patch.object(openrouter_utils, "get_openrouter_client", side_effect=_forbidden):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def default_semantic_judge_unavailable():
+    """By default, every test in this file runs with the semantic judge
+    reporting "unavailable" (None) — the safe, documented fallback path,
+    which keeps every pre-existing Phase 2B test's deterministic-only
+    expectations valid unchanged. Tests that specifically exercise the
+    semantic judge override this patch within their own body."""
+    with patch("app.services.story_situation_service.judge_story_situations", return_value=None):
+        yield
 
 HERBAL_MASALA = StructuredProduct(
     product_name="Aayush Herbal Masala",
@@ -283,3 +311,198 @@ def test_immune_care_unaffected_no_padding_no_filtering_call():
     # A kitchen/cooking-adjacent card is fine for THIS product — it's never even checked.
     assert len(result.situations) == 1
     assert result.situations[0].title == "Kitchen Chaos"
+
+
+def test_immune_care_never_calls_the_semantic_judge():
+    """A product with no role_risk_keys must never pay for the semantic
+    judge call — same cost-control gate as the deterministic check."""
+    response = json.dumps({"situations": [
+        {
+            "title": "Breakfast Routine", "description": "A mother gives her kids their daily immunity tablet with breakfast.",
+            "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+            "estimated_length": "30s", "virality_score": 5.0, "recommended_angles": [],
+        },
+    ]})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch.object(svc, "judge_story_situations") as mock_judge:
+        result = svc.generate_situations(_payload(IMMUNE_CARE, "nutraceuticals", count=1))
+    mock_judge.assert_not_called()
+    assert len(result.situations) == 1
+
+
+# --- Phase 3: Semantic Story Judge integration ------------------------------
+
+
+def test_subtle_semantic_drift_with_no_keyword_is_caught_by_the_judge():
+    """The exact case deterministic regex cannot catch: no food/fitness
+    keyword at all, but the product's role has silently become a generic
+    wellness/routine item instead of a gutka/tobacco alternative."""
+    subtle_drift_card = {
+        "title": "Morning Ritual Refresh", "description": "A man gets ready for his morning routine and chooses this before heading out for the day, feeling refreshed and prepared.",
+        "emotion": "e", "persona": "young professional", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 7.0, "recommended_angles": [],
+    }
+    clean_card = {
+        "title": "The Automatic Reach", "description": "A man instinctively reaches for the pocket where his old gutka packet used to be.",
+        "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 7.0, "recommended_angles": [],
+    }
+    # Deterministic layer would NOT catch the subtle card (no food/fitness
+    # keyword) — confirmed directly before asserting the judge catches it.
+    from app.services.product_context_validator import detect_category_drift_signal
+    contract = build_product_creative_contract(
+        product_name=HERBAL_MASALA.product_name, category="herbal_health",
+        target_audience=HERBAL_MASALA.target_audience, usp=HERBAL_MASALA.usp,
+    )
+    assert detect_category_drift_signal(svc._situation_text(subtle_drift_card), contract) == ""
+
+    response = json.dumps({"situations": [subtle_drift_card, clean_card]})
+    judge_response = [
+        sj_module()._parse_judgment({
+            "candidate_index": 0, "semantic_category_drift": True,
+            "reason": "positions the product as a generic morning-routine wellness item, not a gutka alternative",
+            "product_role_alignment": 0.2, "cluster_id": "a",
+        }),
+        sj_module()._parse_judgment({
+            "candidate_index": 1, "semantic_category_drift": False,
+            "product_role_alignment": 0.9, "creative_potential": 0.8, "cluster_id": "b",
+        }),
+    ]
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=judge_response):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=2))
+    titles = [s.title for s in result.situations]
+    assert "Morning Ritual Refresh" not in titles
+    assert "The Automatic Reach" in titles
+
+
+def sj_module():
+    from app.services import semantic_story_judge_service
+    return semantic_story_judge_service
+
+
+def test_semantic_duplicates_are_deduplicated_end_to_end():
+    cards = [
+        {"title": "Friend Notices", "description": "A", "emotion": "e", "persona": "p", "marketing_angle": "m",
+         "category": "c", "difficulty": "easy", "estimated_length": "30s", "virality_score": 6.0, "recommended_angles": []},
+        {"title": "Friend Asks Why", "description": "B", "emotion": "e", "persona": "p", "marketing_angle": "m",
+         "category": "c", "difficulty": "easy", "estimated_length": "30s", "virality_score": 8.0, "recommended_angles": []},
+        {"title": "Shopkeeper Story", "description": "C", "emotion": "e", "persona": "p", "marketing_angle": "m",
+         "category": "c", "difficulty": "easy", "estimated_length": "30s", "virality_score": 5.0, "recommended_angles": []},
+    ]
+    sj = sj_module()
+    judgments = [
+        sj._parse_judgment({"candidate_index": 0, "semantic_category_drift": False, "product_role_alignment": 0.9, "creative_potential": 0.5, "cluster_id": "friend_notices_habit_change"}),
+        sj._parse_judgment({"candidate_index": 1, "semantic_category_drift": False, "product_role_alignment": 0.9, "creative_potential": 0.8, "cluster_id": "friend_notices_habit_change"}),
+        sj._parse_judgment({"candidate_index": 2, "semantic_category_drift": False, "product_role_alignment": 0.9, "creative_potential": 0.6, "cluster_id": "shopkeeper_trust"}),
+    ]
+    response = json.dumps({"situations": cards})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=judgments):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=3))
+    titles = [s.title for s in result.situations]
+    # Same cluster -> only the higher creative_potential one survives.
+    assert "Friend Asks Why" in titles
+    assert "Friend Notices" not in titles
+    assert "Shopkeeper Story" in titles
+
+
+def test_judge_failure_never_reintroduces_a_deterministically_rejected_candidate():
+    """The 'no fail-open' guarantee: when the semantic judge is unavailable,
+    the fallback is the deterministic-verified state — never the raw,
+    unfiltered candidates. A deterministically-rejected candidate must never
+    reappear just because the judge call failed."""
+    cooking_card = {
+        "title": "Chef ka Secret Ingredient", "description": "A chef uses Aayush Herbal Masala as a cooking seasoning in his dishes.",
+        "emotion": "e", "persona": "chef", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 7.0, "recommended_angles": [],
+    }
+    clean_card = {
+        "title": "The Automatic Reach", "description": "A man reaches for the pocket where his old gutka packet used to be.",
+        "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 7.0, "recommended_angles": [],
+    }
+    response = json.dumps({"situations": [cooking_card, clean_card]})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=None):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=2))
+    titles = [s.title for s in result.situations]
+    assert "Chef ka Secret Ingredient" not in titles  # deterministic rejection survives judge unavailability
+    assert "The Automatic Reach" in titles
+
+
+def test_generic_but_product_correct_candidate_is_kept_not_rejected():
+    """Genericness is a SCORE, not a rejection reason — the judge must not
+    become another form of over-filtering conventional-but-correct ideas."""
+    generic_card = {
+        "title": "Switching to a Better Option", "description": "A person uses Aayush Herbal Masala instead of gutka.",
+        "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 5.0, "recommended_angles": [],
+    }
+    sj = sj_module()
+    judgments = [sj._parse_judgment({
+        "candidate_index": 0, "semantic_category_drift": False, "product_role_alignment": 0.85,
+        "creative_potential": 0.2, "genericness_risk": 0.9, "cluster_id": "a",
+    })]
+    response = json.dumps({"situations": [generic_card]})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=judgments):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=1))
+    assert len(result.situations) == 1
+    assert result.situations[0].title == "Switching to a Better Option"
+
+
+def test_strong_product_correct_creative_candidate_is_kept():
+    strong_card = {
+        "title": "The Silent Nod", "description": "A shopkeeper who sold him gutka for years silently slides over Aayush Herbal Masala instead — no words needed.",
+        "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "medium",
+        "estimated_length": "30s", "virality_score": 8.5, "recommended_angles": [],
+    }
+    sj = sj_module()
+    judgments = [sj._parse_judgment({
+        "candidate_index": 0, "semantic_category_drift": False, "product_role_alignment": 0.95,
+        "creative_potential": 0.9, "memorability": 0.9, "genericness_risk": 0.1, "cluster_id": "a",
+    })]
+    response = json.dumps({"situations": [strong_card]})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=judgments):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=1))
+    assert result.situations[0].title == "The Silent Nod"
+
+
+def test_contract_is_built_fresh_and_reaches_both_generation_and_judge():
+    captured_gen = {}
+    captured_judge = {}
+
+    def fake_gen(**kwargs):
+        captured_gen["user_message"] = kwargs["contents"][0]
+        # Deterministically clean (no food/fitness keyword) so this reaches
+        # the semantic judge stage rather than being dropped before it.
+        return json.dumps({"situations": [{
+            "title": "The Automatic Reach", "description": "A man reaches for the pocket where his old gutka packet used to be.",
+            "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+            "estimated_length": "30s", "virality_score": 5.0, "recommended_angles": [],
+        }]})
+
+    def fake_judge(contract, candidates, *args, **kwargs):
+        captured_judge["contract"] = contract
+        return []
+
+    with patch.object(svc, "generate_text", side_effect=fake_gen), \
+         patch("app.services.story_situation_service.judge_story_situations", side_effect=fake_judge):
+        svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=1))
+    assert "gutka" in captured_gen["user_message"].lower()
+    assert captured_judge["contract"].role_risk_keys  # the same contract-building path reached the judge
+
+
+def test_choose_your_story_api_response_contract_unchanged():
+    """StorySituation must not gain new fields from Phase 3 — internal
+    scoring stays internal, per the explicit 'do not change the UI
+    unnecessarily' instruction."""
+    from app.models.product import StorySituation
+
+    expected_fields = {
+        "id", "title", "description", "emotion", "persona", "marketing_angle",
+        "category", "difficulty", "estimated_length", "virality_score", "recommended_angles",
+    }
+    assert set(StorySituation.model_fields.keys()) == expected_fields
