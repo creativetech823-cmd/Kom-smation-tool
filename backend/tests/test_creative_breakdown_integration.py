@@ -33,6 +33,11 @@ _GOOD_SCRIPT_JSON = json.dumps({
     "creative_mechanism": "curiosity_gap",
 })
 
+_SAFE_CLAIM_JSON = json.dumps({
+    "implied_claim": False, "claim_evidence": "", "claim_reason": "",
+    "emotional_coercion": False, "coercion_evidence": "", "coercion_reason": "",
+})
+
 
 def _payload() -> ScriptGenerationInput:
     situation = StorySituation(
@@ -77,6 +82,7 @@ def _run_with_mocks(territory=None, premise=None, arch_val_json='{"issues": []}'
         patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None),
         patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])),
         patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'),
+        patch.object(svc.claim_safety_service, "generate_text", return_value=_SAFE_CLAIM_JSON),
         patch.object(svc, "generate_text", return_value=_GOOD_SCRIPT_JSON),
     ]
     if not skip_arch_val_call:
@@ -155,6 +161,7 @@ def test_missing_evaluation_when_architecture_gate_never_runs_produces_none_scor
          patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None), \
          patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])), \
          patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'), \
+         patch.object(svc.claim_safety_service, "generate_text", return_value=_SAFE_CLAIM_JSON), \
          patch.object(arch_val, "validate_script_against_outline_deterministic", return_value=["missing_required_beat", "story_static", "no_curiosity"]), \
          patch.object(svc, "generate_text", return_value=_GOOD_SCRIPT_JSON), \
          patch.object(svc, "_rewrite_for_quality", return_value=json.loads(_GOOD_SCRIPT_JSON)):

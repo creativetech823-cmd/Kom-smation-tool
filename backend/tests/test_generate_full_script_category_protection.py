@@ -26,6 +26,11 @@ REPAIRED_JSON = json.dumps({
     "creative_mechanism": "mini_story",
 })
 
+_SAFE_CLAIM_JSON = json.dumps({
+    "implied_claim": False, "claim_evidence": "", "claim_reason": "",
+    "emotional_coercion": False, "coercion_evidence": "", "coercion_reason": "",
+})
+
 
 @pytest.fixture(autouse=True)
 def block_all_live_openrouter_calls():
@@ -77,6 +82,7 @@ def test_category_drifted_final_script_triggers_rewrite_and_contract_is_preserve
          patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None), \
          patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])), \
          patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'), \
+         patch.object(svc.claim_safety_service, "generate_text", return_value=_SAFE_CLAIM_JSON), \
          patch.object(arch_val, "generate_text", side_effect=fake_arch_eval), \
          patch.object(svc, "generate_text", side_effect=fake_write_then_repair):
         result = svc.generate_script(_herbal_masala_payload())

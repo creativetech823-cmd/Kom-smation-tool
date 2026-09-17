@@ -35,6 +35,11 @@ _GOOD_SCRIPT_JSON = json.dumps({
     "creative_mechanism": "curiosity_gap",
 })
 
+_SAFE_CLAIM_JSON = json.dumps({
+    "implied_claim": False, "claim_evidence": "", "claim_reason": "",
+    "emotional_coercion": False, "coercion_evidence": "", "coercion_reason": "",
+})
+
 
 def _payload() -> ScriptGenerationInput:
     situation = StorySituation(
@@ -69,6 +74,7 @@ def test_generate_script_writes_with_final_script_model_and_logs_cost_summary(ca
          patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None), \
          patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])), \
          patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'), \
+         patch.object(svc.claim_safety_service, "generate_text", return_value=_SAFE_CLAIM_JSON), \
          patch.object(arch_val, "generate_text", return_value='{"issues": []}'), \
          patch.object(svc, "generate_text", side_effect=fake_generate_text), \
          caplog.at_level(logging.INFO, logger="script_service"):
@@ -97,6 +103,7 @@ def test_generate_script_still_returns_a_script_when_every_exploration_stage_fai
          patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None), \
          patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])), \
          patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'), \
+         patch.object(svc.claim_safety_service, "generate_text", return_value=_SAFE_CLAIM_JSON), \
          patch.object(arch_val, "generate_text", return_value='{"issues": []}'), \
          patch.object(svc, "generate_text", return_value=_GOOD_SCRIPT_JSON):
         result = svc.generate_script(_payload())

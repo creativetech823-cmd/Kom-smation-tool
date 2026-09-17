@@ -18,6 +18,7 @@ from app.services import content_formats, script_length, script_quality
 from app.services import (
     architecture_validation_service,
     beat_outline_service,
+    claim_safety_service,
     creative_architecture,
     creative_breakdown_service,
     creative_insight_service,
@@ -1102,6 +1103,78 @@ def _rewrite_context_for_issues(pre: "CreativePreStageResult | None", issues: li
     return pre.prompt_block
 
 
+def _claim_safety_inputs(payload) -> "tuple[str, list[str], list[str]]":
+    """product_name, ingredients, approved_claims — from the Product
+    Library context when a library product was selected, falling back to
+    the manually-structured product otherwise. Mirrors _brief_fields'
+    preference order. An empty approved_claims list is the correct,
+    default-safe result when neither source gives one — never invented."""
+    ctx = getattr(payload, "product_context", None)
+    p = payload.structured_product
+    if ctx is not None:
+        return ctx.name, list(getattr(ctx, "ingredients", []) or p.ingredients), list(getattr(ctx, "approved_claims", []) or [])
+    return p.product_name, list(p.ingredients or []), []
+
+
+def _apply_claim_safety_gate(
+    data: dict,
+    payload,
+    target_duration: str,
+    target_word_count: int | None,
+    content_type: ContentType,
+) -> "tuple[dict, claim_safety_service.ClaimSafetyResult]":
+    """The "Meri Maa Ki Dua" regression fix — a HARD pre-gate, run BEFORE
+    the quality/architecture gates (and therefore before either can spend
+    its own one rewrite on something else while an unsupported claim or
+    coercive framing survives untouched). An unsupported efficacy claim —
+    explicit, implied, or told through story/metaphor — or emotionally
+    coercive framing is never just one score among many that strong writing
+    elsewhere can outweigh: it forces exactly one rewrite with the specific
+    defect named, then the SAME check runs again on the rewritten draft
+    (bounded — no infinite loop, matching every other re-verification in
+    this pipeline) so a rewrite can never quietly reintroduce or leave
+    unresolved the exact thing it was told to fix.
+
+    Returns (data, result) — result is the FINAL claim-safety verdict for
+    whatever draft is actually being returned, so callers can refuse to
+    ever present a still-failing script as "passed" (see
+    creative_breakdown_service.build_creative_quality_assessment's
+    claim_safety_override)."""
+    product_name, ingredients, approved_claims = _claim_safety_inputs(payload)
+    text = " ".join(script_quality._block_texts(data))
+    result = claim_safety_service.check_claim_safety_and_coercion(
+        text, product_name=product_name, ingredients=ingredients, approved_claims=approved_claims,
+    )
+    if result.passed:
+        return data, result
+    reason_parts = []
+    if result.unsupported:
+        reason_parts.append(
+            f"it contains an unsupported {'implied/narrative' if result.claim_type == 'implied_narrative' else 'explicit'} "
+            f"efficacy/outcome claim (\"{result.evidence}\") that isn't covered by any approved claim given — remove or "
+            "soften it to a general, non-outcome statement (name the ingredient/experience without promising a result)"
+        )
+    if result.emotional_coercion:
+        coercion_detail = result.coercion_reason or "guilt, devotional pressure, or family-approval-tied-to-purchase framing"
+        reason_parts.append(
+            f"it relies on emotionally coercive framing ({coercion_detail}) — rewrite the family/relationship beat so "
+            "it reflects genuine warmth or care, never guilt, shame, or a prayer/blessing framed as caused by the purchase"
+        )
+    reason = "Rewrite this script because " + "; and because ".join(reason_parts) + "."
+    logger.info("Claim-safety hard gate failed (%s) — attempting one bounded rewrite", result.claim_type or "coercion")
+    rewritten = _rewrite_for_quality(data, payload, target_duration, target_word_count, reason, content_type)
+    recheck_text = " ".join(script_quality._block_texts(rewritten))
+    recheck = claim_safety_service.check_claim_safety_and_coercion(
+        recheck_text, product_name=product_name, ingredients=ingredients, approved_claims=approved_claims,
+    )
+    if not recheck.passed:
+        logger.warning(
+            "Claim-safety hard gate still fails after the one allowed rewrite (%s) — bounded failure, "
+            "keeping the rewritten draft but marking it as NOT passed", recheck.claim_type or "coercion"
+        )
+    return rewritten, recheck
+
+
 def _apply_quality_gate(
     data: dict,
     payload,
@@ -1613,6 +1686,13 @@ def _generate_full_script_tracked(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type,
         model=settings.final_script_model, label="final_script_write",
     )
+    # Claim-safety/coercion HARD gate — runs FIRST, before the quality and
+    # architecture gates get their own one rewrite each, so neither can
+    # spend its shot on something else while an unsupported claim or
+    # coercive framing survives untouched.
+    data, claim_safety_result = _apply_claim_safety_gate(
+        data, payload, target_duration, target_word_count, payload.content_type
+    )
     data = _apply_quality_gate(
         data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
         pre=pre,
@@ -1634,6 +1714,7 @@ def _generate_full_script_tracked(
     )
     quality_assessment = creative_breakdown_service.build_creative_quality_assessment(
         contract=pre.contract, premise=pre.premise, evaluation=evaluation,
+        claim_safety_result=claim_safety_result,
     )
     result = _finish(
         data, payload, target_duration, pre.insight_statement, architecture_key,

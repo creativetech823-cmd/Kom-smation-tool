@@ -244,6 +244,7 @@ def build_creative_quality_assessment(
     contract=None,
     premise=None,
     evaluation=None,  # architecture_validation_service.ScriptExecutionEvaluation | None
+    claim_safety_result=None,  # claim_safety_service.ClaimSafetyResult | None
 ) -> CreativeQualityAssessment:
     """Renders the Task V3 Part 10 structured assessment: 11 named
     dimensions, each a (score, evidence, source_creative_decision) triple —
@@ -252,7 +253,15 @@ def build_creative_quality_assessment(
     invented here); every "evidence"/"source" comes from the actual premise/
     contract object that decision was made from. A dimension with no
     evaluation attached gets score=None (honestly "not scored"), never a
-    fabricated number."""
+    fabricated number.
+
+    claim_safety_result (from the dedicated claim_safety_service hard gate —
+    see script_service._apply_claim_safety_gate) is the actual per-script
+    verdict, not a placeholder: it REPLACES the old "did the contract list
+    any unsupported claims" proxy, and a failing result forces
+    overall_passed=False regardless of what the Creative Director's own
+    evaluation said — a script must never be presented as "passed review"
+    while a hard safety gate is still failing."""
     dimensions: list[QualityDimension] = []
     scores = evaluation.scores if evaluation is not None else {}
 
@@ -278,14 +287,27 @@ def build_creative_quality_assessment(
     # Claim Safety and Genericness Risk are not in the script-execution
     # scores dict (they're tracked as booleans/lists elsewhere) — handled
     # separately rather than forcing a fake score for them.
-    unsupported = list(contract.unsupported_claims) if contract is not None else []
-    dimensions.append(QualityDimension(
-        name="Claim Safety",
-        score=1.0 if evaluation is not None else None,
-        evidence=(f"{len(unsupported)} claim(s) explicitly avoided per the product contract." if unsupported
-                  else "No unsupported claims were flagged in the contract."),
-        source_creative_decision=", ".join(unsupported) or "ProductCreativeContract.unsupported_claims (empty)",
-    ))
+    if claim_safety_result is not None:
+        failure_bits = []
+        if claim_safety_result.unsupported:
+            failure_bits.append(f"unsupported {claim_safety_result.claim_type} claim: \"{claim_safety_result.evidence}\"")
+        if claim_safety_result.emotional_coercion:
+            failure_bits.append(f"emotional coercion: {claim_safety_result.coercion_reason}")
+        dimensions.append(QualityDimension(
+            name="Claim Safety",
+            score=1.0 if claim_safety_result.passed else 0.0,
+            evidence=("Passed the claim-safety/coercion hard gate." if claim_safety_result.passed
+                      else "FAILED the claim-safety/coercion hard gate: " + "; ".join(failure_bits)),
+            source_creative_decision="claim_safety_service.check_claim_safety_and_coercion (deterministic + semantic hard gate)",
+        ))
+    else:
+        unsupported = list(contract.unsupported_claims) if contract is not None else []
+        dimensions.append(QualityDimension(
+            name="Claim Safety",
+            score=None,
+            evidence=_NOT_SCORED + " (claim-safety hard gate did not run for this script).",
+            source_creative_decision=", ".join(unsupported) or "ProductCreativeContract.unsupported_claims (empty)",
+        ))
     genericness_flagged = bool(evaluation is not None and (evaluation.announcement_mode or evaluation.abstract_copy_risk))
     dimensions.append(QualityDimension(
         name="Genericness Risk",
@@ -297,7 +319,14 @@ def build_creative_quality_assessment(
         source_creative_decision="architecture_validation_service.ScriptExecutionEvaluation.announcement_mode/abstract_copy_risk",
     ))
 
+    if claim_safety_result is not None and not claim_safety_result.passed:
+        overall_passed = False  # a hard safety-gate failure always wins — never "passed review" regardless of other scores
+    elif evaluation is not None:
+        overall_passed = evaluation.passed
+    else:
+        overall_passed = None
+
     return CreativeQualityAssessment(
         dimensions=dimensions,
-        overall_passed=evaluation.passed if evaluation is not None else None,
+        overall_passed=overall_passed,
     )

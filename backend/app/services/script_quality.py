@@ -829,6 +829,12 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "off — rebuild the ending as a genuine escalation, reveal/reversal, or resolution that actually "
         "happened, not a repeated statement of the same idea"
     ),
+    "memorability_relies_on_tagline": (
+        "removing the closing tagline/slogan line would leave nothing memorable — the story, hook, and "
+        "beats themselves are forgettable and only the last line was written to be quotable. Build one "
+        "genuinely memorable element INTO the story itself (a specific action, image, or moment a viewer "
+        "would actually recall), not a punchy line bolted on at the end to compensate for a forgettable middle"
+    ),
 }
 
 # "FINAL CREATIVE DIRECTOR TEST" threshold — when an evaluation call returns

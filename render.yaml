@@ -16,6 +16,8 @@ services:
         value: google/gemini-2.5-flash
       - key: OPENROUTER_IMAGE_MODEL
         value: google/gemini-2.5-flash-image
+      - key: IMAGE_GENERATION_ENABLED
+        value: "false"
       - key: PEXELS_API_KEY
         sync: false
       - key: PIXABAY_API_KEY

@@ -512,6 +512,10 @@ def test_architecture_gate_re_checks_after_the_one_allowed_rewrite_and_does_not_
          patch.object(svc.hook_generation_service, "generate_and_select_hook", return_value=None), \
          patch.object(svc.beat_outline_service, "generate_and_validate_outline", return_value=(None, [])), \
          patch.object(sq, "generate_text", return_value='{"pass": true, "issues": []}'), \
+         patch.object(svc.claim_safety_service, "generate_text", return_value=json.dumps({
+             "implied_claim": False, "claim_evidence": "", "claim_reason": "",
+             "emotional_coercion": False, "coercion_evidence": "", "coercion_reason": "",
+         })), \
          patch.object(av, "generate_text", side_effect=fake_arch_eval), \
          patch.object(svc, "generate_text", side_effect=fake_write_then_repair):
         result = svc.generate_script(_doctor_payload())

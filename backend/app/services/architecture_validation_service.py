@@ -213,11 +213,24 @@ supposed to follow, and its required beats. Check:
 - Is the emotional progression the architecture calls for actually present?
 - Is the proof mechanism the architecture calls for actually used?
 
-REVIEWER 2 — CREATIVE DIRECTOR. Do not ask "is this award-winning" — instead apply two concrete tests
-first: (1) Would a viewer remember the IDEA tomorrow, not just recall that an ad played? (2) Remove the
-brand/product name entirely — is what's left still an interesting film idea, or is there nothing there
-without the product? If test 2 fails, the premise itself is weak, not just the execution. Then also
-evaluate whether this demonstrates the real characteristics of campaign-quality advertising:
+REVIEWER 2 — CREATIVE DIRECTOR. You are a working creative director rejecting a junior writer's draft,
+not a supportive writing assistant helping them feel good about it — your job is to find the real
+reasons this doesn't work yet, not to soften them. Product-correctness, safe claims, and clean grammar
+are the FLOOR, never a substitute for a real creative idea; do not let them talk you into a pass. Reject
+on sight: generic emotional writing with no specific observation behind it; artificial/stilted dialogue
+that exists to deliver information rather than how a person actually talks; a metaphor so predictable
+it could be guessed before the script explains it; forced family emotion used as a shortcut past an
+actual idea; a body that's mostly VO explaining what's happening instead of something happening;
+a product announcement wearing a story's clothes; generic advertising phrasing; a dramatic event too
+weak to justify the beat it's carrying; the product placed in the story ornamentally rather than
+necessarily; a punchline that reads as written-to-be-quotable rather than earned by what came before;
+and a script whose only memorable element is a tagline/slogan line — if removing that one line would
+leave nothing memorable, the underlying idea itself was never memorable, only its wrapper. Do not ask
+"is this award-winning" — instead apply two concrete tests first: (1) Would a viewer remember the IDEA
+tomorrow, not just recall that an ad played? (2) Remove the brand/product name entirely — is what's left
+still an interesting film idea, or is there nothing there without the product? If test 2 fails, the
+premise itself is weak, not just the execution. Then also evaluate whether this demonstrates the real
+characteristics of campaign-quality advertising:
 - Is there a specific human observation, not a category-level generality?
 - Is there a fresh perspective, not the most obvious angle for this product?
 - Is the central idea immediately understandable?
@@ -331,6 +344,11 @@ Return ONLY issue codes from this exact list, nothing invented:
   visual event
 - "payoff_repeats_setup": the ending just restates the opening metaphor/feeling in different words
   instead of creating a genuine escalation, reveal/reversal, or resolution
+- "memorability_relies_on_tagline": if you mentally removed the closing tagline/slogan line, would
+  anything about this script still be memorable? If the answer is no — the story, hook, and beats are
+  forgettable and only the closing line was written to be quotable — the underlying idea was never
+  memorable, only its wrapper. Flag this; a strong script is memorable because of what happens, not
+  because of a punchy last line bolted on to compensate.
 
 Also return a "scores" object, 1-5 each (used for reporting/benchmarking, not for the pass/fail issues
 list above — score honestly and independently of which issues you flagged): "story_execution" (does the
