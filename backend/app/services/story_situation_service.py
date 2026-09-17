@@ -1,6 +1,7 @@
 import json
 import logging
 import uuid
+from dataclasses import dataclass, field
 
 from app.config import settings
 from app.models.product import ScriptLanguage, StorySituation, StorySituationsInput, StorySituationsResult
@@ -268,3 +269,64 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         item = {**item, "recommended_angles": valid_angle_labels(item.get("recommended_angles", []))}
         situations.append(StorySituation(id=uuid.uuid4().hex[:12], **item))
     return StorySituationsResult(situations=situations)
+
+
+# --- Concept quality floor (Task V2 §13) -------------------------------------
+# generate_situations() above already degrades safely to a thin or empty
+# result when every candidate fails the category-drift/semantic-judge/dedup
+# gates (deliberately — see the comment above "Deliberately NOT 'safe_items
+# or raw_items'"), but on its own that's indistinguishable from "the caller
+# just asked for fewer cards". This wrapper adds the missing piece: a bounded
+# retry loop (try again with a different batch, excluding what already
+# failed, rather than silently accepting a thin result) and an explicit,
+# structured "creative quality not met" state distinct from success — without
+# modifying generate_situations() itself or its existing behavior/tests.
+MAX_QUALITY_FLOOR_ATTEMPTS = 3
+MIN_ACCEPTABLE_SITUATIONS = 1
+
+
+@dataclass
+class QualityFloorResult:
+    situations: list[StorySituation] = field(default_factory=list)
+    quality_floor_met: bool = False
+    attempts_used: int = 0
+    dominant_weakness: str = ""
+
+
+def generate_situations_with_quality_floor(
+    payload: StorySituationsInput,
+    min_situations: int = MIN_ACCEPTABLE_SITUATIONS,
+    max_attempts: int = MAX_QUALITY_FLOOR_ATTEMPTS,
+) -> QualityFloorResult:
+    """Calls the existing, unmodified generate_situations() up to
+    max_attempts times. Each retry excludes every title already returned
+    (rejected or not) so the model doesn't just resubmit the same batch.
+    Never raises — a genuine below-floor result after all attempts comes
+    back as quality_floor_met=False with whatever (possibly empty) situations
+    survived the LAST attempt, never a fabricated filler card."""
+    exclude = list(payload.exclude_titles)
+    last_result = StorySituationsResult(situations=[])
+    for attempt in range(1, max_attempts + 1):
+        current_payload = payload.model_copy(update={"exclude_titles": exclude})
+        try:
+            last_result = generate_situations(current_payload)
+        except Exception as e:
+            logger.warning("Quality-floor attempt %d/%d raised, treating as empty: %s", attempt, max_attempts, e)
+            last_result = StorySituationsResult(situations=[])
+        if len(last_result.situations) >= min_situations:
+            return QualityFloorResult(situations=last_result.situations, quality_floor_met=True, attempts_used=attempt)
+        logger.info(
+            "Quality floor not met on attempt %d/%d (%d situation(s) survived, wanted >= %d) — retrying",
+            attempt, max_attempts, len(last_result.situations), min_situations,
+        )
+        exclude = exclude + [s.title for s in last_result.situations]
+    return QualityFloorResult(
+        situations=last_result.situations,
+        quality_floor_met=False,
+        attempts_used=max_attempts,
+        dominant_weakness=(
+            "every candidate across all attempts failed the product-truth/category-drift or "
+            "semantic-dedup gate — the product/audience/category combination may need a richer brief, "
+            "or this product's contract role_risk detection may be too strict for the given brief"
+        ),
+    )

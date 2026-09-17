@@ -335,6 +335,18 @@ class GeneratedScript(BaseModel):
     # silent fallback) — never required, never surfaced as a hard gate.
     human_insight: str = ""
     creative_architecture: str = ""
+    # Creative Breakdown / Quality Assessment (see app.services.creative_breakdown_service)
+    # — deterministic renderings of the SAME creative-chain objects above
+    # (territory/premise/Creative Director evaluation), never a fresh LLM
+    # call. Plain dicts (via CreativeBreakdown.as_dict()/CreativeQualityAssessment.as_dict())
+    # rather than a second Pydantic model, since these dataclasses are
+    # already the canonical shape — this avoids maintaining two schemas for
+    # the same data. None on any script where the creative pre-stage chain
+    # didn't run (narrow regenerations, older scripts) or the gate never
+    # produced an evaluation (deterministic issues caught first, or the
+    # architecture stage itself failed) — never a hard requirement.
+    creative_breakdown: Optional[dict] = None
+    creative_quality_assessment: Optional[dict] = None
 
     @property
     def full_text(self) -> str:

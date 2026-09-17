@@ -215,6 +215,46 @@ export type ScriptLanguage =
   | "malayalam"
   | "custom";
 
+/** One line of the Creative Breakdown — a deterministic readout of an
+ * actual upstream creative decision (territory/premise/Creative Director
+ * evaluation), never a fresh explanation generated for display. A value
+ * containing "not available"/"not scored" means that pipeline stage didn't
+ * run or didn't produce this piece for this particular script — render it
+ * as an honest unavailable state, never substitute other copy. */
+export type CreativeBreakdown = {
+  hook_reason: string;
+  territory_reason: string;
+  human_insight: string;
+  behavioral_tension: string;
+  situation_reason: string;
+  product_entry_reason: string;
+  narrative_device_reason: string;
+  payoff_reason: string;
+  memorability_reason: string;
+  visual_executability_reason: string;
+  distinctiveness_reason: string;
+  claims_avoided: string[];
+  remaining_weaknesses: string[];
+  /** False when one or more lines above are "not available" placeholders
+   * because an upstream stage never ran for this script. */
+  fully_grounded: boolean;
+};
+
+export type CreativeQualityDimension = {
+  name: string;
+  /** null = not scored (no Creative Director evaluation attached to this
+   * script) — distinct from an actual 0, never coerced to a fake number. */
+  score: number | null;
+  evidence: string;
+  source_creative_decision: string;
+};
+
+export type CreativeQualityAssessment = {
+  dimensions: CreativeQualityDimension[];
+  /** null = no evaluation attached to judge pass/fail from. */
+  overall_passed: boolean | null;
+};
+
 export type GeneratedScript = {
   hook: ScriptLine;
   body: ScriptLine[];
@@ -234,6 +274,18 @@ export type GeneratedScript = {
    * "curiosity_gap"), so a later regenerate can be steered toward a
    * genuinely different one. Not surfaced in the UI. */
   creative_mechanism?: string;
+  /** The specific human insight the story was built around, and which
+   * creative_architecture.ARCHITECTURES key structured it — set on fresh
+   * generations only; absent on narrow regenerations and older scripts. */
+  human_insight?: string;
+  creative_architecture?: string;
+  /** Present only on a fresh generation whose creative pre-stage chain
+   * (territory/premise/Creative Director evaluation) actually ran — absent
+   * (undefined/null) on a regenerate_script_section() result, which has no
+   * such chain to draw from. Never poll/regenerate for it; if absent, the
+   * script itself is still complete and fully usable. */
+  creative_breakdown?: CreativeBreakdown | null;
+  creative_quality_assessment?: CreativeQualityAssessment | null;
 };
 
 export type ScriptSuggestionCategory =

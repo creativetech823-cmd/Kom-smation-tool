@@ -19,6 +19,7 @@ from app.services import (
     architecture_validation_service,
     beat_outline_service,
     creative_architecture,
+    creative_breakdown_service,
     creative_insight_service,
     creative_memory_service,
     creative_premise_service,
@@ -978,6 +979,8 @@ def _finish(
     target_duration: str,
     human_insight: str = "",
     creative_architecture_key: str = "",
+    creative_breakdown: "creative_breakdown_service.CreativeBreakdown | None" = None,
+    creative_quality_assessment: "creative_breakdown_service.CreativeQualityAssessment | None" = None,
 ) -> GeneratedScript:
     # Normalize against the canonical mechanism list here — the one choke
     # point every generation/regeneration path passes through — so an
@@ -999,6 +1002,8 @@ def _finish(
         tone=payload.tone,
         human_insight=human_insight,
         creative_architecture=creative_architecture_key,
+        creative_breakdown=creative_breakdown.as_dict() if creative_breakdown is not None else None,
+        creative_quality_assessment=creative_quality_assessment.as_dict() if creative_quality_assessment is not None else None,
     )
 
 
@@ -1456,7 +1461,7 @@ def _apply_architecture_gate(
     target_duration: str,
     target_word_count: int | None,
     content_type: ContentType,
-) -> dict:
+) -> "tuple[dict, architecture_validation_service.ScriptExecutionEvaluation | None]":
     """Post-script validation (Parts 5-7 of the outline-enforcement upgrade)
     — runs ONLY when an architecture was actually selected (i.e. the
     creative pre-stages succeeded). Cheap deterministic checks first (hook
@@ -1466,25 +1471,38 @@ def _apply_architecture_gate(
     rewrite, same "never raises, fall back to draft" convention as
     _apply_quality_gate. Runs AFTER (not instead of) the existing quality
     gate — a script only reaches here once the generic checks already
-    passed."""
+    passed.
+
+    Returns (data, evaluation) — evaluation is the full
+    ScriptExecutionEvaluation (scores/announcement_mode/abstract_copy_risk),
+    not just its .issues, whenever the LLM evaluation call actually ran; it
+    reflects whichever draft is actually being returned (the post-rewrite
+    re-check's evaluation when a rewrite happened, the original evaluation
+    otherwise). None when no evaluation call ran at all (no architecture,
+    or deterministic checks already caught something first) — this is the
+    ONLY change from the prior version, which called the exact same
+    evaluate_script_execution() function via a .issues-only wrapper and
+    discarded everything else; no algorithm/scoring/prompt change."""
     if pre.architecture is None:
-        return data
+        return data, None
     try:
         territory_block = pre.territory.prompt_block() if pre.territory is not None else ""
         contract_block = pre.contract.prompt_block() if pre.contract is not None else ""
         issues = architecture_validation_service.validate_script_against_outline_deterministic(
             data, pre.outline, pre.architecture, pre.product_name, pre.contract
         )
+        evaluation = None
         if not issues:
-            issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
+            evaluation = architecture_validation_service.evaluate_script_execution(
                 data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes,
                 territory_block, pre.recent_territories_block, contract_block,
                 situation_block=pre.situation_block,
                 content_type=content_type.value if hasattr(content_type, "value") else str(content_type),
                 format_value=payload.format,
             )
+            issues = evaluation.issues
         if not issues:
-            return data
+            return data, evaluation
         logger.info("Architecture/creative-director gate flagged %s — attempting one targeted rewrite", issues)
         reason = script_quality.rewrite_reason(issues)
         context = _rewrite_context_for_issues(pre, issues)
@@ -1499,14 +1517,16 @@ def _apply_architecture_gate(
         # odds than the pre-rewrite draft, never worse), matching "maximum
         # retries must remain bounded, no infinite loops, do not silently
         # downgrade from Pro".
+        recheck_evaluation = None
         try:
-            recheck_issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
+            recheck_evaluation = architecture_validation_service.evaluate_script_execution(
                 rewritten, pre.outline, pre.architecture, pre.product_name, pre.target_audience,
                 pre.reference_dna_notes, territory_block, pre.recent_territories_block, contract_block,
                 situation_block=pre.situation_block,
                 content_type=content_type.value if hasattr(content_type, "value") else str(content_type),
                 format_value=payload.format,
             )
+            recheck_issues = recheck_evaluation.issues
             if recheck_issues:
                 logger.warning(
                     "Architecture/creative-director gate still flags %s after the one allowed rewrite — "
@@ -1516,10 +1536,13 @@ def _apply_architecture_gate(
                 logger.info("Architecture/creative-director gate re-check passed after rewrite")
         except Exception as e:
             logger.warning("Post-rewrite re-check failed, keeping rewritten draft: %s", e)
-        return rewritten
+        # recheck_evaluation (the state of the draft actually being
+        # returned) takes priority; falls back to the pre-rewrite
+        # `evaluation` only if the re-check itself failed to run.
+        return rewritten, (recheck_evaluation or evaluation)
     except Exception as e:
         logger.warning("Architecture gate failed, keeping prior draft: %s", e)
-        return data
+        return data, None
 
 
 def _generate_full_script(
@@ -1594,9 +1617,28 @@ def _generate_full_script_tracked(
         data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
         pre=pre,
     )
-    data = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
+    data, evaluation = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
     architecture_key = pre.architecture.key if pre.architecture else ""
-    result = _finish(data, payload, target_duration, pre.insight_statement, architecture_key)
+    # Creative Breakdown / Quality Assessment — deterministic renderers,
+    # ZERO additional LLM calls: `evaluation` is the SAME evaluation object
+    # the architecture gate above already computed (and previously
+    # discarded down to .issues); pre.contract/territory/premise were
+    # already sitting in scope. Both builders degrade to honest "not
+    # available" lines rather than inventing anything when a piece is
+    # missing (e.g. evaluation is None because deterministic issues caught
+    # something before the LLM call ever ran).
+    breakdown = creative_breakdown_service.build_creative_breakdown(
+        contract=pre.contract, insight_statement=pre.insight_statement, territory=pre.territory,
+        premise=pre.premise, selected_hook_text=payload.selected_hook_text, architecture=pre.architecture,
+        evaluation=evaluation,
+    )
+    quality_assessment = creative_breakdown_service.build_creative_quality_assessment(
+        contract=pre.contract, premise=pre.premise, evaluation=evaluation,
+    )
+    result = _finish(
+        data, payload, target_duration, pre.insight_statement, architecture_key,
+        creative_breakdown=breakdown, creative_quality_assessment=quality_assessment,
+    )
     # Record this generation's territory AFTER it actually succeeded, so the
     # NEXT independent fresh generation for this product can diverge from
     # it. Never raises (creative_memory_service is fail-open internally).

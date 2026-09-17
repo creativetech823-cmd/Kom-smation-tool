@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
+import { CreativeBreakdownSection } from "@/components/ui/CreativeBreakdownPanel";
 import { LanguageSelector } from "@/components/ui/LanguageSelector";
 import { DurationSelector } from "@/components/ui/DurationSelector";
 import { RegenerateMenu } from "@/components/ui/RegenerateMenu";
@@ -552,6 +553,11 @@ export function ScriptStep({
             </p>
           </div>
         )}
+
+        <CreativeBreakdownSection
+          breakdown={script.creative_breakdown}
+          qualityAssessment={script.creative_quality_assessment}
+        />
       </CardBody>
     </Card>
   );
