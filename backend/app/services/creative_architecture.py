@@ -527,6 +527,7 @@ def select_architecture(
     insight_statement: str = "",
     recently_used_architectures: list[str] | None = None,
     territory_context: str = "",
+    contract_block: str = "",
 ) -> Architecture:
     """LLM-assisted selection with a deterministic, always-safe fallback —
     never raises. Falls back to DEFAULT_ARCHITECTURE_KEY (a broadly
@@ -552,7 +553,9 @@ def select_architecture(
             if recent else ""
         )
         territory_line = f"APPROVED CREATIVE TERRITORY (the architecture must be able to serve this lens):\n{territory_context}\n\n" if territory_context else ""
+        contract_line = f"{contract_block}\n" if contract_block else ""
         user_msg = (
+            f"{contract_line}"
             f"Product category: {product_category}\n"
             f"Target audience: {target_audience}\n"
             f"Objective: {objective or 'drive consideration/purchase'}\n"
@@ -568,9 +571,10 @@ def select_architecture(
             lambda: generate_text(
                 system_instruction=_SELECTION_SYSTEM_PROMPT,
                 contents=[user_msg],
-                model=settings.openrouter_text_model,
+                model=settings.creative_model,
                 max_output_tokens=500,
                 json_mode=True,
+                label="architecture_selection",
             ),
             label="architecture_selection",
         )

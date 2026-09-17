@@ -21,6 +21,8 @@ from app.config import settings
 from app.services.creative_architecture import Architecture
 from app.services.creative_premise_service import CreativePremise
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
+from app.services.product_context_service import ProductCreativeContract
+from app.services.product_context_validator import detect_category_drift_signal
 
 logger = logging.getLogger("beat_outline_service")
 
@@ -97,12 +99,22 @@ def expected_reveal_fraction(architecture: Architecture) -> tuple[float, float]:
     return (0.0, 1.0)  # architecture doesn't specify — no constraint
 
 
-def validate_outline_deterministic(outline: BeatOutline, architecture: Architecture) -> list[str]:
+def validate_outline_deterministic(
+    outline: BeatOutline, architecture: Architecture, contract: ProductCreativeContract | None = None
+) -> list[str]:
     """Free, regex/arithmetic-only checks. No API call."""
     issues: list[str] = []
     n = len(outline.beats)
     if n == 0:
         return ["outline_empty"]
+
+    # PRODUCT TRUTH check — catches category drift at the STRUCTURAL blueprint
+    # stage, before a line of polished dialogue is ever written. Only ever
+    # runs for a product whose contract flags a known risky role.
+    if contract is not None and contract.role_risk_keys:
+        combined = " ".join(b.content for b in outline.beats)
+        if detect_category_drift_signal(combined, contract):
+            issues.append("outline_category_drift")
 
     if n < len(architecture.required_beats):
         issues.append("outline_missing_required_beats")
@@ -185,9 +197,10 @@ def validate_outline_llm(outline: BeatOutline, architecture: Architecture, premi
             lambda: generate_text(
                 system_instruction=_LLM_VALIDATION_SYSTEM_PROMPT,
                 contents=[_outline_eval_user_message(outline, architecture, premise)],
-                model=settings.openrouter_text_model,
+                model=settings.creative_model,
                 max_output_tokens=300,
                 json_mode=True,
+                label="beat_outline_eval",
             ),
             label="beat_outline_eval",
             max_attempts=2,
@@ -250,8 +263,10 @@ def _outline_user_message(
     target_duration_bucket: str,
     retry_note: str = "",
     premise: CreativePremise | None = None,
+    contract_block: str = "",
 ) -> str:
     return (
+        f"{contract_block}\n"
         f"{architecture.outline_prompt_block()}\n"
         f"Product: {product_name}\n"
         f"Category: {category}\n"
@@ -300,6 +315,7 @@ def generate_and_validate_outline(
     target_audience: str,
     target_duration_bucket: str,
     premise: CreativePremise | None = None,
+    contract: ProductCreativeContract | None = None,
 ) -> tuple[BeatOutline | None, list[str]]:
     """Up to MAX_OUTLINE_ATTEMPTS generate+validate rounds. Returns
     (outline_or_None, remaining_issues). Never raises: on total failure
@@ -309,20 +325,22 @@ def generate_and_validate_outline(
     last_outline: BeatOutline | None = None
     last_issues: list[str] = []
     retry_note = ""
+    contract_block = contract.prompt_block() if contract is not None else ""
 
     for attempt in range(1, MAX_OUTLINE_ATTEMPTS + 1):
         try:
             user_msg = _outline_user_message(
                 architecture, hook, human_insight, product_name, category, target_audience,
-                target_duration_bucket, retry_note, premise,
+                target_duration_bucket, retry_note, premise, contract_block,
             )
             text = call_openrouter_with_retry(
                 lambda: generate_text(
                     system_instruction=_OUTLINE_SYSTEM_PROMPT,
                     contents=[user_msg],
-                    model=settings.openrouter_text_model,
+                    model=settings.creative_model,
                     max_output_tokens=1200,
                     json_mode=True,
+                    label="beat_outline",
                 ),
                 label="beat_outline",
             )
@@ -332,7 +350,7 @@ def generate_and_validate_outline(
             logger.warning("Beat outline generation attempt %d failed: %s", attempt, e)
             continue
 
-        issues = validate_outline_deterministic(outline, architecture)
+        issues = validate_outline_deterministic(outline, architecture, contract)
         if not issues:
             issues = validate_outline_llm(outline, architecture, premise)
 

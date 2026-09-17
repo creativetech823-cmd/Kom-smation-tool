@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 
 from app.config import settings
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
+from app.services.product_context_service import ProductCreativeContract
+from app.services.product_context_validator import detect_category_drift_signal
 
 logger = logging.getLogger("creative_territory_service")
 
@@ -130,12 +132,13 @@ social environment around the category; one genuine, specific objection to chang
 (non-medical) consequence of the old behavior; an absurd contradiction worth exposing with humor;
 something that can be shown rather than explained.
 
-CRITICAL — category/usage grounding: derive the territory from the product's ACTUAL real-world usage
-context given below, never a surface-level reading of the product name. If the brief describes an
-existing consumption habit, ritual, or switching decision (e.g. an existing tobacco/gutka/pan-masala
-habit someone is moving away from), the territory must live inside THAT real context — never drift into
-an unrelated one (e.g. turning a gutka-alternative into a cooking spice / family food / kitchen product)
-just because a word in the product name sounds like it could mean something else.
+CRITICAL — category/usage grounding: if a PRODUCT CREATIVE CONTRACT is given below, treat its category,
+use case, audience, and consumption context as FIXED FACT, not a creative starting point — every
+territory must live inside that real context. Never redefine what the product fundamentally is, who
+it's for, or how it's used based on a surface-level reading of the product's name (a word in a product
+name can sound like it means something else — the contract, not the name, is the source of truth). A
+territory may express this through any storytelling lens, device, or indirect metaphor; it must never
+change the product's real-world role to do so.
 
 Generate 5 to 6 candidate territories, genuinely different from EACH OTHER at the lens level (not just
 different premises that would still count as the same territory per the test above — reread that test
@@ -207,8 +210,10 @@ def _user_message(
     insight_block: str,
     reference_dna_notes: str,
     recent_territory_block: str,
+    contract_block: str = "",
 ) -> str:
     return (
+        f"{contract_block}\n"
         f"Product: {product_name}\n"
         f"Category: {category}\n"
         f"Target audience (as given — read carefully for the real usage context): {target_audience}\n"
@@ -277,7 +282,9 @@ def _deterministic_too_similar(a_tokens: set[str], b_tokens: set[str]) -> bool:
 
 
 def select_strongest_territory(
-    candidates: list[CreativeTerritory], recent_concepts: list[dict] | None = None
+    candidates: list[CreativeTerritory],
+    recent_concepts: list[dict] | None = None,
+    contract: ProductCreativeContract | None = None,
 ) -> CreativeTerritory | None:
     """Deterministic — no second LLM call. Two-stage: (1) eligibility —
     exclude any candidate that is too close to a recently used territory,
@@ -291,6 +298,22 @@ def select_strongest_territory(
     product_integration then creative_potential."""
     if not candidates:
         return None
+
+    # PRODUCT TRUTH filter — cheap, deterministic, and only ever active for
+    # a product whose contract actually flags a known risky role (most
+    # products' role_risk_keys is empty, so this is a no-op for them).
+    # Category-correctness is a prerequisite, not one more score to weigh
+    # against creative quality — a candidate that fails it is excluded
+    # before scoring is even consulted, never merely penalized.
+    if contract is not None and contract.role_risk_keys:
+        category_safe = [
+            c for c in candidates
+            if not detect_category_drift_signal(
+                " ".join([c.territory_name, c.territory_description, c.human_tension, c.possible_story_world, c.product_role]),
+                contract,
+            )
+        ]
+        candidates = category_safe or candidates  # fail-open: never reject every candidate outright
 
     recent = recent_concepts or []
     recent_token_sets = [
@@ -345,6 +368,7 @@ def generate_territories(
     insight_block: str = "",
     reference_dna_notes: str = "",
     recent_territory_block: str = "",
+    contract_block: str = "",
 ) -> list[CreativeTerritory]:
     """Never raises — returns [] on any failure, caller proceeds without a
     territory (premise generation falls back to its pre-territory
@@ -352,15 +376,16 @@ def generate_territories(
     try:
         user_msg = _user_message(
             product_name, category, target_audience, usp, benefits or [], insight_block,
-            reference_dna_notes, recent_territory_block,
+            reference_dna_notes, recent_territory_block, contract_block,
         )
         text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_SYSTEM_PROMPT,
                 contents=[user_msg],
-                model=settings.openrouter_text_model,
+                model=settings.creative_model,
                 max_output_tokens=6000,
                 json_mode=True,
+                label="creative_territory",
             ),
             label="creative_territory",
         )
@@ -373,10 +398,14 @@ def generate_territories(
         return []
 
 
-def generate_and_select_territory(recent_concepts: list[dict] | None = None, **kwargs) -> CreativeTerritory | None:
+def generate_and_select_territory(
+    recent_concepts: list[dict] | None = None,
+    contract: ProductCreativeContract | None = None,
+    **kwargs,
+) -> CreativeTerritory | None:
     candidates = generate_territories(**kwargs)
     if not candidates:
         return None
     if len(candidates) < MIN_CANDIDATES:
         logger.info("Only %d creative territory candidate(s) generated (wanted >= %d)", len(candidates), MIN_CANDIDATES)
-    return select_strongest_territory(candidates, recent_concepts)
+    return select_strongest_territory(candidates, recent_concepts, contract)

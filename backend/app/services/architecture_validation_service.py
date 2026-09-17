@@ -25,6 +25,8 @@ from app.config import settings
 from app.services.beat_outline_service import BeatOutline
 from app.services.creative_architecture import Architecture
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
+from app.services.product_context_service import ProductCreativeContract
+from app.services.product_context_validator import detect_category_drift_signal
 
 logger = logging.getLogger("architecture_validation_service")
 
@@ -71,13 +73,22 @@ def _first_product_mention_fraction(texts: list[str], product_name: str) -> floa
 
 
 def validate_script_against_outline_deterministic(
-    data: dict, outline: BeatOutline | None, architecture: Architecture, product_name: str
+    data: dict, outline: BeatOutline | None, architecture: Architecture, product_name: str,
+    contract: ProductCreativeContract | None = None,
 ) -> list[str]:
     """Free, regex/arithmetic-only checks. No API call."""
     issues: list[str] = []
     texts = _block_texts(data)
     if not texts:
         return issues
+
+    # Category-drift pre-check — cheap, relationship-based, and only ever
+    # runs at all when this specific product's contract flags a known risky
+    # role (e.g. Herbal Masala's food/cooking risk); a product with no
+    # role_risk_keys never triggers this. Critical severity: a category
+    # error must force a rewrite regardless of how well anything else scores.
+    if contract is not None and detect_category_drift_signal(" ".join(texts), contract):
+        issues.append("category_drift")
 
     hook_text = texts[0]
     if outline and not _hook_intact(hook_text, outline.hook):
@@ -100,9 +111,19 @@ def validate_script_against_outline_deterministic(
     return issues
 
 
-_EVAL_SYSTEM_PROMPT = """You are two reviewers in one, evaluating a finished ad script honestly and
+_EVAL_SYSTEM_PROMPT = """You are several reviewers in one, evaluating a finished ad script honestly and
 specifically. Most scripts that reach this stage are reasonably solid — don't invent problems to
 seem thorough, but don't wave through real ones either.
+
+REVIEWER 0 — PRODUCT TRUTH / CATEGORY ALIGNMENT. This runs FIRST and is a PREREQUISITE, not one more
+score to average in: if a PRODUCT CREATIVE CONTRACT is given below, check whether the script still
+treats the product according to that contract's actual category/use case/audience/consumption context,
+or whether the creative has silently reinterpreted what the product IS (e.g. a product whose real use
+case is a tobacco/gutka alternative being shown added to food as a cooking ingredient). A script with
+high originality, memorability, or a clever device but the WRONG product category must still fail —
+category alignment is not averaged against creative quality, it gates it. Creative freedom in
+storytelling device, metaphor, character, setting, tone, and structure is expected and does not count
+as drift on its own.
 
 REVIEWER 1 — ARCHITECTURE COMPLIANCE. You are told which structural architecture this script was
 supposed to follow, and its required beats. Check:
@@ -148,6 +169,9 @@ above the specific premise. Check:
   setting/device of the recent one produce this same script? If yes, that's a real problem.
 
 Return ONLY issue codes from this exact list, nothing invented:
+- "category_drift": the script no longer treats the product according to its given Product Creative
+  Contract — it has been reinterpreted as a different kind of product, used in a context the contract
+  marks as forbidden, or given to a different audience/use case than the contract states
 - "missing_required_beat": a required beat isn't genuinely present, even if superficially labeled
 - "architecture_abandoned" (also covers "architecture_not_executed"): the script doesn't actually
   use the required format/interaction style (e.g. a "dialogue" architecture written as one person's
@@ -192,6 +216,7 @@ def _eval_user_message(
     reference_dna_notes: str = "",
     territory_block: str = "",
     recent_territories_block: str = "",
+    contract_block: str = "",
 ) -> str:
     hook_text = (data.get("hook") or {}).get("text", "") if isinstance(data.get("hook"), dict) else ""
     body_texts = [b.get("text", "") for b in (data.get("body") or []) if isinstance(b, dict)]
@@ -200,7 +225,9 @@ def _eval_user_message(
     ref_block = f"\nReference-DNA notes for this architecture:\n{reference_dna_notes}\n" if reference_dna_notes else ""
     territory_section = f"\nAPPROVED CREATIVE TERRITORY:\n{territory_block}\n" if territory_block else ""
     recent_section = f"\n{recent_territories_block}\n" if recent_territories_block else ""
+    contract_section = f"\n{contract_block}\n" if contract_block else ""
     return (
+        f"{contract_section}"
         f"Architecture: {architecture.name}\n"
         f"Required beats:\n{required}\n"
         f"Expected emotional progression: {architecture.emotional_progression}\n"
@@ -225,6 +252,7 @@ def llm_architecture_and_creative_director_issues(
     reference_dna_notes: str = "",
     territory_block: str = "",
     recent_territories_block: str = "",
+    contract_block: str = "",
 ) -> list[str]:
     try:
         text = call_openrouter_with_retry(
@@ -232,13 +260,21 @@ def llm_architecture_and_creative_director_issues(
                 system_instruction=_EVAL_SYSTEM_PROMPT,
                 contents=[_eval_user_message(
                     data, outline, architecture, product_name, audience, reference_dna_notes,
-                    territory_block, recent_territories_block,
+                    territory_block, recent_territories_block, contract_block,
                 )],
-                model=settings.openrouter_text_model,
+                # This IS the "Final Creative Director" evaluation (Option C
+                # §5A) — the highest-value judgment call in the post-write
+                # gates, deciding whether the concept is distinctive, on-
+                # category, and worth keeping. Deliberately routed to the
+                # final_script tier (Pro), not the cheap creative-exploration
+                # tier, even though it's a "check" — its reasoning quality
+                # matters as much as the writer's.
+                model=settings.final_script_model,
                 max_output_tokens=350,
                 json_mode=True,
+                label="final_creative_director",
             ),
-            label="architecture_creative_director_eval",
+            label="final_creative_director",
             max_attempts=2,
         )
         result = json.loads(text)

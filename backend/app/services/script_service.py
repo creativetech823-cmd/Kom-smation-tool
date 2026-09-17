@@ -25,7 +25,10 @@ from app.services import (
     creative_reference_dna,
     creative_territory_service,
     hook_generation_service,
+    product_context_service,
+    product_context_validator,
 )
+from app.services import openrouter_utils
 from app.services.compliance_rules import rules_for_category
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 
@@ -177,6 +180,11 @@ def _banned_phrases_prose() -> str:
 
 def _core_principles_block() -> str:
     return f"""CORE WRITING PRINCIPLES (non-negotiable):
+- If a PRODUCT CREATIVE CONTRACT is given below, it is immutable factual grounding, not a creative
+  starting point. Your job is to make the idea more cinematic, memorable, emotionally sharp, humorous,
+  surprising, or visually interesting — never to redefine what the product fundamentally is, who it's
+  for, or how it's actually used/consumed. Do not reinterpret the product based on an ambiguous word in
+  its name (creative freedom applies to HOW the story is told, never WHAT the product is).
 - Write like a human copywriter who actually gets this audience, not like an AI. Banned words/
   phrases (not exhaustive — the point is the pattern, not just this list): {_banned_phrases_prose()}.
   Generic openers like "are you tired of...", "in today's busy world...", "we all know...", "do you
@@ -799,16 +807,17 @@ def _product_library_block(ctx) -> str:
     return "\n".join(lines)
 
 
-def _call_llm(system: str, user_message: str, max_tokens: int) -> str:
+def _call_llm(system: str, user_message: str, max_tokens: int, model: str, label: str = "script_service") -> str:
     return call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=system,
             contents=[user_message],
-            model=settings.openrouter_text_model,
+            model=model,
             max_output_tokens=max_tokens,
             json_mode=True,
+            label=label,
         ),
-        label="script_service",
+        label=label,
     )
 
 
@@ -828,9 +837,9 @@ syntax problems (unescaped quotes/newlines, trailing commas, truncation, etc.). 
 off mid-object, complete it sensibly rather than leaving it truncated."""
 
 
-def _repair_json(broken_text: str, error_message: str, max_tokens: int) -> dict:
+def _repair_json(broken_text: str, error_message: str, max_tokens: int, model: str) -> dict:
     user_message = f"Parser error: {error_message}\n\nBroken JSON:\n{broken_text}"
-    raw = _call_llm(_REPAIR_SYSTEM_PROMPT, user_message, max_tokens)
+    raw = _call_llm(_REPAIR_SYSTEM_PROMPT, user_message, max_tokens, model, label="script_json_repair")
     return _parse_script_json(raw)
 
 
@@ -841,17 +850,28 @@ def _generate_with_recovery(
     target_duration: str,
     target_word_count: int | None = None,
     content_type: ContentType = ContentType.video,
+    model: str = "",
+    label: str = "script_service",
 ) -> dict:
     """Attempt 1 -> silent retry (attempt 2) -> repair pass -> only then raise.
     The caller (and therefore the user) only ever sees an error if all three
-    recovery stages fail."""
+    recovery stages fail.
+
+    `model` selects which routing tier (Option C) this particular call uses —
+    callers decide (final-script tier for a fresh write or a gate-triggered
+    rewrite, creative tier for a narrow single-block edit); an empty string
+    falls back to final_script_model, since every existing caller of this
+    function IS producing/rewriting a full script."""
+    model = model or settings.final_script_model
     data: dict | None = None
     last_raw = ""
     last_error: Exception | None = None
 
+    got_any_text = False
     for attempt in (1, 2):
         try:
-            last_raw = _call_llm(system, user_message, max_tokens)
+            last_raw = _call_llm(system, user_message, max_tokens, model, label=label)
+            got_any_text = True
             candidate = _parse_script_json(last_raw)
             GeneratedScript(**candidate)
             data = candidate
@@ -859,10 +879,30 @@ def _generate_with_recovery(
         except (json.JSONDecodeError, ValidationError, TypeError) as e:
             last_error = e
             logger.warning("Script generation attempt %d produced invalid JSON: %s", attempt, e)
+        except (openrouter_utils.OpenRouterError, ValueError) as e:
+            # Phase 2 fix: previously this exact exception type (raised by
+            # call_openrouter_with_retry once its own attempts are exhausted
+            # — e.g. every retry came back as an empty/malformed response)
+            # was NOT caught here at all, so it propagated straight past
+            # this function's own attempt-2 and repair-pass logic, aborting
+            # generation on the very first failure. The "existing retry+
+            # repair mechanism" was never actually reached for this failure
+            # shape before this fix.
+            last_error = e
+            logger.warning("Script generation attempt %d got no usable response: %s", attempt, e)
 
     if data is None:
+        if not got_any_text or not last_raw.strip():
+            # Nothing was ever returned to repair — asking the model to
+            # "fix" an empty string wastes a call for no possible benefit.
+            # Fail cleanly and honestly instead.
+            logger.warning("Both generation attempts returned no usable text — skipping the repair pass (nothing to repair).")
+            raise ValueError(
+                "Gemini returned no usable content after 2 attempts. This is usually a transient "
+                "provider issue — please try again in a moment."
+            ) from last_error
         try:
-            data = _repair_json(last_raw, str(last_error), max_tokens)
+            data = _repair_json(last_raw, str(last_error), max_tokens, model)
             GeneratedScript(**data)
         except Exception as e:
             logger.warning("Script JSON repair pass also failed: %s", e)
@@ -920,6 +960,8 @@ def _generate_with_recovery(
                 "generic motivational line, repeating the product name, or padding with filler "
                 "adjectives. Preserve the same story, hook, and structure; develop it further.",
                 max_tokens,
+                model,
+                label=label,
             )
             corrected_data = _parse_script_json(corrected_raw)
             GeneratedScript(**corrected_data)
@@ -992,8 +1034,13 @@ def _rewrite_for_quality(
         f"{current_script_json}"
     )
     system = _regen_system_prompt(ScriptRegenerateScope.full, reason, content_type, getattr(payload, "tone", ""))
+    # The "necessary final rewrite" (Option C §8) — only reached when a
+    # quality/architecture gate actually flagged something, never on every
+    # generation — so this uses the final_script tier (Pro), same as the
+    # original write.
     return _generate_with_recovery(
-        system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type
+        system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type,
+        model=settings.final_script_model, label="gate_rewrite",
     )
 
 
@@ -1013,9 +1060,18 @@ def _rewrite_context_for_issues(pre: "CreativePreStageResult | None", issues: li
       discarding something that wasn't flagged.
     - <3 issues, no territory problem: ordinary targeted patch — keep the
       full pre-stage context exactly as before this function existed.
-    Returns "" when pre is None (the narrow/no-pre-stages callers)."""
+    Returns "" when pre is None (the narrow/no-pre-stages callers).
+
+    The Product Creative Contract is the one exception to all of the above:
+    it is PRODUCT TRUTH, never something a rewrite is allowed to lose track
+    of regardless of which branch fires — a territory-escalation rewrite
+    that forgets the product's real category could "successfully" pick a
+    fresh territory that's just as category-wrong as the one it replaced.
+    It is always prepended, on every branch."""
     if pre is None:
         return ""
+    contract_block = pre.contract.prompt_block() if pre.contract is not None else ""
+
     if script_quality.is_territory_weak(issues):
         recent = list(creative_memory_service.recent_concepts(pre.memory_key)) if pre.memory_key else []
         if pre.territory is not None:
@@ -1026,14 +1082,18 @@ def _rewrite_context_for_issues(pre: "CreativePreStageResult | None", issues: li
             }]
         block = creative_memory_service.recent_territories_prompt_block(recent)
         if not block:
-            return ""
+            return contract_block
         return (
-            f"\n\n{block}\n\nThe previous attempt's territory did not survive into the script (or was "
-            "too close to a recent one) — pick a genuinely different underlying creative territory for "
-            "this rewrite, not just a different execution of the same one."
+            f"{contract_block}\n\n{block}\n\nThe previous attempt's territory did not survive into the "
+            "script (or was too close to a recent one) — pick a genuinely different underlying creative "
+            "territory for this rewrite, not just a different execution of the same one, while staying "
+            "inside the Product Creative Contract above."
         )
     if script_quality.is_premise_escalation(issues):
-        return pre.territory.prompt_block() if pre.territory is not None else ""
+        territory_part = pre.territory.prompt_block() if pre.territory is not None else ""
+        return f"{contract_block}\n\n{territory_part}" if territory_part else contract_block
+    # pre.prompt_block already starts with the contract block (it's always
+    # blocks[0] — see _run_creative_pre_stages), so no duplication here.
     return pre.prompt_block
 
 
@@ -1105,8 +1165,12 @@ def _apply_narrow_quality_gate(
             f"it:\n{current_script_json}"
         )
         system = _regen_system_prompt(payload.scope, reason, content_type, payload.tone, payload.target_scene_label)
+        # A single-block edit (Improve Hook/CTA/etc) — cheap, frequent, and
+        # not the "final script"/"necessary rewrite" Option C reserves Pro
+        # for, so this stays on the creative (Flash) tier.
         rewritten = _generate_with_recovery(
-            system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type
+            system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type,
+            model=settings.creative_model, label="narrow_regenerate",
         )
         # The rewrite prompt says "leave every other block unchanged", but a
         # targeted-fix instruction can still make the model drift and touch
@@ -1145,6 +1209,7 @@ class CreativePreStageResult:
     outline: "beat_outline_service.BeatOutline | None" = None
     premise: "creative_premise_service.CreativePremise | None" = None
     territory: "creative_territory_service.CreativeTerritory | None" = None
+    contract: "product_context_service.ProductCreativeContract | None" = None
     reference_dna_notes: str = ""
     product_name: str = ""
     target_audience: str = ""
@@ -1164,6 +1229,22 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
     dependency for generation to succeed at all."""
     try:
         product_name, category, target_audience, usp, benefits, primary_problem = _brief_fields(payload)
+
+        # PRODUCT TRUTH — established BEFORE any creative generation, per the
+        # hierarchy PRODUCT TRUTH -> AUDIENCE TRUTH -> BEHAVIOURAL TRUTH ->
+        # CREATIVE TERRITORY -> STORYTELLING DEVICE -> SCRIPT. This is fixed
+        # factual grounding (derived from the given brief, the Product
+        # Library record when one is selected, and reference-DNA category
+        # association — never invented from the product name alone) that
+        # every downstream stage receives and is instructed to treat as
+        # immutable, so a creative pass can change HOW the story is told but
+        # never WHAT the product fundamentally is.
+        contract = product_context_service.build_product_creative_contract(
+            product_name=product_name, category=category, target_audience=target_audience,
+            usp=usp, benefits=benefits, primary_problem=primary_problem,
+            product_context=getattr(payload, "product_context", None),
+        )
+        contract_block = contract.prompt_block()
 
         # CREATIVE DIVERSITY MEMORY — what recent FRESH generations for this
         # exact product already used, so this call can diverge from it
@@ -1187,6 +1268,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             usp=usp,
             benefits=benefits,
             primary_problem=primary_problem,
+            contract_block=contract_block,
         )
         insight_statement = insight.insight_statement if insight else ""
 
@@ -1207,6 +1289,8 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             reference_dna_notes=creative_reference_dna.anti_pattern_notes(),
             recent_territory_block=recent_territories_block,
             recent_concepts=recent_concepts,
+            contract=contract,
+            contract_block=contract_block,
         )
         territory_block = territory.prompt_block() if territory else ""
 
@@ -1221,6 +1305,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             insight_statement=insight_statement,
             recently_used_architectures=recent_architectures,
             territory_context=territory_block,
+            contract_block=contract_block,
         )
 
         # brief_text is checked (in addition to the coarse product_category
@@ -1249,9 +1334,13 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             reference_dna_notes=ref_notes,
             recent_territory_block=recent_territory_block,
             territory_block=territory_block,
+            contract=contract,
+            contract_block=contract_block,
         )
 
-        blocks = []
+        # PRODUCT TRUTH goes first — every stage below builds inside it, per
+        # the PRODUCT TRUTH -> AUDIENCE TRUTH -> ... -> SCRIPT hierarchy.
+        blocks = [contract_block]
         if insight is not None:
             blocks.append(insight.prompt_block())
         if territory is not None:
@@ -1276,6 +1365,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
                 product_reveal_early=reveal_early,
                 language=language_label,
                 premise_block=premise.prompt_block() if premise else "",
+                contract_block=contract_block,
             )
             if hook is not None:
                 payload = payload.model_copy(update={"selected_hook_text": hook.text})
@@ -1296,6 +1386,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             target_audience=target_audience,
             target_duration_bucket=target_duration,
             premise=premise,
+            contract=contract,
         )
         if outline is not None and outline.beats:
             blocks.append(outline.prompt_block())
@@ -1314,6 +1405,7 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             outline=outline,
             premise=premise,
             territory=territory,
+            contract=contract,
             reference_dna_notes=ref_notes,
             product_name=product_name,
             target_audience=target_audience,
@@ -1347,13 +1439,14 @@ def _apply_architecture_gate(
         return data
     try:
         issues = architecture_validation_service.validate_script_against_outline_deterministic(
-            data, pre.outline, pre.architecture, pre.product_name
+            data, pre.outline, pre.architecture, pre.product_name, pre.contract
         )
         if not issues:
             territory_block = pre.territory.prompt_block() if pre.territory is not None else ""
+            contract_block = pre.contract.prompt_block() if pre.contract is not None else ""
             issues = architecture_validation_service.llm_architecture_and_creative_director_issues(
                 data, pre.outline, pre.architecture, pre.product_name, pre.target_audience, pre.reference_dna_notes,
-                territory_block, pre.recent_territories_block,
+                territory_block, pre.recent_territories_block, contract_block,
             )
         if not issues:
             return data
@@ -1369,6 +1462,31 @@ def _apply_architecture_gate(
 
 
 def _generate_full_script(
+    payload,
+    target_duration: str,
+    target_word_count: int | None = None,
+    custom_instruction: str = "",
+    avoid_repeating_hook: str = "",
+    avoid_repeating_mechanism: str = "",
+) -> GeneratedScript:
+    # Pipeline cost/token observability (Option C §12-13) — tracks every
+    # OpenRouter call made anywhere in this one generation (insight through
+    # final rewrite) via a context-local accumulator, logged as one summary
+    # line at the end regardless of how generation turns out. Purely
+    # diagnostic — never affects the returned script.
+    openrouter_utils.start_usage_tracking()
+    try:
+        return _generate_full_script_tracked(
+            payload, target_duration, target_word_count, custom_instruction,
+            avoid_repeating_hook, avoid_repeating_mechanism,
+        )
+    finally:
+        summary = openrouter_utils.get_usage_summary()
+        logger.info("pipeline_cost_summary %s", summary)
+        openrouter_utils.stop_usage_tracking()
+
+
+def _generate_full_script_tracked(
     payload,
     target_duration: str,
     target_word_count: int | None = None,
@@ -1403,8 +1521,13 @@ def _generate_full_script(
         system = _static_system_prompt(payload.format, payload.format_description, payload.tone, has_outline)
     else:
         system = _system_prompt(target_duration, payload.format, payload.format_description, payload.tone, has_outline)
+    # THE main final script-writing call (Option C §5B) — the highest-value,
+    # lowest-volume call in the pipeline, using the structured context
+    # already produced (insight/territory/architecture/premise/hook/outline)
+    # rather than a generic "write an ad" prompt.
     data = _generate_with_recovery(
-        system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type
+        system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type,
+        model=settings.final_script_model, label="final_script_write",
     )
     data = _apply_quality_gate(
         data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
@@ -1498,8 +1621,16 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
     system = _regen_system_prompt(
         payload.scope, payload.custom_instruction, payload.content_type, payload.tone, payload.target_scene_label
     )
+    # A user-initiated "Entire Script"/"Shorten"/"Extend" (full/length scope)
+    # is a whole-script rewrite of the same weight as the final script write
+    # or a gate-triggered rewrite, so it uses the same final_script tier; a
+    # single-block edit (hook/cta/science/story/etc) stays on the cheaper
+    # creative tier, matching the narrow quality-gate rewrite above.
+    is_broad_scope = payload.scope in (ScriptRegenerateScope.full, ScriptRegenerateScope.length)
     data = _generate_with_recovery(
-        system, user_message, _MAX_TOKENS, length_target, payload.target_word_count, payload.content_type
+        system, user_message, _MAX_TOKENS, length_target, payload.target_word_count, payload.content_type,
+        model=settings.final_script_model if is_broad_scope else settings.creative_model,
+        label="regenerate_full_or_length" if is_broad_scope else "narrow_regenerate",
     )
     # Quality gate only runs for the broad rewrite scopes (full/length) —
     # its rewrite pass always targets the WHOLE script, which is correct

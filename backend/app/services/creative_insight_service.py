@@ -99,6 +99,11 @@ product's reference material you may know about. Do not default to tobacco/gutka
 addiction/chewing/smell-related situations, tropes, or phrasing unless the given product is actually
 in that category — those belong to a completely different product and audience.
 
+If a PRODUCT CREATIVE CONTRACT is given below, treat its category/use case/audience/consumption
+context as fixed fact — never reinterpret the product based on an ambiguous word in its name (e.g. a
+product with "masala" in its name is not automatically a cooking ingredient if the contract says
+otherwise).
+
 Return ONLY this JSON, no prose, no markdown fences:
 {
   "target_person": string,
@@ -117,8 +122,12 @@ statement. If you cannot find a genuinely specific angle, still fill every field
 "insight_statement" as narrow and behavior-specific as the given information allows."""
 
 
-def _user_message(product_name: str, category: str, target_audience: str, usp: str, benefits: list[str], primary_problem: str) -> str:
+def _user_message(
+    product_name: str, category: str, target_audience: str, usp: str, benefits: list[str],
+    primary_problem: str, contract_block: str = "",
+) -> str:
     return (
+        f"{contract_block}\n"
         f"Product: {product_name}\n"
         f"Category: {category}\n"
         f"Target audience (as given): {target_audience}\n"
@@ -136,12 +145,13 @@ def discover_insight(
     usp: str = "",
     benefits: list[str] | None = None,
     primary_problem: str = "",
+    contract_block: str = "",
 ) -> HumanInsight | None:
     """Returns None (never raises) if discovery genuinely fails — the caller
     proceeds without an explicit insight block, falling back to the
     pre-existing AUDIENCE step already baked into the main generation
     prompt's creative-direction chain-of-thought."""
-    user_msg = _user_message(product_name, category, target_audience, usp, benefits or [], primary_problem)
+    user_msg = _user_message(product_name, category, target_audience, usp, benefits or [], primary_problem, contract_block)
     try:
         for attempt in range(2):
             text = call_openrouter_with_retry(
@@ -151,9 +161,10 @@ def discover_insight(
                         "\n\nYour previous attempt's insight_statement was too generic/a restated "
                         "benefit. Find a genuinely more specific, behavior-anchored insight this time."
                     )],
-                    model=settings.openrouter_text_model,
+                    model=settings.creative_model,
                     max_output_tokens=600,
                     json_mode=True,
+                    label="creative_insight",
                 ),
                 label="creative_insight",
             )

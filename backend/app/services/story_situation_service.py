@@ -1,10 +1,22 @@
 import json
+import logging
 import uuid
 
 from app.config import settings
 from app.models.product import ScriptLanguage, StorySituation, StorySituationsInput, StorySituationsResult
 from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
+from app.services.product_context_service import build_product_creative_contract
+from app.services.product_context_validator import detect_category_drift_signal
+
+logger = logging.getLogger("story_situation_service")
+
+# When the contract flags a known risky role, ask for a few extra candidates
+# so filtering out any that drift still leaves a full batch — cheap (same
+# single call, slightly larger response) and only changes behavior for a
+# product that actually carries a role_risk_key; every other product's
+# request is completely unchanged.
+_DRIFT_FILTER_BUFFER = 4
 
 _LANGUAGE_NOTES: dict[ScriptLanguage, str] = {
     ScriptLanguage.english: (
@@ -36,11 +48,29 @@ ideation session — NOT writing a script. Your job is to propose distinct marke
 situations") for a product: each one names a person, a problem or context, and an emotional arc
 that could become a short-form video ad. A story situation is a premise, never dialogue or scenes.
 
+If a PRODUCT CREATIVE CONTRACT is given below, it is immutable factual grounding — read it FIRST,
+before inventing anything. Generate story situations INSIDE the product's actual factual category and
+intended consumer behavior. Do not infer what the product is used for from an ambiguous word in its
+name (a product with "masala" in its name is not automatically a cooking ingredient if the contract
+says otherwise). This is not a restriction on setting, character, emotion, humor, or structure — a
+situation can still involve family, friends, office, festivals, restaurants, travel, or any social
+context, AS LONG AS the product's actual real-world role in that situation stays correct. The
+difference is never the setting; it's what role the product plays. Follow this hierarchy:
+PRODUCT TRUTH -> AUDIENCE -> BEHAVIOR -> TENSION -> SITUATION -> STORY — never PRODUCT NAME ->
+free association -> situation.
+
 You must work for ANY industry (FMCG, healthcare, finance, education, SaaS, e-commerce, automotive,
 real estate, etc.) — never fall back on a fixed list of personas or categories. Infer the personas,
 emotional categories, and marketing angles that make sense for THIS specific product, audience, and
-category from the data you're given. Reason about who actually buys/uses/is affected by this product,
-what they fear or hope for, and what conflicts or transformations are believable for them.
+category from the data you're given (and from the Product Creative Contract above, when given, which
+takes precedence over any generic assumption). Reason about who actually buys/uses/is affected by this
+product, what they fear or hope for, and what conflicts or transformations are believable for them.
+
+IMPORTANT — do not overcorrect into repetition: if a Product Creative Contract narrows the product's
+real category (e.g. a habit-replacement product), that does NOT mean every situation must explicitly
+mention the specific habit — vary the human situation, tension, and storytelling device while keeping
+the product's role consistent with the contract. Forcing the same literal scenario into every card is
+exactly the generic convergence this whole exercise exists to avoid.
 
 Maximize diversity across the full set of situations you return. No two situations may share the same
 persona archetype, hook angle, emotional core, conflict, or resolution. Vary across multiple thematic
@@ -101,13 +131,14 @@ def _system_prompt(language: ScriptLanguage) -> str:
     )
 
 
-def _build_user_message(payload: StorySituationsInput) -> str:
+def _build_user_message(payload: StorySituationsInput, contract_block: str, request_count: int) -> str:
     p = payload.structured_product
     exclude_block = (
         "\n".join(f"- {t}" for t in payload.exclude_titles) if payload.exclude_titles else "(none yet)"
     )
 
     return (
+        f"{contract_block}\n"
         f"Product: {p.product_name}\n"
         f"Target audience: {p.target_audience}\n"
         f"Product category: {payload.product_category}\n"
@@ -115,21 +146,49 @@ def _build_user_message(payload: StorySituationsInput) -> str:
         f"USP: {p.usp or 'unknown'}\n"
         f"Tone: {p.tone or 'unspecified'}\n"
         f"Key benefits: {', '.join(p.key_benefits) or 'unknown'}\n\n"
-        f"Generate exactly {payload.count} story situations.\n\n"
+        f"Generate exactly {request_count} story situations.\n\n"
         f"Titles already shown to the user (do not repeat or near-duplicate these):\n{exclude_block}"
     )
 
 
+def _situation_text(item: dict) -> str:
+    return " ".join(str(item.get(k) or "") for k in ("title", "description", "persona", "marketing_angle"))
+
+
 def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
-    """Stage 3.5 — structured product -> diverse story-situation options for the user to pick from."""
+    """Stage 3.5 — structured product -> diverse story-situation options for
+    the user to pick from. This is the FIRST creative decision in the whole
+    pipeline (Product -> ProductCreativeContract -> Choose Your Story ->
+    ... -> Final Script), so it now builds and is grounded by the same
+    Product Creative Contract every later stage receives — the user can no
+    longer be offered a card that fundamentally misrepresents what the
+    product is before the script pipeline ever runs."""
+    p = payload.structured_product
+    ctx = payload.product_context
+    contract = build_product_creative_contract(
+        product_name=p.product_name,
+        category=payload.product_category,
+        target_audience=p.target_audience,
+        usp=p.usp,
+        benefits=list(p.key_benefits),
+        product_context=ctx,
+    )
+    contract_block = contract.prompt_block()
+
+    # Only pad the request (and only filter afterward) for a product whose
+    # contract actually flags a known risky role — every other product's
+    # request/response shape is completely unchanged.
+    has_role_risk = bool(contract.role_risk_keys)
+    request_count = payload.count + _DRIFT_FILTER_BUFFER if has_role_risk else payload.count
 
     text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_system_prompt(payload.script_language),
-            contents=[_build_user_message(payload)],
-            model=settings.openrouter_text_model,
+            contents=[_build_user_message(payload, contract_block, request_count)],
+            model=settings.creative_model,
             max_output_tokens=8192,
             json_mode=True,
+            label="story_situations",
         ),
         label="generate_situations",
     )
@@ -142,8 +201,29 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
             "been truncated. Try again, or ask for fewer situations."
         ) from e
 
+    raw_items = data.get("situations", [])
+    if has_role_risk:
+        # Product-truth safety net (Phase 2B §5-6): removes any candidate
+        # whose title/description/persona/marketing_angle shows the product
+        # being given a role its contract flags as forbidden (e.g. a food/
+        # cooking role). Deterministic, free — the prompt fix above is the
+        # primary mechanism; this only catches what still slips through.
+        safe_items = [item for item in raw_items if not detect_category_drift_signal(_situation_text(item), contract)]
+        dropped = len(raw_items) - len(safe_items)
+        if dropped:
+            logger.info("Filtered %d category-drifted story situation(s) for %s", dropped, p.product_name)
+        # Deliberately NOT "safe_items or raw_items": unlike an internal
+        # pipeline stage (territory/premise selection) that must pick SOME
+        # candidate to let generation proceed, a story card is a user-facing
+        # choice — showing fewer or zero cards (the user can click "Generate
+        # More") is strictly safer than showing a full set of confirmed-wrong
+        # ones. Falling back to the unfiltered set here would silently
+        # defeat the entire filter in exactly the case that matters most:
+        # every candidate genuinely misunderstood the product.
+        raw_items = safe_items
+
     situations = []
-    for item in data.get("situations", []):
+    for item in raw_items[:payload.count]:
         item = {**item, "recommended_angles": valid_angle_labels(item.get("recommended_angles", []))}
         situations.append(StorySituation(id=uuid.uuid4().hex[:12], **item))
     return StorySituationsResult(situations=situations)

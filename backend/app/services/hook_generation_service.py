@@ -116,8 +116,10 @@ def _user_message(
     product_reveal_early: bool,
     language: str,
     premise_block: str = "",
+    contract_block: str = "",
 ) -> str:
     return (
+        f"{contract_block}\n"
         f"Product: {product_name}\n"
         f"Category: {category}\n"
         f"Target audience: {target_audience}\n"
@@ -139,19 +141,21 @@ def generate_and_select_hook(
     product_reveal_early: bool,
     language: str,
     premise_block: str = "",
+    contract_block: str = "",
 ) -> HookCandidate | None:
     try:
         user_msg = _user_message(
             product_name, category, target_audience, insight_block, architecture_hook_pattern,
-            product_reveal_early, language, premise_block,
+            product_reveal_early, language, premise_block, contract_block,
         )
         text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_SYSTEM_PROMPT,
                 contents=[user_msg],
-                model=settings.openrouter_text_model,
+                model=settings.creative_model,
                 max_output_tokens=800,
                 json_mode=True,
+                label="hook_generation",
             ),
             label="hook_generation",
         )

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 
 from app.config import settings
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
+from app.services.product_context_service import ProductCreativeContract
+from app.services.product_context_validator import detect_category_drift_signal
 
 logger = logging.getLogger("creative_premise_service")
 
@@ -220,8 +222,10 @@ def _user_message(
     reference_dna_notes: str,
     recent_territory_block: str = "",
     territory_block: str = "",
+    contract_block: str = "",
 ) -> str:
     return (
+        f"{contract_block}\n"
         f"Product: {product_name}\n"
         f"Category: {category}\n"
         f"Target audience (as given — read this carefully for the real situation): {target_audience}\n"
@@ -277,7 +281,9 @@ def _is_restated_insight(statement: str) -> bool:
     return any(sig in low for sig in _RESTATED_INSIGHT_SIGNALS)
 
 
-def select_strongest_premise(candidates: list[CreativePremise]) -> CreativePremise | None:
+def select_strongest_premise(
+    candidates: list[CreativePremise], contract: ProductCreativeContract | None = None
+) -> CreativePremise | None:
     """Deterministic selection — never a second LLM call. Filters out any
     candidate that's really just a restated insight despite scoring itself
     well, then picks the highest total score (which already includes
@@ -285,9 +291,21 @@ def select_strongest_premise(candidates: list[CreativePremise]) -> CreativePremi
     diversity alone, they're summed alongside it, per "optimize for
     QUALITY x ORIGINALITY x PRODUCT FIT x DIVERSITY, not diversity alone"),
     tie-broken by non_swappable (the brief's own strongest signal of a
-    genuine creative idea vs. a generic one) then curiosity."""
+    genuine creative idea vs. a generic one) then curiosity.
+
+    PRODUCT TRUTH filter: a candidate whose statement/situation/creative
+    device shows the deterministic category-drift signal (only checked at
+    all for a product whose contract flags a known risky role) is excluded
+    before scoring, same fail-open convention as the restated-insight
+    filter — category correctness is a prerequisite, not a score."""
     valid = [c for c in candidates if not _is_restated_insight(c.statement)]
     pool = valid or candidates  # if everything got filtered, fall back rather than return nothing
+    if contract is not None and contract.role_risk_keys:
+        category_safe = [
+            c for c in pool
+            if not detect_category_drift_signal(" ".join([c.statement, c.situation, c.creative_device]), contract)
+        ]
+        pool = category_safe or pool
     if not pool:
         return None
     return max(pool, key=lambda c: (c.total_score, c.scores.get("non_swappable", 0), c.scores.get("curiosity", 0)))
@@ -306,6 +324,7 @@ def generate_premises(
     reference_dna_notes: str = "",
     recent_territory_block: str = "",
     territory_block: str = "",
+    contract_block: str = "",
 ) -> list[CreativePremise]:
     """Never raises — returns [] on any failure, caller proceeds without a
     premise (same fail-open convention as every other stage).
@@ -325,15 +344,16 @@ def generate_premises(
         user_msg = _user_message(
             product_name, category, target_audience, usp, benefits or [], insight_block,
             architecture_name, architecture_purpose, reference_dna_notes, recent_territory_block,
-            territory_block,
+            territory_block, contract_block,
         )
         text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_SYSTEM_PROMPT,
                 contents=[user_msg],
-                model=settings.openrouter_text_model,
+                model=settings.creative_model,
                 max_output_tokens=3200,
                 json_mode=True,
+                label="creative_premise",
             ),
             label="creative_premise",
         )
@@ -346,10 +366,10 @@ def generate_premises(
         return []
 
 
-def generate_and_select_premise(**kwargs) -> CreativePremise | None:
+def generate_and_select_premise(contract: ProductCreativeContract | None = None, **kwargs) -> CreativePremise | None:
     candidates = generate_premises(**kwargs)
     if not candidates:
         return None
     if len(candidates) < MIN_CANDIDATES:
         logger.info("Only %d creative premise candidate(s) generated (wanted >= %d)", len(candidates), MIN_CANDIDATES)
-    return select_strongest_premise(candidates)
+    return select_strongest_premise(candidates, contract)

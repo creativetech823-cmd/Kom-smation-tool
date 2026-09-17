@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     openrouter_text_model: str = ""
     openrouter_image_model: str = ""
+    # Hybrid model routing (Option C) — each is optional; an unset value
+    # falls back to openrouter_text_model, so existing deployments keep
+    # working unchanged if these are never configured. Use the .creative_model
+    # / .final_script_model / .validation_model properties below in business
+    # logic, never these raw fields directly, so the fallback is never
+    # duplicated across call sites.
+    openrouter_creative_model: str = ""
+    openrouter_final_script_model: str = ""
+    openrouter_validation_model: str = ""
     references_dir: str = "./references"
     # Kill switch for actual image-generation provider calls (script/scene
     # text generation — including ai_image_prompt/visual_direction — is
@@ -42,6 +51,25 @@ class Settings(BaseSettings):
     jina_reader_timeout_seconds: int = 25
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def creative_model(self) -> str:
+        """High-volume creative exploration (insight, territory, architecture
+        selection, premise, hooks, beat outline) — cheap/fast model."""
+        return self.openrouter_creative_model or self.openrouter_text_model
+
+    @property
+    def final_script_model(self) -> str:
+        """The final creative-director evaluation, the main script-writing
+        call, and the one "necessary rewrite" a quality/architecture gate
+        triggers — the highest-value, lowest-volume calls."""
+        return self.openrouter_final_script_model or self.openrouter_text_model
+
+    @property
+    def validation_model(self) -> str:
+        """Cheap post-generation semantic validation (the quality gate's LLM
+        check) — never used in place of a deterministic Python check."""
+        return self.openrouter_validation_model or self.openrouter_text_model
 
 
 settings = Settings()

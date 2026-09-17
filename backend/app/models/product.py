@@ -206,6 +206,10 @@ class StorySituationsInput(BaseModel):
     count: int = 10
     exclude_titles: list[str] = Field(default_factory=list)
     script_language: ScriptLanguage = ScriptLanguage.hinglish
+    # Set when the user selected an AyushWellness Product Library product —
+    # richer grounding for the ProductCreativeContract built before story
+    # discovery runs. None = the existing manual-product flow, unchanged.
+    product_context: Optional[ProductContext] = None
 
 
 class StorySituationsResult(BaseModel):

@@ -793,6 +793,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         structured_product: structured,
         product_category: category,
         script_language: scriptLanguage,
+        product_context: productLibraryContext ?? undefined,
       });
       setSituations(result);
       goTo(1);
@@ -813,6 +814,7 @@ export function PipelineApp({ projectId: projectIdProp, initialProject }: Pipeli
         product_category: category,
         exclude_titles: situations.map((s) => s.title),
         script_language: scriptLanguage,
+        product_context: productLibraryContext ?? undefined,
       });
       setSituations((prev) => [...prev, ...more]);
     } catch (e) {

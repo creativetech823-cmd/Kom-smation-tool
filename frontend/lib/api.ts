@@ -188,6 +188,7 @@ export function generateStorySituations(payload: {
   count?: number;
   exclude_titles?: string[];
   script_language?: ScriptLanguage;
+  product_context?: ProductContext;
 }) {
   return post<{ situations: StorySituation[] }>("/pipeline/story-situations", payload).then(
     (r) => r.situations

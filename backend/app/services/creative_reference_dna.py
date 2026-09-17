@@ -230,6 +230,16 @@ def anti_pattern_notes() -> str:
 _TOBACCO_CATEGORY_SIGNALS = ("tobacco", "gutka", "gutkha", "pan masala", "paan masala", "supari", "chewing")
 
 
+def is_tobacco_gutka_brief(brief_text: str) -> bool:
+    """Public, reusable version of the same brief-text signal check used
+    below — exposed so product_context_service.py can derive a product's
+    real commercial category from its actual given brief (name/audience/
+    usp/benefits) rather than only its coarse Product Library category
+    string, without duplicating this signal list a third time."""
+    low = (brief_text or "").lower()
+    return any(sig in low for sig in _TOBACCO_CATEGORY_SIGNALS)
+
+
 def relevant_notes(
     architecture_key: str,
     product_category: str,
@@ -249,9 +259,7 @@ def relevant_notes(
     records = records_for_architecture(architecture_key)
     if not records:
         return ""
-    same_category = product_category.strip().lower() in reference_category.lower() or any(
-        sig in brief_text.lower() for sig in _TOBACCO_CATEGORY_SIGNALS
-    )
+    same_category = product_category.strip().lower() in reference_category.lower() or is_tobacco_gutka_brief(brief_text)
     header = (
         f'Structural reference for the "{architecture_key}" architecture (from prior creative research; '
         + (

@@ -567,15 +567,20 @@ def _build_eval_user_message(data: dict, payload) -> str:
 
 def llm_quality_issues(data: dict, payload) -> list[str]:
     """One small, cheap evaluation call — only meant to be invoked when
-    deterministic_issues() found nothing, to catch what regex can't."""
+    deterministic_issues() found nothing, to catch what regex can't. Routed
+    to the validation tier (Flash-Lite, Option C §9): this is semantic
+    judgment a regex can't do, but it's a routine, high-volume check, not
+    the final creative-director decision — cheap-but-real reasoning, not the
+    deepest available reasoning."""
     try:
         text = call_openrouter_with_retry(
             lambda: generate_text(
                 system_instruction=_EVAL_SYSTEM_PROMPT,
                 contents=[_build_eval_user_message(data, payload)],
-                model=settings.openrouter_text_model,
+                model=settings.validation_model,
                 max_output_tokens=300,
                 json_mode=True,
+                label="script_quality_eval",
             ),
             label="script_quality_eval",
             max_attempts=2,
@@ -762,6 +767,14 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "the script ignores the reference-DNA mechanism given for this architecture (its hook "
         "device, proof device, reveal timing, or CTA style) and defaults to a generic, unrelated ad "
         "shape instead — rebuild the relevant beat(s) to actually use that mechanism"
+    ),
+    "category_drift": (
+        "the script no longer treats the product according to the given Product Creative Contract — "
+        "it has been reinterpreted as a different kind of product, used in a context the contract "
+        "marks as forbidden, or given to the wrong audience/use case. Repair this while preserving "
+        "the creative idea/device where possible: rebuild the relevant beat(s) so the product is used "
+        "exactly as its real use case describes (see the contract's allowed contexts), never redefine "
+        "what the product fundamentally is just because a word in its name suggests something else"
     ),
     "not_visually_executable": (
         "this reads as pure narration/conversation with nothing a camera could actually shoot — "
