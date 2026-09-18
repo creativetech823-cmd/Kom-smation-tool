@@ -11,6 +11,22 @@ from app.db import Base, SessionLocal, engine, run_lightweight_migrations
 from app.routers import library, pipeline, product_library
 from app.services.seed_data import seed_if_empty
 
+# Render/uvicorn logging-visibility fix (2026-09-18 live production task) —
+# the app never called logging.basicConfig() (or set any level) anywhere,
+# so the root logger had no handler and Python's logging module fell back
+# to its "handler of last resort," which only ever surfaces WARNING and
+# above. Every logger.info() call in the app (not just the Story Ideas
+# timing diagnostics) was therefore silently dropped in Render's logs —
+# confirmed by the WARNING-level judge/enrichment-skip lines being visible
+# while none of the [STORY_IDEAS] INFO lines ever appeared. uvicorn's own
+# --log-level flag would only affect uvicorn's own loggers (uvicorn.access/
+# uvicorn.error), not this app's loggers, so it can't fix this on its own.
+# force=True guarantees this takes effect even if something else already
+# attached a handler to the root logger before this module finishes
+# importing. Level only — no new logging framework, no format/handler
+# redesign.
+logging.basicConfig(level=logging.INFO, force=True)
+
 logger = logging.getLogger("app.main")
 
 app = FastAPI(title="AI Content Factory Engine")

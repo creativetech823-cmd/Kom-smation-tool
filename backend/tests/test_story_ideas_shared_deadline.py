@@ -116,9 +116,13 @@ def test_no_deadline_every_call_gets_the_full_fixed_ceiling():
     with patch.object(svc, "generate_text", side_effect=_fake_generate_text(captured)), \
          patch.object(sj, "generate_text", side_effect=_fake_generate_text(captured)):
         result = svc.generate_situations(_payload())
-    assert captured["story_situations"] == 40.0
+    # Emergency demo fix (2026-09-18 same-day follow-up): pool-gen/enrichment
+    # share _STORY_IDEAS_CALL_TIMEOUT_SECONDS, raised 40s -> 120s. The
+    # judge's own _JUDGE_CALL_TIMEOUT_SECONDS was deliberately left at 40s —
+    # Gemini Flash-Lite isn't the bottleneck this fix addresses.
+    assert captured["story_situations"] == 120.0
     assert captured["semantic_story_judge"] == 40.0
-    assert captured["story_situations_angle_enrichment"] == 40.0
+    assert captured["story_situations_angle_enrichment"] == 120.0
     assert len(result.situations) <= svc.MAX_STORY_IDEAS_PER_GENERATION
 
 

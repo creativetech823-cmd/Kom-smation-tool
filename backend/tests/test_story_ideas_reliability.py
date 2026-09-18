@@ -116,7 +116,7 @@ def test_generate_situations_for_request_passes_the_default_budget():
     with patch.object(svc, "generate_situations_with_quality_floor", side_effect=fake_quality_floor):
         svc.generate_situations_for_request(_payload())
     assert captured["max_total_seconds"] == svc.DEFAULT_STORY_IDEAS_BUDGET_SECONDS
-    assert svc.DEFAULT_STORY_IDEAS_BUDGET_SECONDS == 90.0
+    assert svc.DEFAULT_STORY_IDEAS_BUDGET_SECONDS == 180.0  # emergency demo fix (2026-09-18 same-day follow-up)
 
 
 def test_an_attempt_already_in_flight_is_never_interrupted_mid_call():
@@ -307,7 +307,11 @@ def test_pool_generation_call_uses_a_reduced_per_call_timeout_and_retry_count():
         svc.generate_situations(_payload())
 
     assert captured["timeout"] == svc._STORY_IDEAS_CALL_TIMEOUT_SECONDS
-    assert captured["timeout"] < 120.0  # strictly less than the shared client default
+    # Emergency demo fix (2026-09-18 same-day follow-up): the ceiling was
+    # raised to 120s (matching real observed Luna latency), so it no longer
+    # needs to be STRICTLY less than the shared client default — it may now
+    # equal it. It must never exceed it.
+    assert captured["timeout"] <= 120.0  # never more than the shared client default
     assert captured["max_attempts"] == svc._STORY_IDEAS_MAX_ATTEMPTS
     assert captured["max_attempts"] < 4  # strictly less than call_openrouter_with_retry's own default
 
@@ -328,17 +332,21 @@ def test_semantic_judge_call_also_uses_a_reduced_per_call_timeout():
     assert captured["timeout"] < 120.0
 
 
-def test_worst_case_single_attempt_is_bounded_well_under_the_old_12_minute_ceiling():
+def test_worst_case_single_attempt_is_bounded_well_under_the_old_unbounded_ceiling():
     """Documents the actual bound achieved: 2 calls (pool-gen, judge) x 2
-    attempts x 40s + backoff, vs. the previous 4+2 attempts x 120s (~736s).
-    Not a claim of a strict sub-90s guarantee for one attempt (that would
-    require restructuring the sequential two-call attempt into a shared-
-    deadline object — out of scope, an architecture change) — just proof
-    the fix materially shrinks the worst case."""
+    attempts x _STORY_IDEAS_CALL_TIMEOUT_SECONDS + backoff. Emergency demo
+    fix (2026-09-18 same-day follow-up) intentionally raised the per-call
+    ceiling 40s -> 120s (real observed Luna pool-generation latency was
+    ~107s — a successful, non-erroring call, just genuinely slower than the
+    old 40s ceiling allowed for) and the aggregate budget 90s -> 180s to
+    match, so this worst case is now intentionally larger than before — but
+    still a small, known, finite bound, nowhere near the old truly-unbounded
+    (up to ~736s for ONE call alone) pre-fix scenario this test originally
+    guarded against."""
     per_call_worst = svc._STORY_IDEAS_MAX_ATTEMPTS * svc._STORY_IDEAS_CALL_TIMEOUT_SECONDS + 2  # +2s backoff
     one_attempt_worst = per_call_worst * 2  # pool-gen then judge, sequential
-    assert one_attempt_worst < 200  # was ~736s before this fix
-    assert one_attempt_worst == 164.0
+    assert one_attempt_worst < 600  # still far below the old ~736s single-call worst case
+    assert one_attempt_worst == 484.0
 
 
 def test_generate_text_timeout_param_only_sent_to_httpx_when_explicitly_given():

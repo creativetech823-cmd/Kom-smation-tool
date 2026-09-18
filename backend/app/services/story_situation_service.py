@@ -41,14 +41,23 @@ def _pool_size(requested_count: int) -> int:
 
 # Budget-overshoot fix (2026-09-18 task) — the shared OpenRouter client
 # default is 120s per HTTP attempt with up to 4 retries (~494s worst case
-# for one call alone), which can already blow past the ~90s aggregate Story
+# for one call alone), which can already blow past the aggregate Story
 # Ideas budget within the FIRST quality-floor attempt, before that loop's
 # between-attempts budget check ever gets a chance to stop anything. These
 # two constants bound ONLY the pool-generation call below (and, in
 # semantic_story_judge_service.py, the judge call it triggers) — the two
 # sequential LLM calls inside one Story Ideas "attempt" — without touching
 # the shared 120s default any other pipeline stage still uses.
-_STORY_IDEAS_CALL_TIMEOUT_SECONDS = 40.0
+#
+# Emergency demo fix (2026-09-18, same-day follow-up): real local timing
+# with GPT-5.6 Luna showed a genuine, successful (HTTP 200, real usage
+# billed) pool-generation completion taking ~107s — comfortably reasoning
+# on an 18-20 candidate batch, not an error/retry/hang. 40s was simply
+# too small a ceiling for how long this model legitimately takes; raised
+# to 120s so a normal successful call isn't truncated mid-flight. Still
+# bounded by the shared deadline via _remaining_call_timeout() exactly as
+# before — this only raises the CEILING, never bypasses the deadline.
+_STORY_IDEAS_CALL_TIMEOUT_SECONDS = 120.0
 _STORY_IDEAS_MAX_ATTEMPTS = 2
 
 # Shared-deadline fix (2026-09-18 live production task) — the 90s budget
@@ -80,6 +89,16 @@ def _remaining_call_timeout(deadline: float | None, ceiling: float = _STORY_IDEA
     if deadline is None:
         return ceiling
     return min(ceiling, deadline - time.monotonic())
+
+
+def _format_remaining(deadline: float | None) -> str:
+    """Log-only formatting of the shared deadline's raw remaining time
+    (uncapped by any per-call ceiling, unlike _remaining_call_timeout) —
+    "n/a" when this call has no shared deadline at all (e.g. the offline
+    benchmark tool)."""
+    if deadline is None:
+        return "n/a"
+    return f"{deadline - time.monotonic():.1f}s"
 
 
 # Above this genericness_risk (as a fraction of the mechanism cap check
@@ -659,14 +678,29 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
     has_role_risk = bool(contract.role_risk_keys)
     pool_count = _pool_size(requested_count)
 
-    pool_timeout = _remaining_call_timeout(deadline)
-    if pool_timeout < _STORY_IDEAS_MIN_CALL_SECONDS:
-        raise ValueError(
-            "Story Ideas time budget exhausted before generation could start — please try again."
+    pool_stage_start = time.monotonic()
+
+    def _generate_pool_text() -> str:
+        # Per-retry deadline fix (2026-09-18 live production task): the
+        # timeout used to be computed ONCE, before call_openrouter_with_
+        # retry() ever ran, then captured by this closure and reused
+        # unchanged for every attempt — so a second attempt got a stale,
+        # un-shrunk budget instead of whatever was actually left of the
+        # shared deadline. Recomputing it HERE, inside the closure, means
+        # every individual attempt (including a retry) asks "how much time
+        # is actually left right now?" immediately before making its own
+        # HTTP request. A deadline that's already gone (e.g. an earlier
+        # attempt in this same call ran long) means this closure raises
+        # instead of making another OpenRouter request at all — no attempt
+        # is wasted on a doomed call.
+        remaining = _remaining_call_timeout(deadline)
+        if remaining < _STORY_IDEAS_MIN_CALL_SECONDS:
+            raise ValueError("Story Ideas time budget exhausted before pool generation could run.")
+        logger.info(
+            "[STORY_IDEAS] pool start model=%s pool_count=%d remaining=%.1fs",
+            settings.creative_model, pool_count, remaining,
         )
-    logger.info("[STORY_IDEAS] pool start model=%s pool_count=%d timeout=%.1fs", settings.creative_model, pool_count, pool_timeout)
-    text = call_openrouter_with_retry(
-        lambda: generate_text(
+        return generate_text(
             system_instruction=_system_prompt(payload.script_language),
             contents=[_build_user_message(payload, contract_block, pool_count)],
             model=settings.creative_model,
@@ -681,17 +715,28 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
             max_output_tokens=16000,
             json_mode=True,
             label="story_situations",
-            # Budget-overshoot fix (2026-09-18 task, refined by the shared-
-            # deadline fix below): a per-call timeout shorter than the
-            # shared 120s client default, shrunk further to whatever's left
-            # of the shared Story Ideas deadline when one is given.
-            # Story-Ideas-specific only — every other pipeline stage's 120s
-            # default is untouched.
-            timeout=pool_timeout,
-        ),
-        label="generate_situations",
-        max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
-    )
+            # Budget-overshoot fix (2026-09-18 task, refined by the per-
+            # retry shared-deadline fix above): a per-call timeout shorter
+            # than the shared 120s client default, shrunk further to
+            # whatever's left of the shared Story Ideas deadline when one
+            # is given — recomputed fresh on every attempt, never a stale
+            # captured value. Story-Ideas-specific only — every other
+            # pipeline stage's 120s default is untouched.
+            timeout=remaining,
+        )
+
+    try:
+        text = call_openrouter_with_retry(
+            _generate_pool_text,
+            label="generate_situations",
+            max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
+        )
+    except ValueError as e:
+        if "time budget exhausted" not in str(e):
+            raise
+        raise ValueError(
+            "Story Ideas time budget exhausted before generation could start — please try again."
+        ) from e
 
     try:
         data = _parse_situations_json(text)
@@ -719,7 +764,8 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
 
     raw_items = data.get("situations", [])
     logger.info(
-        "[STORY_IDEAS] pool complete duration=%.1fs candidates=%d", time.monotonic() - stage_start, len(raw_items),
+        "[STORY_IDEAS] pool complete elapsed=%.1fs candidates=%d remaining=%s",
+        time.monotonic() - pool_stage_start, len(raw_items), _format_remaining(deadline),
     )
 
     # Product-name/ingredient efficacy pre-filter (Part 9/10) — free,
@@ -770,13 +816,18 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
     # Still ONE batched call for the whole pool (cost control unchanged).
     judge_stage_start = time.monotonic()
     if raw_items:
-        logger.info("[STORY_IDEAS] judge start model=%s candidates=%d", settings.validation_model, len(raw_items))
+        logger.info(
+            "[STORY_IDEAS] judge start model=%s candidates=%d remaining=%s",
+            settings.validation_model, len(raw_items), _format_remaining(deadline),
+        )
         judgments = judge_story_situations(contract, raw_items, deadline=deadline)
     else:
         judgments = []
     logger.info(
-        "[STORY_IDEAS] judge complete duration=%.1fs result=%s",
-        time.monotonic() - judge_stage_start, "unavailable" if judgments is None else f"{len(judgments)} judgment(s)",
+        "[STORY_IDEAS] judge complete elapsed=%.1fs result=%s remaining=%s",
+        time.monotonic() - judge_stage_start,
+        "unavailable" if judgments is None else f"{len(judgments)} judgment(s)",
+        _format_remaining(deadline),
     )
     judgment_by_index: dict[int, SemanticJudgment] = {}
     if judgments is None:
@@ -818,7 +869,10 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
     # second call never contributes to pool-generation truncation risk.
     enrichment_stage_start = time.monotonic()
     final_items = _enrich_recommended_angles(final_items, deadline=deadline)
-    logger.info("[STORY_IDEAS] enrichment complete duration=%.1fs", time.monotonic() - enrichment_stage_start)
+    logger.info(
+        "[STORY_IDEAS] enrichment complete elapsed=%.1fs remaining=%s",
+        time.monotonic() - enrichment_stage_start, _format_remaining(deadline),
+    )
 
     situations = []
     for idx, item in enumerate(final_items):
@@ -828,7 +882,7 @@ def generate_situations(payload: StorySituationsInput, deadline: float | None = 
         strong = _is_strong_concept(judgment_by_index.get(idx))
         situations.append(StorySituation(id=uuid.uuid4().hex[:12], strong_concept=strong, **item))
     logger.info(
-        "[STORY_IDEAS] selection complete duration=%.1fs returned=%d", time.monotonic() - stage_start, len(situations),
+        "[STORY_IDEAS] selection complete elapsed=%.1fs returned=%d", time.monotonic() - stage_start, len(situations),
     )
     return StorySituationsResult(situations=situations)
 
@@ -854,7 +908,16 @@ MIN_ACCEPTABLE_SITUATIONS = 1
 # overall cap — the confirmed mechanism behind the "Story Ideas stuck
 # loading" report. Matches the frontend's POST_TIMEOUT_MS backstop
 # (lib/api.ts) — this is the server-side half of the same fix.
-DEFAULT_STORY_IDEAS_BUDGET_SECONDS = 90.0
+#
+# Emergency demo fix (2026-09-18, same-day follow-up): raised 90 -> 180 to
+# match the pool-generation ceiling bump above — real timing showed a
+# genuine successful pool-generation call taking ~107s on its own, which
+# left too little of a 90s aggregate budget for the judge/enrichment calls
+# that follow it. A slower, reliably-completing generation is acceptable
+# for today; the budget is still a hard cap (via generate_situations_with_
+# quality_floor's existing per-attempt check) and every call inside it is
+# still bounded by _remaining_call_timeout(deadline) exactly as before.
+DEFAULT_STORY_IDEAS_BUDGET_SECONDS = 180.0
 
 
 @dataclass

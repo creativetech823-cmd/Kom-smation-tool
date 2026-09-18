@@ -390,49 +390,62 @@ def judge_story_situations(
     exact prior fixed-40s-timeout behavior."""
     if not candidates:
         return []
-    timeout = _remaining_call_timeout(deadline)
-    if timeout < _JUDGE_MIN_CALL_SECONDS:
-        logger.warning(
-            "Semantic story judge skipped — shared Story Ideas time budget nearly exhausted (%.1fs left), "
-            "falling back to deterministic-only", timeout,
+
+    def _generate_judge_text() -> str:
+        # Per-retry deadline fix (2026-09-18 live production task) — mirrors
+        # story_situation_service.py's identical fix for pool generation:
+        # the timeout used to be computed ONCE, before call_openrouter_with_
+        # retry() ever ran, then captured by this closure and reused
+        # unchanged for every attempt. Recomputing it HERE means every
+        # individual attempt (including a retry) asks "how much time is
+        # actually left right now?" immediately before making its own HTTP
+        # request — a deadline that's already gone means this closure raises
+        # instead of making another OpenRouter request at all.
+        remaining = _remaining_call_timeout(deadline)
+        if remaining < _JUDGE_MIN_CALL_SECONDS:
+            logger.warning(
+                "Semantic story judge skipped — shared Story Ideas time budget nearly exhausted (%.1fs left), "
+                "falling back to deterministic-only", remaining,
+            )
+            raise ValueError("Semantic story judge time budget exhausted.")
+        return generate_text(
+            system_instruction=_SYSTEM_PROMPT,
+            contents=[_user_message(contract, candidates, territory_block)],
+            model=settings.validation_model,
+            max_output_tokens=4096,
+            json_mode=True,
+            label=label,
+            # Reasoning-token-truncation fix (2026-09-18 task, live
+            # production failure): generate_text()'s reasoning_effort
+            # defaults to settings.openrouter_reasoning_effort ("medium")
+            # on EVERY call unless overridden — that default was added
+            # for GPT-5.6 Luna, but Gemini Flash-Lite (this call's model,
+            # per Option C routing) also honors OpenRouter's unified
+            # reasoning.effort field, so it was silently spending a
+            # variable, large share of max_output_tokens on hidden
+            # reasoning before any visible JSON, truncating the batched
+            # judgment response mid-string (confirmed in Render logs:
+            # "Unterminated string..."). This call doesn't need or want
+            # reasoning tokens — it's a scoring/classification task, not
+            # open-ended generation — so reasoning is turned off here,
+            # Story-Ideas-judge-specific, leaving every other call site's
+            # (including Luna's) reasoning behavior untouched.
+            reasoning_effort=None,
+            # Budget-overshoot fix (2026-09-18 task, refined by the per-
+            # retry shared-deadline fix above) — this judge is exclusively
+            # used by Story Ideas generation (confirmed: its only callers
+            # are story_situation_service.py and the offline creative_
+            # quality_benchmark.py tool), so shortening its per-call
+            # timeout is Story-Ideas-specific, not a global change. It's
+            # one of three sequential LLM calls inside one Story Ideas
+            # "attempt" — see story_situation_service.py's
+            # _STORY_IDEAS_CALL_TIMEOUT_SECONDS for the full rationale.
+            timeout=remaining,
         )
-        return None
+
     try:
         text = call_openrouter_with_retry(
-            lambda: generate_text(
-                system_instruction=_SYSTEM_PROMPT,
-                contents=[_user_message(contract, candidates, territory_block)],
-                model=settings.validation_model,
-                max_output_tokens=4096,
-                json_mode=True,
-                label=label,
-                # Reasoning-token-truncation fix (2026-09-18 task, live
-                # production failure): generate_text()'s reasoning_effort
-                # defaults to settings.openrouter_reasoning_effort ("medium")
-                # on EVERY call unless overridden — that default was added
-                # for GPT-5.6 Luna, but Gemini Flash-Lite (this call's model,
-                # per Option C routing) also honors OpenRouter's unified
-                # reasoning.effort field, so it was silently spending a
-                # variable, large share of max_output_tokens on hidden
-                # reasoning before any visible JSON, truncating the batched
-                # judgment response mid-string (confirmed in Render logs:
-                # "Unterminated string..."). This call doesn't need or want
-                # reasoning tokens — it's a scoring/classification task, not
-                # open-ended generation — so reasoning is turned off here,
-                # Story-Ideas-judge-specific, leaving every other call site's
-                # (including Luna's) reasoning behavior untouched.
-                reasoning_effort=None,
-                # Budget-overshoot fix (2026-09-18 task, refined by the
-                # shared-deadline fix) — this judge is exclusively used by
-                # Story Ideas generation (confirmed: its only callers are
-                # story_situation_service.py and the offline creative_
-                # quality_benchmark.py tool), so shortening its per-call
-                # timeout is Story-Ideas-specific, not a global change. It's
-                # one of three sequential LLM calls inside one Story Ideas
-                # "attempt" — see story_situation_service.py's
-                # _STORY_IDEAS_CALL_TIMEOUT_SECONDS for the full rationale.
-                timeout=timeout,
-            ),
+            _generate_judge_text,
             label=label,
             max_attempts=2,
         )

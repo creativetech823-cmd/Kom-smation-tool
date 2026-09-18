@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 
 from pydantic import ValidationError
@@ -1709,8 +1710,19 @@ def _generate_full_script_tracked(
     avoid_repeating_hook: str = "",
     avoid_repeating_mechanism: str = "",
 ) -> GeneratedScript:
+    # [SCRIPT_GENERATION] stage timing (2026-09-18 urgent demo task) —
+    # observability only, matching the Story Ideas [STORY_IDEAS] convention;
+    # never affects timeout/retry behavior. Logs stage name, elapsed
+    # seconds, and (where safe) model name only — never prompts, product
+    # descriptions, or script content.
+    _script_gen_start = time.monotonic()
+    logger.info("[SCRIPT_GENERATION] start")
     pre = _run_creative_pre_stages(payload, target_duration)
     payload = pre.payload
+    logger.info(
+        "[SCRIPT_GENERATION] creative planning complete elapsed=%.1fs",
+        time.monotonic() - _script_gen_start,
+    )
     user_message = _context_block(payload, target_duration, target_word_count)
     if pre.prompt_block:
         user_message += f"\n\n{pre.prompt_block}"
@@ -1740,6 +1752,10 @@ def _generate_full_script_tracked(
     # lowest-volume call in the pipeline, using the structured context
     # already produced (insight/territory/architecture/premise/hook/outline)
     # rather than a generic "write an ad" prompt.
+    logger.info(
+        "[SCRIPT_GENERATION] final script start model=%s elapsed=%.1fs",
+        settings.final_script_model, time.monotonic() - _script_gen_start,
+    )
     data = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type,
         model=settings.final_script_model, label="final_script_write",
@@ -1756,6 +1772,9 @@ def _generate_full_script_tracked(
         pre=pre,
     )
     data, evaluation = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
+    logger.info(
+        "[SCRIPT_GENERATION] validation complete elapsed=%.1fs", time.monotonic() - _script_gen_start,
+    )
     architecture_key = pre.architecture.key if pre.architecture else ""
     # Creative Breakdown / Quality Assessment — deterministic renderers,
     # ZERO additional LLM calls: `evaluation` is the SAME evaluation object
@@ -1795,6 +1814,7 @@ def _generate_full_script_tracked(
             human_tension=pre.territory.human_tension if pre.territory else "",
             creative_question=pre.territory.creative_question if pre.territory else "",
         )
+    logger.info("[SCRIPT_GENERATION] complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
     return result
 
 

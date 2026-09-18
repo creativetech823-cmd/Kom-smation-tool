@@ -70,14 +70,35 @@ async function get<TResponse>(path: string): Promise<TResponse> {
 // plain fetch() has NO timeout of its own — if the backend ever genuinely
 // hangs, the request never settles and the caller's `finally` never runs,
 // so a loading spinner driven by this call stays true forever with no error
-// ever shown. 90s matches the backend's own aggregate story-ideas budget
-// (see generate_situations_with_quality_floor's max_total_seconds) — this
-// is a client-side backstop, not a replacement for that server-side bound.
-const POST_TIMEOUT_MS = 90_000;
+// ever shown. Matches the backend's own aggregate story-ideas budget (see
+// generate_situations_with_quality_floor's max_total_seconds) — this is a
+// client-side backstop, not a replacement for that server-side bound.
+//
+// Emergency demo fix (2026-09-18, same-day follow-up): raised 90s -> 180s
+// alongside the backend's DEFAULT_STORY_IDEAS_BUDGET_SECONDS bump — real
+// timing showed GPT-5.6 Luna's pool generation legitimately taking ~107s
+// to complete successfully, so the browser was aborting a request that was
+// still genuinely in progress on the backend.
+const POST_TIMEOUT_MS = 180_000;
 
-async function post<TResponse>(path: string, body: unknown): Promise<TResponse> {
+// Urgent demo fix (2026-09-18, same-day follow-up): POST /pipeline/
+// generate-script (and regenerate-script-section's full/length rewrite
+// path, which runs the identical long pipeline) walks a long sequential
+// chain of LLM calls — creative insight/territory/architecture/premise/
+// hook/outline planning, the main final-script write, then claim-safety/
+// quality/architecture-director gates — with no per-endpoint budget of its
+// own, so it can legitimately take noticeably longer than Story Ideas'
+// pool generation. The shared 180s POST_TIMEOUT_MS was aborting a request
+// that was still genuinely in progress on the backend (confirmed: no
+// OpenRouter/backend error, just this endpoint's real end-to-end latency).
+// Scoped to this endpoint only via an explicit override — every other
+// caller of `post()` (including Story Ideas) is completely unaffected and
+// keeps the 180s default.
+const SCRIPT_GENERATION_TIMEOUT_MS = 300_000;
+
+async function post<TResponse>(path: string, body: unknown, timeoutMs: number = POST_TIMEOUT_MS): Promise<TResponse> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
@@ -94,7 +115,7 @@ async function post<TResponse>(path: string, body: unknown): Promise<TResponse> 
     // clears the loading state regardless of which branch is taken).
     if (e instanceof DOMException && e.name === "AbortError") {
       throw new ApiError(
-        `Request timed out after ${POST_TIMEOUT_MS / 1000}s. The server may be under heavy load — please try again.`,
+        `Request timed out after ${timeoutMs / 1000}s. The server may be under heavy load — please try again.`,
         408
       );
     }
@@ -246,7 +267,7 @@ export function generateScript(payload: {
   avoid_repeating_mechanism?: string;
   product_context?: ProductContext;
 }) {
-  return post<GeneratedScript>("/pipeline/generate-script", payload);
+  return post<GeneratedScript>("/pipeline/generate-script", payload, SCRIPT_GENERATION_TIMEOUT_MS);
 }
 
 export function regenerateScriptSection(payload: {
@@ -271,7 +292,7 @@ export function regenerateScriptSection(payload: {
   target_scene_label?: string;
   product_context?: ProductContext;
 }) {
-  return post<GeneratedScript>("/pipeline/regenerate-script-section", payload);
+  return post<GeneratedScript>("/pipeline/regenerate-script-section", payload, SCRIPT_GENERATION_TIMEOUT_MS);
 }
 
 export function rewriteLine(payload: {
