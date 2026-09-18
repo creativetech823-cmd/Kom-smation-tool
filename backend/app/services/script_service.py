@@ -217,6 +217,13 @@ def _core_principles_block() -> str:
   surprising, or visually interesting — never to redefine what the product fundamentally is, who it's
   for, or how it's actually used/consumed. Do not reinterpret the product based on an ambiguous word in
   its name (creative freedom applies to HOW the story is told, never WHAT the product is).
+- If a WINNING REFERENCE / STRUCTURAL REFERENCE block is given below (hook device, human insight,
+  proof device, payoff, etc. from real prior ad scripts), treat it as the LEVEL of creative thinking
+  and the underlying PATTERN to match — never text to copy. Do not reuse its wording, its specific
+  characters, its specific setting, or its specific lines; build an ORIGINAL situation for THIS exact
+  story that earns the same kind of hook device, the same caliber of human insight, and the same kind
+  of earned payoff. If the actual advertising IDEA here would feel weaker than that reference's, the
+  concept needs more work before it's ready to write, not just prettier sentences.
 - Write like a human copywriter who actually gets this audience, not like an AI. Banned words/
   phrases (not exhaustive — the point is the pattern, not just this list): {_banned_phrases_prose()}.
   Generic openers like "are you tired of...", "in today's busy world...", "we all know...", "do you
@@ -1539,6 +1546,28 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
         # (e.g. the Product Library's "herbal_health") doesn't say so.
         brief_text = " ".join([product_name, target_audience, usp, " ".join(benefits)])
         ref_notes = creative_reference_dna.relevant_notes(architecture.key, category, brief_text=brief_text)
+        # Winning-reference-DNA fix (2026-09-18 task) — mechanism_notes()
+        # already existed, fully implemented, but was never actually called
+        # anywhere in the pipeline (confirmed by inspection): the chosen
+        # Story Idea may have already committed to a specific creative_
+        # mechanism_catalog label (Story Ideas pool generation reports one
+        # per candidate), and this codebase's own real prior AayushWellness
+        # Herbal Masala reference scripts ("Calender Video August" —
+        # CAL1/CAL3/CAL4/CAL5 in creative_reference_dna.py) are keyed by
+        # that exact mechanism vocabulary, not by architecture — CAL1/CAL3
+        # have no architecture at all, so relevant_notes() alone could
+        # never surface them regardless of which architecture was selected.
+        # Merging both keeps the existing architecture-keyed structural
+        # notes AND adds the specific product-proven example for the
+        # already-chosen mechanism, without changing relevant_notes()'s own
+        # behavior, category-transfer labeling, or any other caller.
+        selected_mechanism = getattr(payload.selected_situation, "creative_mechanism", "") or ""
+        if selected_mechanism:
+            mechanism_ref_notes = creative_reference_dna.mechanism_notes(
+                selected_mechanism, category, brief_text=brief_text
+            )
+            if mechanism_ref_notes:
+                ref_notes = f"{ref_notes}\n{mechanism_ref_notes}" if ref_notes else mechanism_ref_notes
 
         # CREATIVE PREMISE — dramatizes the approved territory (when one was
         # selected) into one specific situation; the missing link between the

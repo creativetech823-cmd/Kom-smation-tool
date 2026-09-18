@@ -625,6 +625,16 @@ problem, and only from this exact list of codes:
   and familiar taste") rather than a real person reacting, teasing, questioning, hesitating, noticing
   something, or revealing character — it reads like a creative strategist explaining the concept, not
   a character speaking. Do NOT flag ordinary, simple, natural dialogue just for being plain.
+- "generic_ai_ad": step back and judge the WHOLE script the way a creative director reviewing it
+  against this brand's actual real, proven ad scripts would — not any single line, the overall feel.
+  Flag this when the script reads like competent-but-generic AI ad copy rather than something that
+  could sit alongside this brand's real winning references: a WINNING REFERENCE/STRUCTURAL REFERENCE
+  block was given below but the script's actual idea doesn't reflect its level of specificity (no real
+  hook device, no real human insight, no real proof device, no earned payoff — just a pleasant-sounding
+  situation with a product dropped into it), OR the situation is so generic that it could be reskinned
+  for a completely different product/brand in this category with almost no change. This is a holistic
+  judgment call, not a checklist — only flag it when the script genuinely feels like it doesn't belong
+  in the same creative universe as the reference, not for merely being simple or short.
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"pass": boolean, "issues": [string]}
@@ -786,6 +796,19 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "Rewrite the actual story into filmable scenes. Replace explanations with observable action, "
         "reaction, dialogue, visual behavior and concrete beats. Preserve the approved concept, hook "
         "and product truth. Do not change the creative mechanism merely to avoid the issue."
+    ),
+    # Winning-reference-DNA fix (2026-09-18 task) — deliberately distinct
+    # from the other issue codes above (which each catch one narrow
+    # symptom): this one names the WHOLE-SCRIPT gap directly, so a rewrite
+    # triggered by it is explicitly told to raise the creative bar to
+    # reference level, not just patch a line.
+    "generic_ai_ad": (
+        "the script reads like competent but generic AI ad copy rather than something that belongs "
+        "beside this brand's actual winning reference scripts — rebuild the underlying advertising "
+        "idea to match the reference's level of specificity: a real, specific hook device; a real "
+        "human insight (not a category-level generality); a creative mechanism that actually drives "
+        "the scenes; and a payoff earned by that mechanism. Do not just add more scenes, action lines, "
+        "or cinematic language — the IDEA itself needs to be stronger, not just its presentation."
     ),
     # Beat-outline / architecture-enforcement issue codes (post-script pass,
     # see architecture_validation_service.py) — reuse this same instruction
