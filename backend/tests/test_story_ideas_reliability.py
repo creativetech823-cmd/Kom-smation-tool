@@ -70,7 +70,7 @@ def test_budget_stops_further_attempts_once_exhausted():
     and 3rd must never be attempted."""
     call_count = {"n": 0}
 
-    def fake_generate_situations(payload):
+    def fake_generate_situations(payload, deadline=None):
         call_count["n"] += 1
         return svc.StorySituationsResult(situations=[])  # never meets the floor, would normally retry
 
@@ -93,7 +93,7 @@ def test_no_budget_given_behaves_exactly_as_before():
     unbounded-by-time behavior — only max_attempts bounds it, unchanged."""
     call_count = {"n": 0}
 
-    def fake_generate_situations(payload):
+    def fake_generate_situations(payload, deadline=None):
         call_count["n"] += 1
         return svc.StorySituationsResult(situations=[])
 
@@ -126,7 +126,7 @@ def test_an_attempt_already_in_flight_is_never_interrupted_mid_call():
     inconsistent). Verified here by confirming exactly one full call
     happens even though the budget is effectively already spent by the time
     it returns."""
-    def fake_generate_situations(payload):
+    def fake_generate_situations(payload, deadline=None):
         return svc.StorySituationsResult(situations=[_dummy_situation("Only One")])
 
     with patch.object(svc, "generate_situations", side_effect=fake_generate_situations):
@@ -163,7 +163,7 @@ def test_best_so_far_preserved_when_a_later_attempt_is_worse():
     ]
     call_count = {"n": 0}
 
-    def fake_generate_situations(payload):
+    def fake_generate_situations(payload, deadline=None):
         result = responses[call_count["n"]]
         call_count["n"] += 1
         return result
@@ -176,7 +176,7 @@ def test_best_so_far_preserved_when_a_later_attempt_is_worse():
 
 
 def test_best_so_far_still_returns_full_result_when_floor_is_met():
-    def fake_generate_situations(payload):
+    def fake_generate_situations(payload, deadline=None):
         return svc.StorySituationsResult(situations=[_dummy_situation(f"C{i}") for i in range(6)])
 
     with patch.object(svc, "generate_situations", side_effect=fake_generate_situations):

@@ -51,6 +51,36 @@ def _pool_size(requested_count: int) -> int:
 _STORY_IDEAS_CALL_TIMEOUT_SECONDS = 40.0
 _STORY_IDEAS_MAX_ATTEMPTS = 2
 
+# Shared-deadline fix (2026-09-18 live production task) — the 90s budget
+# above was previously checked only BETWEEN generate_situations_with_
+# quality_floor()'s outer attempts, never inside one. generate_situations()
+# makes THREE sequential OpenRouter calls per attempt (pool generation,
+# semantic judge, angle enrichment), each independently allowed up to
+# _STORY_IDEAS_CALL_TIMEOUT_SECONDS x _STORY_IDEAS_MAX_ATTEMPTS — so a
+# single attempt could take up to ~3x that before the budget check ever got
+# a chance to run, which is the confirmed live cause of the 90s frontend
+# timeout even with no OpenRouter errors at all. A `deadline` (an absolute
+# time.monotonic() value), when supplied by the caller, is now threaded
+# through all three calls: each one's own timeout shrinks to whatever time
+# is actually left, and a call that would start with less than
+# _STORY_IDEAS_MIN_CALL_SECONDS remaining is skipped outright rather than
+# attempted and left to time out — pool generation fails clearly, the judge
+# and enrichment calls fall back to their existing documented "unavailable"
+# paths (deterministic-only / angles unset), never a fabricated result.
+# `deadline=None` (every existing caller/test that doesn't pass one,
+# including the offline creative_quality_benchmark.py tool) preserves
+# today's exact fixed-timeout behavior, unchanged.
+_STORY_IDEAS_MIN_CALL_SECONDS = 8.0
+
+
+def _remaining_call_timeout(deadline: float | None, ceiling: float = _STORY_IDEAS_CALL_TIMEOUT_SECONDS) -> float:
+    """How much time a call starting right now may use: `ceiling` unchanged
+    when there's no shared deadline, otherwise whatever's left before it
+    (never more than `ceiling`, may be 0 or negative if already past it)."""
+    if deadline is None:
+        return ceiling
+    return min(ceiling, deadline - time.monotonic())
+
 
 # Above this genericness_risk (as a fraction of the mechanism cap check
 # below), no single creative_mechanism may claim more than this share of the
@@ -271,14 +301,21 @@ def _angle_enrichment_user_message(situations_data: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _enrich_recommended_angles(situations_data: list[dict]) -> list[dict]:
+def _enrich_recommended_angles(situations_data: list[dict], deadline: float | None = None) -> list[dict]:
     """Runs ONLY on the already-selected final survivors (<=
     MAX_STORY_IDEAS_PER_GENERATION, never the full pool). Never raises — a
-    failure here just leaves recommended_angles unset on every item, which
-    valid_angle_labels([]) already degrades safely to its documented
-    fallback subset (never a missing/broken UI field, never blocks the
-    response)."""
+    failure here (including a shared-deadline skip) just leaves
+    recommended_angles unset on every item, which valid_angle_labels([])
+    already degrades safely to its documented fallback subset (never a
+    missing/broken UI field, never blocks the response)."""
     if not situations_data:
+        return situations_data
+    timeout = _remaining_call_timeout(deadline)
+    if timeout < _STORY_IDEAS_MIN_CALL_SECONDS:
+        logger.warning(
+            "Skipping recommended-angles enrichment — shared Story Ideas time budget nearly exhausted "
+            "(%.1fs left), leaving angles unset (safe fallback applies)", timeout,
+        )
         return situations_data
     try:
         text = call_openrouter_with_retry(
@@ -289,7 +326,16 @@ def _enrich_recommended_angles(situations_data: list[dict]) -> list[dict]:
                 max_output_tokens=1500,
                 json_mode=True,
                 label="story_situations_angle_enrichment",
-                timeout=_STORY_IDEAS_CALL_TIMEOUT_SECONDS,
+                # Live production latency fix (2026-09-18 task) — this call
+                # picks 5-8 angle labels from a fixed catalog for <=6 items,
+                # a compact classification task with no need for hidden
+                # reasoning; leaving reasoning_effort at its default
+                # ("medium") was adding unnecessary, uncontrolled Luna
+                # thinking-token latency to EVERY Story Ideas request (not
+                # just retries), the same class of issue already fixed for
+                # the semantic judge's Gemini Flash-Lite call.
+                reasoning_effort=None,
+                timeout=timeout,
             ),
             label="story_situations_angle_enrichment",
             max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
@@ -573,7 +619,7 @@ def _is_strong_concept(j: "SemanticJudgment | None") -> bool:
     )
 
 
-def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
+def generate_situations(payload: StorySituationsInput, deadline: float | None = None) -> StorySituationsResult:
     """Stage 3.5 — structured product -> diverse story-situation options for
     the user to pick from. This is the FIRST creative decision in the whole
     pipeline (Product -> ProductCreativeContract -> Choose Your Story ->
@@ -586,7 +632,17 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     internal POOL (Part 6), screens it through claim-safety/category/
     genericness/distinctiveness gates, then selects a mechanism-variety-
     aware final six (Part 4/8) — never more than
-    MAX_STORY_IDEAS_PER_GENERATION regardless of payload.count."""
+    MAX_STORY_IDEAS_PER_GENERATION regardless of payload.count.
+
+    `deadline` (live production timeout fix, 2026-09-18): an optional
+    absolute time.monotonic() value shared across this function's three
+    sequential OpenRouter calls (pool generation, semantic judge, angle
+    enrichment) so their combined wall-clock time respects ONE budget
+    instead of each independently getting up to
+    _STORY_IDEAS_CALL_TIMEOUT_SECONDS x _STORY_IDEAS_MAX_ATTEMPTS. None (the
+    default — every direct call site, including tests) preserves the exact
+    prior fixed-timeout behavior."""
+    stage_start = time.monotonic()
     p = payload.structured_product
     ctx = payload.product_context
     contract = build_product_creative_contract(
@@ -603,6 +659,12 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     has_role_risk = bool(contract.role_risk_keys)
     pool_count = _pool_size(requested_count)
 
+    pool_timeout = _remaining_call_timeout(deadline)
+    if pool_timeout < _STORY_IDEAS_MIN_CALL_SECONDS:
+        raise ValueError(
+            "Story Ideas time budget exhausted before generation could start — please try again."
+        )
+    logger.info("[STORY_IDEAS] pool start model=%s pool_count=%d timeout=%.1fs", settings.creative_model, pool_count, pool_timeout)
     text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_system_prompt(payload.script_language),
@@ -619,14 +681,13 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
             max_output_tokens=16000,
             json_mode=True,
             label="story_situations",
-            # Budget-overshoot fix (2026-09-18 task): a per-call timeout
-            # shorter than the shared 120s client default — this call and
-            # the semantic judge's are the two sequential LLM calls inside
-            # one Story Ideas "attempt", and both must fit inside the ~90s
-            # aggregate budget the quality-floor loop only checks BETWEEN
-            # attempts (never mid-call). Story-Ideas-specific only — every
-            # other pipeline stage's 120s default is untouched.
-            timeout=_STORY_IDEAS_CALL_TIMEOUT_SECONDS,
+            # Budget-overshoot fix (2026-09-18 task, refined by the shared-
+            # deadline fix below): a per-call timeout shorter than the
+            # shared 120s client default, shrunk further to whatever's left
+            # of the shared Story Ideas deadline when one is given.
+            # Story-Ideas-specific only — every other pipeline stage's 120s
+            # default is untouched.
+            timeout=pool_timeout,
         ),
         label="generate_situations",
         max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
@@ -657,6 +718,9 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         ) from e
 
     raw_items = data.get("situations", [])
+    logger.info(
+        "[STORY_IDEAS] pool complete duration=%.1fs candidates=%d", time.monotonic() - stage_start, len(raw_items),
+    )
 
     # Product-name/ingredient efficacy pre-filter (Part 9/10) — free,
     # deterministic, runs for EVERY product (not role-risk gated: an
@@ -704,7 +768,16 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     # genericness/distinctiveness/claim-safety screening (Part 7/8/9-11) are
     # universal creative-quality concerns, not just category-drift concerns.
     # Still ONE batched call for the whole pool (cost control unchanged).
-    judgments = judge_story_situations(contract, raw_items) if raw_items else []
+    judge_stage_start = time.monotonic()
+    if raw_items:
+        logger.info("[STORY_IDEAS] judge start model=%s candidates=%d", settings.validation_model, len(raw_items))
+        judgments = judge_story_situations(contract, raw_items, deadline=deadline)
+    else:
+        judgments = []
+    logger.info(
+        "[STORY_IDEAS] judge complete duration=%.1fs result=%s",
+        time.monotonic() - judge_stage_start, "unavailable" if judgments is None else f"{len(judgments)} judgment(s)",
+    )
     judgment_by_index: dict[int, SemanticJudgment] = {}
     if judgments is None:
         # Judge unavailable this run (Phase 3 §K) — conservative degrade to
@@ -743,7 +816,9 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     # Angle enrichment (2026-09-18 task, Option A) — runs on the already-
     # selected <=6 survivors only, never the 12-20 pool, so this small
     # second call never contributes to pool-generation truncation risk.
-    final_items = _enrich_recommended_angles(final_items)
+    enrichment_stage_start = time.monotonic()
+    final_items = _enrich_recommended_angles(final_items, deadline=deadline)
+    logger.info("[STORY_IDEAS] enrichment complete duration=%.1fs", time.monotonic() - enrichment_stage_start)
 
     situations = []
     for idx, item in enumerate(final_items):
@@ -752,6 +827,9 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         item["hook_type"] = valid_hook_tactic_label(item.get("hook_type", ""))
         strong = _is_strong_concept(judgment_by_index.get(idx))
         situations.append(StorySituation(id=uuid.uuid4().hex[:12], strong_concept=strong, **item))
+    logger.info(
+        "[STORY_IDEAS] selection complete duration=%.1fs returned=%d", time.monotonic() - stage_start, len(situations),
+    )
     return StorySituationsResult(situations=situations)
 
 
@@ -808,15 +886,17 @@ def generate_situations_with_quality_floor(
     attempt just because a later one happened to produce fewer candidates.
 
     max_total_seconds (2026-09-18 reliability fix), when given, is checked
-    BEFORE starting each new attempt (never mid-attempt — an attempt already
-    in flight always runs to its own completion/timeout, since interrupting
-    a synchronous call partway through would leave the deterministic/claim-
-    safety/semantic-judge gates in an inconsistent state). Once the budget is
-    exhausted, no further attempts start and whatever the best result so far
-    is gets returned immediately — the same fail-safe convention as every
-    other stage in this pipeline (fewer/zero cards is safer than blocking
-    indefinitely)."""
+    BEFORE starting each new attempt (an attempt already in flight now also
+    respects the SAME absolute deadline internally — see generate_situations'
+    `deadline` param — since a single attempt's three sequential OpenRouter
+    calls could previously blow well past this budget on their own before
+    the between-attempts check ever ran; that was the confirmed live cause
+    of the frontend's 90s timeout). Once the budget is exhausted, no further
+    attempts start and whatever the best result so far is gets returned
+    immediately — the same fail-safe convention as every other stage in this
+    pipeline (fewer/zero cards is safer than blocking indefinitely)."""
     start = time.monotonic()
+    deadline = None if max_total_seconds is None else start + max_total_seconds
     exclude = list(payload.exclude_titles)
     last_result = StorySituationsResult(situations=[])
     best_result = StorySituationsResult(situations=[])
@@ -834,7 +914,7 @@ def generate_situations_with_quality_floor(
         attempts_used = attempt
         current_payload = payload.model_copy(update={"exclude_titles": exclude})
         try:
-            last_result = generate_situations(current_payload)
+            last_result = generate_situations(current_payload, deadline=deadline)
         except Exception as e:
             logger.warning("Quality-floor attempt %d/%d raised, treating as empty: %s", attempt, max_attempts, e)
             last_result = StorySituationsResult(situations=[])

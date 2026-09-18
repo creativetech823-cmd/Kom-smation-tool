@@ -28,7 +28,7 @@ def _situation(title: str) -> StorySituation:
 def test_succeeds_on_first_attempt_when_enough_situations_survive(monkeypatch):
     calls = []
 
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         calls.append(payload)
         return StorySituationsResult(situations=[_situation("A"), _situation("B")])
 
@@ -43,7 +43,7 @@ def test_succeeds_on_first_attempt_when_enough_situations_survive(monkeypatch):
 def test_retries_and_excludes_previously_failed_titles(monkeypatch):
     calls = []
 
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         calls.append(list(payload.exclude_titles))
         if len(calls) < 3:
             return StorySituationsResult(situations=[])  # every candidate drifted/deduped away
@@ -60,7 +60,7 @@ def test_retries_and_excludes_previously_failed_titles(monkeypatch):
 
 
 def test_returns_structured_quality_not_met_state_after_bound_exhausted(monkeypatch):
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         return StorySituationsResult(situations=[])  # never produces anything usable
 
     monkeypatch.setattr(svc, "generate_situations", fake_generate)
@@ -72,7 +72,7 @@ def test_returns_structured_quality_not_met_state_after_bound_exhausted(monkeypa
 
 
 def test_never_raises_when_generate_situations_itself_raises(monkeypatch):
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         raise ValueError("malformed JSON from model")
 
     monkeypatch.setattr(svc, "generate_situations", fake_generate)
@@ -88,7 +88,7 @@ def test_duplicate_candidate_across_retries_does_not_falsely_satisfy_the_floor(m
     # result as if it were newly sufficient just because a retry happened.
     calls = []
 
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         calls.append(payload)
         if len(calls) <= 2:
             return StorySituationsResult(situations=[_situation("Same Stale Idea")])  # below floor of 2, repeated
@@ -112,7 +112,7 @@ def test_no_fail_open_to_known_bad_candidates_when_floor_not_met(monkeypatch):
     # a below-floor result by falling back to raw/rejected candidates from
     # an earlier attempt. The final situations list is exactly what the
     # LAST attempt's own (already-filtered) result contained, never more.
-    def fake_generate(payload):
+    def fake_generate(payload, deadline=None):
         # Simulates every candidate this attempt produced failing the
         # deterministic/semantic gates inside generate_situations() itself —
         # it already returns an empty, fully-filtered result, not raw junk.

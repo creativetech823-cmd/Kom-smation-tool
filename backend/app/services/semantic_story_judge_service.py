@@ -32,6 +32,7 @@ good, not the fail-open hole Phase 2C removed.
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from app.config import settings
@@ -47,6 +48,23 @@ logger = logging.getLogger("semantic_story_judge")
 # drift, so it's never silently accepted.
 CLEAR_PASS_MIN_ROLE_ALIGNMENT = 0.7
 CLEAR_DRIFT_MAX_ROLE_ALIGNMENT = 0.4
+
+# Live production timeout fix (2026-09-18 task) — this call's own timeout
+# ceiling, and the minimum time worth even attempting it. Mirrors
+# story_situation_service's identically-named constants; duplicated locally
+# per this module's own existing convention (see _claim_safety_fields's
+# rationale in that module) rather than imported, since story_situation_
+# service.py already imports FROM this module. `deadline`, when given by
+# the caller, shrinks the actual timeout used below this ceiling — never
+# above it.
+_JUDGE_CALL_TIMEOUT_SECONDS = 40.0
+_JUDGE_MIN_CALL_SECONDS = 8.0
+
+
+def _remaining_call_timeout(deadline: float | None) -> float:
+    if deadline is None:
+        return _JUDGE_CALL_TIMEOUT_SECONDS
+    return min(_JUDGE_CALL_TIMEOUT_SECONDS, deadline - time.monotonic())
 
 _SCORE_FIELDS = [
     "product_truth_alignment", "audience_alignment", "behavior_alignment", "product_role_alignment",
@@ -355,14 +373,30 @@ def judge_story_situations(
     candidates: list[dict],
     territory_block: str = "",
     label: str = "semantic_story_judge",
+    deadline: float | None = None,
 ) -> list[SemanticJudgment] | None:
     """ONE batched call judging every candidate at once. Returns None (never
     an empty-list-means-all-passed ambiguity, never a silent all-pass) on
     any failure — callers must treat None as "unavailable this run" and fall
     back to whatever already-verified state they had before calling this,
-    never to trusting the raw candidates."""
+    never to trusting the raw candidates.
+
+    `deadline` (live production timeout fix, 2026-09-18): an optional
+    absolute time.monotonic() value shared with the caller's other Story
+    Ideas calls — when there's not enough of it left to be worth trying,
+    this call is skipped outright (no HTTP request at all) and treated the
+    same as any other judge-unavailable failure. None (the default —
+    including creative_quality_benchmark.py's direct call) preserves the
+    exact prior fixed-40s-timeout behavior."""
     if not candidates:
         return []
+    timeout = _remaining_call_timeout(deadline)
+    if timeout < _JUDGE_MIN_CALL_SECONDS:
+        logger.warning(
+            "Semantic story judge skipped — shared Story Ideas time budget nearly exhausted (%.1fs left), "
+            "falling back to deterministic-only", timeout,
+        )
+        return None
     try:
         text = call_openrouter_with_retry(
             lambda: generate_text(
@@ -388,15 +422,16 @@ def judge_story_situations(
                 # Story-Ideas-judge-specific, leaving every other call site's
                 # (including Luna's) reasoning behavior untouched.
                 reasoning_effort=None,
-                # Budget-overshoot fix (2026-09-18 task) — this judge is
-                # exclusively used by Story Ideas generation (confirmed: its
-                # only callers are story_situation_service.py and the
-                # offline creative_quality_benchmark.py tool), so shortening
-                # its per-call timeout is Story-Ideas-specific, not a global
-                # change. It's the second of two sequential LLM calls inside
-                # one Story Ideas "attempt" — see story_situation_service.py's
+                # Budget-overshoot fix (2026-09-18 task, refined by the
+                # shared-deadline fix) — this judge is exclusively used by
+                # Story Ideas generation (confirmed: its only callers are
+                # story_situation_service.py and the offline creative_
+                # quality_benchmark.py tool), so shortening its per-call
+                # timeout is Story-Ideas-specific, not a global change. It's
+                # one of three sequential LLM calls inside one Story Ideas
+                # "attempt" — see story_situation_service.py's
                 # _STORY_IDEAS_CALL_TIMEOUT_SECONDS for the full rationale.
-                timeout=40.0,
+                timeout=timeout,
             ),
             label=label,
             max_attempts=2,
