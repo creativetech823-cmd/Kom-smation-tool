@@ -31,6 +31,7 @@ good, not the fail-open hole Phase 2C removed.
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from app.config import settings
@@ -150,6 +151,9 @@ angle. For each candidate, score (0.0-1.0 each):
   EXECUTE that territory's human tension, or does it just vaguely gesture at it? Omit (null) if no
   territory was given.
 
+Keep "reason" VERY SHORT — 8 words or fewer, a label not a sentence (e.g. "generic setting, weak role
+alignment"). This response judges many candidates in one call; verbose reasons waste output budget.
+
 Also set semantic_category_drift (boolean): true only when the product's role has genuinely been
 reinterpreted as something the contract's forbidden_contexts describe or clearly implies — NOT true
 merely because the setting is a kitchen/office/gym/family scene; the setting is never the problem, the
@@ -178,13 +182,113 @@ Also detect, per candidate:
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"judgments": [
-  {"candidate_index": int, "semantic_category_drift": boolean, "reason": string,
+  {"candidate_index": int, "semantic_category_drift": boolean, "reason": "<=8 words",
    "product_truth_alignment": number, "audience_alignment": number, "behavior_alignment": number,
    "product_role_alignment": number, "creative_potential": number, "memorability": number,
    "visual_potential": number, "genericness_risk": number, "claim_safety": number,
    "territory_alignment": number_or_null, "cluster_id": string,
    "implied_claim": boolean, "emotional_coercion": boolean}
 ]}"""
+
+
+def _strip_markdown_fence(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text)
+    return text.strip()
+
+
+def _salvage_judgments(text: str) -> list[dict]:
+    """Best-effort recovery for a truncated judge response (same failure
+    class, and same fix, as story_situation_service._salvage_array_objects
+    for pool generation — duplicated locally rather than imported, since
+    story_situation_service.py already imports FROM this module and an
+    import the other way would be circular). Finds "judgments"'s `[`, walks
+    top-level `{...}` objects by bracket depth (tracking string/escape
+    state), and parses each independently — skipping only the incomplete
+    trailing object a truncation leaves behind. Returns [] (never raises)
+    if the array marker itself can't be found."""
+    marker = '"judgments"'
+    key_pos = text.find(marker)
+    if key_pos == -1:
+        return []
+    array_start = text.find("[", key_pos)
+    if array_start == -1:
+        return []
+    results: list[dict] = []
+    i = array_start + 1
+    n = len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] != "{":
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        start = i
+        end = None
+        while i < n:
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            i += 1
+        if end is None:
+            break  # ran off the end mid-object — the truncated tail, stop here
+        candidate_text = text[start:end]
+        try:
+            obj = json.loads(candidate_text)
+            if isinstance(obj, dict):
+                results.append(obj)
+        except json.JSONDecodeError:
+            pass
+        i = end
+    return results
+
+
+def _parse_judge_json(text: str) -> dict:
+    """Robust parse for the judge's JSON response: strips a markdown fence
+    the model can still emit despite json_mode, strips trailing commas, and
+    — only when the response still doesn't parse as a whole — salvages
+    whatever complete judgment objects survive rather than discarding the
+    entire batch over one truncated tail object. A genuinely unrecoverable
+    response still raises json.JSONDecodeError, unchanged from before this
+    fix (the caller's existing "treat as unavailable" fallback still
+    applies)."""
+    cleaned = _strip_markdown_fence(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    no_trailing_commas = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    try:
+        return json.loads(no_trailing_commas)
+    except json.JSONDecodeError as e:
+        salvaged = _salvage_judgments(cleaned)
+        if salvaged:
+            logger.warning(
+                "Semantic story judge response didn't parse as a whole (likely truncated) — salvaged "
+                "%d complete judgment(s) instead of discarding the entire batch.",
+                len(salvaged),
+            )
+            return {"judgments": salvaged}
+        raise e
 
 
 def _candidate_block(index: int, item: dict) -> str:
@@ -268,6 +372,22 @@ def judge_story_situations(
                 max_output_tokens=4096,
                 json_mode=True,
                 label=label,
+                # Reasoning-token-truncation fix (2026-09-18 task, live
+                # production failure): generate_text()'s reasoning_effort
+                # defaults to settings.openrouter_reasoning_effort ("medium")
+                # on EVERY call unless overridden — that default was added
+                # for GPT-5.6 Luna, but Gemini Flash-Lite (this call's model,
+                # per Option C routing) also honors OpenRouter's unified
+                # reasoning.effort field, so it was silently spending a
+                # variable, large share of max_output_tokens on hidden
+                # reasoning before any visible JSON, truncating the batched
+                # judgment response mid-string (confirmed in Render logs:
+                # "Unterminated string..."). This call doesn't need or want
+                # reasoning tokens — it's a scoring/classification task, not
+                # open-ended generation — so reasoning is turned off here,
+                # Story-Ideas-judge-specific, leaving every other call site's
+                # (including Luna's) reasoning behavior untouched.
+                reasoning_effort=None,
                 # Budget-overshoot fix (2026-09-18 task) — this judge is
                 # exclusively used by Story Ideas generation (confirmed: its
                 # only callers are story_situation_service.py and the
@@ -281,7 +401,14 @@ def judge_story_situations(
             label=label,
             max_attempts=2,
         )
-        data = json.loads(text)
+        try:
+            data = _parse_judge_json(text)
+        except json.JSONDecodeError as e:
+            logger.warning(
+                "Semantic story judge JSON parse failed (model=%s): length=%d chars, head=%r, tail=%r, error=%s",
+                settings.validation_model, len(text), text[:120], text[-120:], e,
+            )
+            raise
         raw_judgments = data.get("judgments") or []
         judgments = [j for j in (_parse_judgment(r) for r in raw_judgments) if j is not None]
         if not judgments:
