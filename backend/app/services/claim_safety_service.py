@@ -57,7 +57,11 @@ logger = logging.getLogger("claim_safety_service")
 # passing, with no verb claiming it's reduced/cured/fixed, is not a claim).
 _EFFICACY_VERB_PATTERN = re.compile(
     r"\b("
-    r"reduc\w*|improv\w*|cure\w*|treat\w*|heal\w*|boost\w*|prevent\w*|eliminat\w*|revers\w*|fix\w*|"
+    # heal(s|ed|ing)? — NOT heal\w*, which was over-broad enough to match the
+    # ordinary words "health"/"healthy"/"healthier" (verified live: "Jahan
+    # uska naya, healthier choice — Aayush Wellness Herbal Masala — tha."
+    # was wrongly hard-failed on this alone). The verb forms only.
+    r"reduc\w*|improv\w*|cure\w*|treat\w*|heal(s|ed|ing)?\b|boost\w*|prevent\w*|eliminat\w*|revers\w*|fix\w*|"
     r"kam\s+kar\w*|"          # "stress kam kare" — reduces
     r"theek\s+kar\w*|"        # "theek karta hai" — cures/fixes
     r"door\s+kar\w*|"         # "door karta hai" — removes/eliminates
