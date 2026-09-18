@@ -40,6 +40,11 @@ class ReferenceRecord:
     language_style: str
     visual_device: str
     is_anti_pattern: bool = False  # True only for the one documented negative case (V9)
+    # creative_mechanism_catalog.py label this record exemplifies — additive,
+    # "" for records that predate this field (they're retrieved by
+    # architecture, not mechanism, exactly as before; this field changes
+    # nothing about how they're used). See mechanism_notes() below.
+    creative_mechanism: str = ""
 
 
 # Condensed from AHM_Creative_DNA_Spec.md Part 2 — one record per video that
@@ -197,6 +202,87 @@ REFERENCE_RECORDS: list[ReferenceRecord] = [
         language_style="English viral-template caption, then an unconnected pitch",
         visual_device="none distinctive — the hook and pitch don't even share a visual thread intentionally",
     ),
+    # --- "Calender Video August.docx" reference scripts (2026-09-18 task) ---
+    # Five real prior ad scripts for THIS exact product (Aayush Herbal
+    # Masala), condensed the same way V2-V13 above were: structural
+    # mechanism, never the raw script text verbatim. architecture is left ""
+    # where none of the 7 existing beat-structures is a clean fit — these
+    # are retrieved by creative_mechanism, not architecture (see
+    # mechanism_notes() below); relevant_notes() (architecture-keyed) is
+    # unaffected since it already skips records with no matching key.
+    ReferenceRecord(
+        video_id="CAL1", architecture="", creative_mechanism="Upgrade / Modernization",
+        hook_device="a modernization contrast question (phones/payments upgraded, why not this habit)",
+        human_insight="people whose lifestyle has visibly modernized feel the inconsistency of one habit "
+        "that hasn't — the tension is being out of step with their own progress, not fear",
+        audience="adult self-purchaser, lifestyle-conscious, already sees themselves as upgrading",
+        product_category="tobacco/gutka habit-replacement",
+        emotional_progression="observation of one's own modernization -> discomfort at the one exception -> "
+        "calm realisation -> clean, premium resolution",
+        proof_device="a clean visual contrast (dark/cluttered old-habit frame vs. calm/premium new frame)",
+        objection_addressed="why would someone who already has everything else together still need this",
+        product_reveal_timing="mid-late (~50-65%), via a clean visual transition",
+        payoff="a premium reframe — the switch itself becomes the upgrade, not a compromise",
+        cta_style="direct, calm order CTA",
+        language_style="Hinglish, reflective register, not urgent/fearful",
+        visual_device="contrast lighting/staging (dark cluttered vs. clean bright) marking the before/after",
+    ),
+    ReferenceRecord(
+        video_id="CAL3", architecture="", creative_mechanism="Value Math",
+        hook_device="a specific daily rupee amount stated, then visually multiplied into a monthly total",
+        human_insight="a small daily spend feels invisible; making the viewer do the multiplication "
+        "themselves (day -> month) creates a realization no health warning does on its own",
+        audience="adult daily user, price-aware, hasn't consciously totalled the real cost",
+        product_category="tobacco/gutka habit-replacement",
+        emotional_progression="passive normality -> a number lands -> realization -> reframed choice -> relief",
+        proof_device="a literal visual accumulation (a note next to a packet, packets picked up one by one)",
+        objection_addressed="why does a small daily habit matter — reframed as it's not small, it's recurring",
+        product_reveal_timing="mid (~55-65%), after the value realization lands, not before",
+        payoff="the same money question, redirected: since it's being spent anyway, spend it on something "
+        "that doesn't cause harm",
+        cta_style="a plain, confident 'try it today' close",
+        language_style="Hinglish, conversational, numbers stated plainly not dramatized",
+        visual_device="a currency note placed physically next to the product/packet as a recurring visual anchor",
+    ),
+    ReferenceRecord(
+        video_id="CAL4", architecture="ironic_bit", creative_mechanism="Character-as-Proof",
+        hook_device="introducing a named, confident character by simple declarative statement",
+        human_insight="a viewer trusts a decision more when it's shown as ONE trait among a character's "
+        "other already-established smart behaviors, not a lecture aimed at them specifically",
+        audience="broad, aspirational, responds to a likeable persona more than an argument",
+        product_category="tobacco/gutka habit-replacement",
+        emotional_progression="amused introduction -> established competence -> a relatable past struggle "
+        "-> a confident decisive switch -> pride",
+        proof_device="behavioral demonstration (the character shown being smart about small things BEFORE "
+        "the product ever appears) rather than a claim",
+        objection_addressed="why trust this choice — because it's framed as what a switched-on person "
+        "already does, not a special pleading for the product",
+        product_reveal_timing="late (~70-80%), after the character and their past habit are established",
+        payoff="a repeatable punchline identity ('be like [character]') the viewer can adopt",
+        cta_style="a persona-driven tagline CTA, not a bare transactional line",
+        language_style="light, confident, comedic Hinglish; short punchy VO lines",
+        visual_device="a hero-mode direct-to-camera close on the character for the punchline beat",
+    ),
+    ReferenceRecord(
+        video_id="CAL5", architecture="objection_handling_interview", creative_mechanism="Peer Realization",
+        hook_device="a nicknamed, affectionately teased character introduced by someone who knows them",
+        human_insight="the person stuck in the habit often hasn't consciously registered the damage "
+        "(described from OUTSIDE, by someone close to them) until a peer, not an authority, names it",
+        audience="adult daily user in a demanding routine (irregular meals/travel) who uses the habit as a "
+        "coping crutch",
+        product_category="tobacco/gutka habit-replacement",
+        emotional_progression="affectionate familiarity -> named consequences -> a peer/sibling's "
+        "intervention -> relief at an easy switch -> normalized resolution",
+        proof_device="a trusted peer's/sibling's direct recommendation, not a clinical or authority claim",
+        objection_addressed="does switching mean losing the taste/ritual, and will it actually help with "
+        "cravings without harmful chemicals",
+        product_reveal_timing="mid (~50-60%), introduced by the peer character, not narration",
+        payoff="the habit is renamed/reframed with affection rather than shame, then resolved by a peer-"
+        "endorsed switch available in multiple flavours (choice, not a single forced option)",
+        cta_style="a call framed as 'you too can make this same smart switch', mirroring the peer framing",
+        language_style="Hinglish, warm and familiar, third-person narrated then direct address at the close",
+        visual_device="no single dominant visual device recorded — carried primarily by the peer-voice narration",
+    ),
 ]
 
 _USABLE_RECORDS = [r for r in REFERENCE_RECORDS if not r.is_anti_pattern]
@@ -204,6 +290,10 @@ _USABLE_RECORDS = [r for r in REFERENCE_RECORDS if not r.is_anti_pattern]
 
 def records_for_architecture(architecture_key: str) -> list[ReferenceRecord]:
     return [r for r in _USABLE_RECORDS if r.architecture == architecture_key]
+
+
+def records_for_mechanism(mechanism_label: str) -> list[ReferenceRecord]:
+    return [r for r in _USABLE_RECORDS if r.creative_mechanism == mechanism_label]
 
 
 def anti_pattern_notes() -> str:
@@ -275,4 +365,24 @@ def relevant_notes(
             f"  - Hook device: {r.hook_device}; proof device: {r.proof_device}; product reveal timing: "
             f"{r.product_reveal_timing}; CTA style: {r.cta_style}; payoff: {r.payoff}."
         )
+    return "\n".join(lines)
+
+
+def mechanism_notes(mechanism_label: str, product_category: str = "", brief_text: str = "") -> str:
+    """Same category-transfer convention as relevant_notes(), but keyed by
+    creative_mechanism_catalog label instead of architecture — used by
+    story_situation_service.py when a story idea has already committed to a
+    specific mechanism and wants the grounded structural example behind it."""
+    records = records_for_mechanism(mechanism_label)
+    if not records:
+        return ""
+    reference_category = "tobacco/gutka habit-replacement"
+    same_category = product_category.strip().lower() in reference_category or is_tobacco_gutka_brief(brief_text)
+    header = (
+        f'Reference example for the "{mechanism_label}" mechanism (from prior creative research; '
+        + ("same general category:" if same_category else "a DIFFERENT product category — transfer the MECHANISM only:")
+    )
+    lines = [header]
+    for r in records[:1]:
+        lines.append(f"  - {r.human_insight}. Proof device: {r.proof_device}. Payoff: {r.payoff}.")
     return "\n".join(lines)

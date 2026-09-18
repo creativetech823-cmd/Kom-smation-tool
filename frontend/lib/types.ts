@@ -137,6 +137,14 @@ export type StorySituation = {
   estimated_length: string;
   virality_score: number;
   recommended_angles: string[];
+  // Story Ideas + Creative Quality upgrade — additive, default-empty on any
+  // older cached/persisted card so nothing else needs to change.
+  human_situation?: string;
+  behavioral_tension?: string;
+  creative_mechanism?: string;
+  creative_engine?: string;
+  product_role?: string;
+  strong_concept?: boolean;
 };
 
 export type ScriptSection =
@@ -253,6 +261,8 @@ export type CreativeQualityAssessment = {
   dimensions: CreativeQualityDimension[];
   /** null = no evaluation attached to judge pass/fail from. */
   overall_passed: boolean | null;
+  /** Same value as overall_passed, under the explicit "🏆 WINNING SCRIPT" name. */
+  winning_script?: boolean | null;
 };
 
 export type GeneratedScript = {

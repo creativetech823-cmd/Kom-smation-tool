@@ -85,6 +85,24 @@ class CreativeQualityAssessment:
     dimensions: list[QualityDimension] = field(default_factory=list)
     overall_passed: bool | None = None  # None = no evaluation attached to judge pass/fail from
 
+    @property
+    def winning_script(self) -> bool | None:
+        """Story Ideas + Creative Quality Upgrade (2026-09-18 task), Part 15
+        — the explicit "🏆 WINNING SCRIPT" badge, distinct in NAME from a
+        Story Idea's "🏆 STRONG CONCEPT" badge (a script has actually been
+        executed; an idea has not). Deliberately the SAME boolean as
+        overall_passed, not a second independent computation: overall_passed
+        already is the AND of every dimension Part 15 lists (claim safety as
+        a hard gate that overrides everything else, plus every Creative
+        Director dimension — product truth via category_drift, creative
+        mechanism/execution, visual potential, memorability, distinctiveness
+        via competitor_swappable/same_idea_different_clothes, reference-DNA
+        alignment, payoff, and no generic-copy-collapse via announcement_mode/
+        abstract_copy_risk). A None here (not False) means no evaluation was
+        ever attached — never silently treated as "not winning" vs. "not yet
+        judged"."""
+        return self.overall_passed
+
     def as_dict(self) -> dict:
         return {
             "dimensions": [
@@ -92,6 +110,7 @@ class CreativeQualityAssessment:
                 for d in self.dimensions
             ],
             "overall_passed": self.overall_passed,
+            "winning_script": self.winning_script,
         }
 
 

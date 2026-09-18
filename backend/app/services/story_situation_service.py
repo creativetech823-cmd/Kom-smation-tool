@@ -5,20 +5,41 @@ from dataclasses import dataclass, field
 
 from app.config import settings
 from app.models.product import ScriptLanguage, StorySituation, StorySituationsInput, StorySituationsResult
+from app.services import claim_safety_service
 from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
+from app.services.creative_mechanism_catalog import catalog_prompt_block as mechanism_catalog_prompt_block
+from app.services.creative_mechanism_catalog import valid_mechanism_label
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 from app.services.product_context_service import build_product_creative_contract
 from app.services.product_context_validator import detect_category_drift_signal
-from app.services.semantic_story_judge_service import dedupe_by_cluster, judge_story_situations
+from app.services.semantic_story_judge_service import SemanticJudgment, dedupe_by_cluster, judge_story_situations
 
 logger = logging.getLogger("story_situation_service")
 
-# When the contract flags a known risky role, ask for a few extra candidates
-# so filtering out any that drift still leaves a full batch — cheap (same
-# single call, slightly larger response) and only changes behavior for a
-# product that actually carries a role_risk_key; every other product's
-# request is completely unchanged.
-_DRIFT_FILTER_BUFFER = 4
+# Story Ideas UI hard cap (2026-09-18 task, Part 12) — one generation NEVER
+# shows more than this many cards, enforced server-side regardless of what
+# StorySituationsInput.count requests.
+MAX_STORY_IDEAS_PER_GENERATION = 6
+
+# Internal candidate POOL size (Part 6) — generate a larger set, then filter
+# down to the final MAX_STORY_IDEAS_PER_GENERATION, rather than generating
+# exactly six and hoping all six survive every gate. Scales with the
+# requested count but stays inside the 12-20 range the task specifies.
+_POOL_MIN = 12
+_POOL_MAX = 20
+_POOL_MULTIPLIER = 3
+
+
+def _pool_size(requested_count: int) -> int:
+    return min(_POOL_MAX, max(_POOL_MIN, requested_count * _POOL_MULTIPLIER))
+
+
+# Above this genericness_risk (as a fraction of the mechanism cap check
+# below), no single creative_mechanism may claim more than this share of the
+# final selection — the mechanism-VARIETY requirement (Part 4): "2-3 may use
+# X, 2-3 may use Y, others use different mechanisms" as a soft cap, not a
+# forced distribution.
+_MAX_PER_MECHANISM_IN_FINAL = 3
 
 _LANGUAGE_NOTES: dict[ScriptLanguage, str] = {
     ScriptLanguage.english: (
@@ -80,9 +101,51 @@ categories in the same batch (for example: emotional/relational stories, inspira
 stories, educational/expert-authority stories, social/peer-context stories, everyday-lifestyle stories)
 — but choose category labels that fit this product rather than reusing a fixed taxonomy.
 
+CREATIVE DNA — real reference ad scripts for this exact space show these are the mechanisms that
+actually work; build candidates FROM them, don't just describe a product:
+- SHOW THE BEHAVIOR, don't explain the emotion — a specific action (reaching into a pocket, opening a
+  packet, checking a note) beats an abstract feeling statement every time.
+- An OBJECT can carry the whole story (a packet, a rupee note, a physical ritual) — it can create
+  curiosity, contrast, and a reveal on its own.
+- RITUAL CONTINUITY: the strongest recurring idea is not "quit the habit" — it's "the familiar
+  ritual/taste continues through a different choice." Do not force this into every candidate.
+- Persuasion mostly comes from a PEER, a colleague, a sibling, or the person's OWN realization — not
+  primarily an authority figure lecturing them. Family stories are fine; avoid a parent/doctor simply
+  telling the person what to do as the default device.
+- Natural, conversational, SPEAKABLE Hinglish/Hindi — never stiff AI-advertising phrasing like "every
+  choice is a step toward a healthier tomorrow."
+- VALUE MATH is a real mechanism, not just "a money angle": a specific number, visually accumulated
+  (a daily amount into a monthly total), that produces a realization — use it where it genuinely fits.
+- CHARACTER-AS-PROOF: a character's personality can be established through behavior BEFORE the product
+  ever appears, so the product choice reads as a natural extension of who they are.
+- Prefer concrete, sensory, BEHAVIORAL specificity over abstract statements ("his life was full of
+  stress" is weak; a specific recurring action is strong).
+
+CREATIVE MECHANISM VOCABULARY — internally construct each candidate from a HUMAN SITUATION + a SPECIFIC
+BEHAVIOR + an OBJECT/RITUAL + a TENSION + one of these CREATIVE MECHANISMS + the PRODUCT'S ROLE + a
+REVEAL/TURN + a PAYOFF. These are primitives to combine, never mandatory templates — preserve real
+creative freedom in how you use them:
+
+{mechanism_catalog}
+
+IMPORTANT — do not force the same one or two mechanisms into every candidate. Across the full batch you
+return, aim for REFERENCE-INSPIRED VARIETY: several genuinely different mechanisms represented (not
+every candidate as object-driven-reveal-plus-ritual-replacement), so the set doesn't read as the same
+advertisement with different characters wearing different mechanism labels.
+
 {language_note}For each situation produce:
 - "title": a punchy 3-7 word title
 - "description": 1-3 sentences establishing the person, their situation, and the emotional stakes
+- "human_situation": the specific person and moment this plays out in — more concrete than `description`,
+  answering "who, specifically, and in what specific moment?"
+- "behavioral_tension": a SPECIFIC, observable tension (e.g. "hiding a habit from a colleague who'd
+  judge him"), never a category-level generality ("wants a better life")
+- "creative_mechanism": exactly ONE label from the CREATIVE MECHANISM VOCABULARY above, copied exactly
+- "creative_engine": ONE sentence combining the specific behavior + object/ritual + creative turn —
+  e.g. "At a family photo, a grandfather's familiar pocket-reach creates an expected reveal, but the
+  object in his hand has changed." Must be concrete enough that an independent reader could picture the
+  actual moment, not a restated theme.
+- "product_role": the specific job the product does INSIDE this idea (not "it's mentioned")
 - "emotion": the core emotion driving it (e.g. "fear", "pride", "relief", "hope")
 - "persona": the protagonist/target character (e.g. "first-time gym-goer", "worried father")
 - "marketing_angle": the strategic angle this story sells on (e.g. "myth vs reality", "transformation", "expert authority")
@@ -91,6 +154,12 @@ stories, educational/expert-authority stories, social/peer-context stories, ever
 - "estimated_length": a realistic short-form runtime, one of "15s", "30s", "60s"
 - "virality_score": a number 0.0-10.0 with one decimal place, your honest calibrated estimate of shareability —
   spread your scores realistically across the batch, do not cluster everything above 9
+
+GENERICNESS SELF-CHECK before finalizing each candidate — if any answer is NO, revise or replace it:
+(1) Remove the product name — is there still an interesting human situation? (2) Could this exact
+concept sell toothpaste, perfume, insurance, or another unrelated consumer product unchanged? If yes,
+it's too generic. (3) Is there a specific behavior that makes this impossible to swap into another
+generic story? (4) Is it driven by an event/behavior/object/reveal, not an emotional explanation?
 
 If a list of already-shown titles is provided, none of your new situations may repeat those titles or
 be near-duplicates of their premise — treat them as creatively off-limits.
@@ -113,6 +182,11 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
     {{
       "title": string,
       "description": string,
+      "human_situation": string,
+      "behavioral_tension": string,
+      "creative_mechanism": string,
+      "creative_engine": string,
+      "product_role": string,
       "emotion": string,
       "persona": string,
       "marketing_angle": string,
@@ -129,7 +203,9 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
 
 def _system_prompt(language: ScriptLanguage) -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(
-        angle_catalog=catalog_prompt_block(), language_note=_language_note(language)
+        angle_catalog=catalog_prompt_block(),
+        mechanism_catalog=mechanism_catalog_prompt_block(),
+        language_note=_language_note(language),
     )
 
 
@@ -157,6 +233,98 @@ def _situation_text(item: dict) -> str:
     return " ".join(str(item.get(k) or "") for k in ("title", "description", "persona", "marketing_angle"))
 
 
+def _claim_safety_fields(payload: StorySituationsInput) -> "tuple[str, list[str], list[str]]":
+    """product_name, ingredients, approved_claims — same preference order as
+    script_service._claim_safety_inputs (Product Library context first, the
+    manually structured product otherwise), duplicated locally rather than
+    imported since script_service.py's version takes a ScriptGenerationInput,
+    not a StorySituationsInput; the logic is intentionally identical."""
+    ctx = payload.product_context
+    p = payload.structured_product
+    if ctx is not None:
+        return ctx.name, list(getattr(ctx, "ingredients", []) or p.ingredients), list(getattr(ctx, "approved_claims", []) or [])
+    return p.product_name, list(p.ingredients or []), []
+
+
+def _claim_safety_prefilter_evidence(item: dict, product_name: str, ingredients: list[str]) -> str:
+    """Free, deterministic-only screen (Part 9/10) — reuses
+    claim_safety_service's regex detectors directly rather than its full
+    check_claim_safety_and_coercion(), since that escalates to an LLM call
+    on every miss and this runs once PER CANDIDATE in a 12-20 candidate
+    pool (a per-candidate LLM call would be far too costly here). The
+    implied/metaphorical-claim and emotional-coercion layer that regex
+    structurally can't catch is instead handled by the SAME batched
+    semantic judge call below (see SemanticJudgment.implied_claim/
+    emotional_coercion) — one LLM call for the whole pool, not one per
+    candidate. Returns the offending clause, or ""."""
+    text = _situation_text(item)
+    evidence = claim_safety_service.detect_explicit_ingredient_efficacy_claim(text, ingredients)
+    if evidence:
+        return evidence
+    return claim_safety_service.detect_explicit_product_efficacy_claim(text, product_name)
+
+
+def _select_final_six(
+    items: list[dict], candidate_indices: list[int], judgment_by_index: dict[int, SemanticJudgment], limit: int,
+) -> list[int]:
+    """Mechanism-variety-aware selection (Part 4/8) over `candidate_indices`
+    ONLY (the actual gate survivors — a non-survivor must never occupy a
+    mechanism-cap slot and crowd out a survivor sharing its mechanism).
+    Ranks by creative_potential (highest first), then greedily fills the
+    final list while capping how many candidates share the same
+    creative_mechanism at _MAX_PER_MECHANISM_IN_FINAL, so the result is
+    "reference-inspired variety", not "reference-mechanism repetition".
+    Falls through to fill any remaining slots ignoring the cap if too few
+    distinct mechanisms exist among the survivors — never returns fewer
+    than min(limit, len(candidate_indices)) purely because of the variety
+    preference. Returns original list indices."""
+    ranked = sorted(
+        candidate_indices,
+        key=lambda i: judgment_by_index[i].creative_potential if i in judgment_by_index else 0.0,
+        reverse=True,
+    )
+    mechanism_counts: dict[str, int] = {}
+    selected: list[int] = []
+    for i in ranked:
+        if len(selected) >= limit:
+            break
+        mechanism = str(items[i].get("creative_mechanism") or "")
+        if mechanism_counts.get(mechanism, 0) >= _MAX_PER_MECHANISM_IN_FINAL:
+            continue
+        selected.append(i)
+        mechanism_counts[mechanism] = mechanism_counts.get(mechanism, 0) + 1
+    if len(selected) < limit:
+        for i in ranked:
+            if len(selected) >= limit:
+                break
+            if i not in selected:
+                selected.append(i)
+    return selected
+
+
+# STRONG CONCEPT badge (Part 15) — an AND of multiple independently-earned
+# conditions, never a numeric score threshold alone. A candidate scoring
+# 9.1/10 on creative_potential alone does NOT automatically qualify; it must
+# also be unambiguously product-correct, non-generic, claim-safe, and
+# genuinely distinct (survived dedup).
+_STRONG_CONCEPT_MIN_ROLE_ALIGNMENT = 0.8
+_STRONG_CONCEPT_MIN_CREATIVE_POTENTIAL = 0.7
+_STRONG_CONCEPT_MAX_GENERICNESS = 0.5
+
+
+def _is_strong_concept(j: "SemanticJudgment | None") -> bool:
+    if j is None:
+        return False
+    return (
+        j.decision == "clear_pass"
+        and not j.implied_claim
+        and not j.emotional_coercion
+        and j.genericness_risk <= _STRONG_CONCEPT_MAX_GENERICNESS
+        and j.creative_potential >= _STRONG_CONCEPT_MIN_CREATIVE_POTENTIAL
+        and j.product_role_alignment >= _STRONG_CONCEPT_MIN_ROLE_ALIGNMENT
+    )
+
+
 def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     """Stage 3.5 — structured product -> diverse story-situation options for
     the user to pick from. This is the FIRST creative decision in the whole
@@ -164,7 +332,13 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     ... -> Final Script), so it now builds and is grounded by the same
     Product Creative Contract every later stage receives — the user can no
     longer be offered a card that fundamentally misrepresents what the
-    product is before the script pipeline ever runs."""
+    product is before the script pipeline ever runs.
+
+    Story Ideas Creative DNA upgrade (2026-09-18 task): generates a larger
+    internal POOL (Part 6), screens it through claim-safety/category/
+    genericness/distinctiveness gates, then selects a mechanism-variety-
+    aware final six (Part 4/8) — never more than
+    MAX_STORY_IDEAS_PER_GENERATION regardless of payload.count."""
     p = payload.structured_product
     ctx = payload.product_context
     contract = build_product_creative_contract(
@@ -177,16 +351,14 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     )
     contract_block = contract.prompt_block()
 
-    # Only pad the request (and only filter afterward) for a product whose
-    # contract actually flags a known risky role — every other product's
-    # request/response shape is completely unchanged.
+    requested_count = min(payload.count, MAX_STORY_IDEAS_PER_GENERATION)
     has_role_risk = bool(contract.role_risk_keys)
-    request_count = payload.count + _DRIFT_FILTER_BUFFER if has_role_risk else payload.count
+    pool_count = _pool_size(requested_count)
 
     text = call_openrouter_with_retry(
         lambda: generate_text(
             system_instruction=_system_prompt(payload.script_language),
-            contents=[_build_user_message(payload, contract_block, request_count)],
+            contents=[_build_user_message(payload, contract_block, pool_count)],
             model=settings.creative_model,
             max_output_tokens=8192,
             json_mode=True,
@@ -204,6 +376,20 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         ) from e
 
     raw_items = data.get("situations", [])
+
+    # Product-name/ingredient efficacy pre-filter (Part 9/10) — free,
+    # deterministic, runs for EVERY product (not role-risk gated: an
+    # unsupported claim is wrong regardless of category).
+    product_name, ingredients, _approved = _claim_safety_fields(payload)
+    claim_safe_items = [
+        item for item in raw_items
+        if not _claim_safety_prefilter_evidence(item, product_name, ingredients)
+    ]
+    claim_dropped = len(raw_items) - len(claim_safe_items)
+    if claim_dropped:
+        logger.info("Filtered %d candidate(s) with an explicit unsupported claim for %s", claim_dropped, p.product_name)
+    raw_items = claim_safe_items
+
     if has_role_risk:
         # Product-truth safety net (Phase 2B §5-6): removes any candidate
         # whose title/description/persona/marketing_angle shows the product
@@ -224,50 +410,53 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         # every candidate genuinely misunderstood the product.
         raw_items = safe_items
 
-        # Phase 3 — Semantic Story Judge: catches drift that uses none of
-        # the deterministic detector's known patterns (e.g. "gets ready for
-        # his morning routine before his workout" — no food/fitness-
-        # supplement keyword, but the product's role has still quietly
-        # become a generic wellness item). Only ever runs for a product
-        # whose contract already flagged a real risk — same cost-control
-        # gate as the deterministic check.
-        judgments = judge_story_situations(contract, raw_items) if raw_items else []
-        if judgments is None:
-            # Judge unavailable this run (Phase 3 §K) — conservative
-            # degrade to the deterministic-only result already computed
-            # above. NEVER "judge failed -> trust the raw candidates";
-            # that would reopen exactly the fail-open hole Phase 2C closed.
-            logger.warning(
-                "Semantic story judge unavailable for %s — keeping deterministic-only result (%d candidates)",
-                p.product_name, len(raw_items),
+    # Semantic Story Judge (Phase 3, extended by the 2026-09-18 Creative DNA
+    # task) — now runs for EVERY product's pool, not just a role-risk one:
+    # genericness/distinctiveness/claim-safety screening (Part 7/8/9-11) are
+    # universal creative-quality concerns, not just category-drift concerns.
+    # Still ONE batched call for the whole pool (cost control unchanged).
+    judgments = judge_story_situations(contract, raw_items) if raw_items else []
+    judgment_by_index: dict[int, SemanticJudgment] = {}
+    if judgments is None:
+        # Judge unavailable this run (Phase 3 §K) — conservative degrade to
+        # the deterministic-only result already computed above, capped at
+        # the requested count with no mechanism-variety selection (nothing
+        # to rank by). NEVER "judge failed -> trust the raw candidates".
+        logger.warning(
+            "Semantic story judge unavailable for %s — keeping deterministic-only result (%d candidates)",
+            p.product_name, len(raw_items),
+        )
+        final_items = raw_items[:requested_count]
+    else:
+        judgment_by_index = {j.candidate_index: j for j in judgments if j.candidate_index < len(raw_items)}
+        # .passed now encodes decision==clear_pass AND non-generic AND no
+        # implied claim AND no emotional coercion (Part 7/9-11) in one place
+        # — see SemanticJudgment.passed.
+        passed_judgments = [j for j in judgments if j.candidate_index < len(raw_items) and j.passed]
+        semantic_dropped = len(raw_items) - len(passed_judgments)
+        if semantic_dropped:
+            logger.info(
+                "Semantic judge filtered %d additional story situation(s) for %s (drift, generic, "
+                "unsupported claim, or coercive framing)",
+                semantic_dropped, p.product_name,
             )
-        else:
-            # UNCERTAIN and CLEAR_DRIFT are both excluded — "uncertain" is
-            # never silently accepted (§A6). Any candidate the judge didn't
-            # return a judgment for at all is also excluded, not trusted.
-            clear_pass_judgments = [j for j in judgments if j.decision == "clear_pass" and j.candidate_index < len(raw_items)]
-            semantic_dropped = len(raw_items) - len(clear_pass_judgments)
-            if semantic_dropped:
-                logger.info(
-                    "Semantic judge filtered %d additional story situation(s) for %s (clear_drift or uncertain)",
-                    semantic_dropped, p.product_name,
-                )
-            # Semantic deduplication ("same idea, different clothes", Phase
-            # 3 Part C) over whatever survived judging — dedupe_by_cluster
-            # returns original candidate_index values, no re-indexing needed.
-            keep_indices = dedupe_by_cluster(clear_pass_judgments)
-            dedup_dropped = len(clear_pass_judgments) - len(keep_indices)
-            if dedup_dropped:
-                logger.info(
-                    "Semantic dedup removed %d near-duplicate story situation(s) for %s",
-                    dedup_dropped, p.product_name,
-                )
-            raw_items = [item for i, item in enumerate(raw_items) if i in keep_indices]
+        keep_indices = dedupe_by_cluster(passed_judgments)
+        dedup_dropped = len(passed_judgments) - len(keep_indices)
+        if dedup_dropped:
+            logger.info(
+                "Semantic dedup removed %d near-duplicate story situation(s) for %s", dedup_dropped, p.product_name,
+            )
+        survivor_indices = [i for i in range(len(raw_items)) if i in keep_indices]
+        final_indices = _select_final_six(raw_items, survivor_indices, judgment_by_index, requested_count)
+        final_items = [raw_items[i] for i in final_indices]
+        judgment_by_index = {new_i: judgment_by_index[old_i] for new_i, old_i in enumerate(final_indices) if old_i in judgment_by_index}
 
     situations = []
-    for item in raw_items[:payload.count]:
+    for idx, item in enumerate(final_items):
         item = {**item, "recommended_angles": valid_angle_labels(item.get("recommended_angles", []))}
-        situations.append(StorySituation(id=uuid.uuid4().hex[:12], **item))
+        item["creative_mechanism"] = valid_mechanism_label(item.get("creative_mechanism", ""))
+        strong = _is_strong_concept(judgment_by_index.get(idx))
+        situations.append(StorySituation(id=uuid.uuid4().hex[:12], strong_concept=strong, **item))
     return StorySituationsResult(situations=situations)
 
 
@@ -330,3 +519,19 @@ def generate_situations_with_quality_floor(
             "or this product's contract role_risk detection may be too strict for the given brief"
         ),
     )
+
+
+def generate_situations_for_request(payload: StorySituationsInput) -> StorySituationsResult:
+    """The router-facing entry point (2026-09-18 task, Part 13 — shortfall
+    behavior). Sets the quality floor to the FULL requested/capped count
+    (not just >=1), so generate_situations_with_quality_floor's existing
+    bounded-retry loop keeps trying (never regenerating the exact same
+    batch — see its exclude-titles logic) until either the full count
+    survives or MAX_QUALITY_FLOOR_ATTEMPTS is exhausted. quality_floor_met
+    then translates directly into generation_shortfall: False means the
+    full requested set was reached, True means fewer survived even after
+    bounded retries — shown as-is to the user, never padded with a
+    fabricated card to reach the count."""
+    requested_count = min(payload.count, MAX_STORY_IDEAS_PER_GENERATION)
+    result = generate_situations_with_quality_floor(payload, min_situations=requested_count)
+    return StorySituationsResult(situations=result.situations, generation_shortfall=not result.quality_floor_met)

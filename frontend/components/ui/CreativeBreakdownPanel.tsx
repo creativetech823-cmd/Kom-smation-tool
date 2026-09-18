@@ -165,7 +165,7 @@ function CreativeQualityAssessmentCard({ assessment }: { assessment: CreativeQua
         right={
           assessment.overall_passed !== null && (
             <Badge tone={assessment.overall_passed ? "success" : "warning"}>
-              {assessment.overall_passed ? "Passed review" : "Flagged for review"}
+              {assessment.overall_passed ? "🏆 WINNING SCRIPT" : "Flagged for review"}
             </Badge>
           )
         }

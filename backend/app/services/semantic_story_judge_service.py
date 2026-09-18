@@ -53,6 +53,14 @@ _SCORE_FIELDS = [
     "territory_alignment",
 ]
 
+# Above this genericness_risk, a candidate is rejected outright regardless of
+# its decision (Part 7's genericness test) — a candidate can score
+# "clear_pass" on product-truth/role-alignment while still being an
+# interchangeable, swap-the-product-name idea; genericness is a separate gate,
+# not folded into decision, since a product-correct-but-generic idea is a
+# different failure than a product-incorrect one.
+GENERIC_REJECTION_THRESHOLD = 0.75
+
 
 @dataclass
 class SemanticJudgment:
@@ -70,6 +78,16 @@ class SemanticJudgment:
     claim_safety: float = 1.0
     territory_alignment: float | None = None
     cluster_id: str = ""  # candidates sharing a cluster_id are "same idea, different clothes"
+    # Story Ideas Creative DNA upgrade (2026-09-18 task, Parts 9-11) — claim
+    # safety and emotional-authenticity signals computed in this SAME batched
+    # call (no extra LLM call), reusing claim_safety_service's vocabulary
+    # conceptually. The full semantic/narrative-implied-claim + coercion
+    # check that claim_safety_service.py runs is still the script-level hard
+    # gate; these are the cheaper idea-level screen so an unsafe concept
+    # never reaches "strong concept" status or gets picked at all when a
+    # safer alternative exists.
+    implied_claim: bool = False
+    emotional_coercion: bool = False
 
     @property
     def decision(self) -> str:
@@ -83,8 +101,20 @@ class SemanticJudgment:
         return "uncertain"
 
     @property
+    def is_generic(self) -> bool:
+        """Part 7's genericness test, as a hard boolean gate distinct from
+        `decision` — a candidate can be product-correct (clear_pass) and
+        still fail this on its own."""
+        return self.genericness_risk >= GENERIC_REJECTION_THRESHOLD
+
+    @property
     def passed(self) -> bool:
-        return self.decision == "clear_pass"
+        return (
+            self.decision == "clear_pass"
+            and not self.is_generic
+            and not self.implied_claim
+            and not self.emotional_coercion
+        )
 
 
 _SYSTEM_PROMPT = """You are a semantic judge for a set of short-form ad "story situation" candidates —
@@ -124,8 +154,21 @@ Also assign cluster_id (a short string) to each candidate: candidates that are f
 underlying creative idea — the same tension/reveal/mechanism with only the character, setting, or
 wording changed ("friend notices he stopped", "friend asks why he doesn't carry it anymore", "friend
 sees him using the new product instead" are the SAME idea in different clothes) — must share the exact
-same cluster_id. Genuinely different ideas get different cluster_id values. Do not force diversity by
-inventing differences that aren't really there, and do not force sameness either — judge honestly.
+same cluster_id. If a creative_mechanism/creative_engine is given per candidate, weigh that heavily:
+two candidates using the same underlying mechanism AND the same kind of behavior/object/turn, just with
+a different character or setting standing in for it, are the same cluster even if the wording differs a
+lot. Genuinely different ideas (different mechanism, different behavior, different turn) get different
+cluster_id values. Do not force diversity by inventing differences that aren't really there, and do not
+force sameness either — judge honestly.
+
+Also detect, per candidate:
+- implied_claim: true when the situation's premise (even just a title/description) implies an
+  unsupported health/efficacy outcome caused by the product — e.g. "before weak, after using it
+  energetic", a wilting-to-blooming metaphor, a prayer answered by the product working. A candidate
+  simply mentioning a given ingredient, or a general positioning idea, is NOT a claim on its own.
+- emotional_coercion: true when the premise relies on guilt, devotional/prayer-answered framing, a
+  child being blamed for a parent's suffering, or family approval being tied to the purchase decision
+  to persuade — NOT true for an ordinary warm family/relationship story with no guilt/pressure mechanism.
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"judgments": [
@@ -133,17 +176,29 @@ Return ONLY this JSON, no prose, no markdown fences:
    "product_truth_alignment": number, "audience_alignment": number, "behavior_alignment": number,
    "product_role_alignment": number, "creative_potential": number, "memorability": number,
    "visual_potential": number, "genericness_risk": number, "claim_safety": number,
-   "territory_alignment": number_or_null, "cluster_id": string}
+   "territory_alignment": number_or_null, "cluster_id": string,
+   "implied_claim": boolean, "emotional_coercion": boolean}
 ]}"""
 
 
 def _candidate_block(index: int, item: dict) -> str:
-    return (
-        f"[{index}] title: {item.get('title', '')}\n"
-        f"    description: {item.get('description', '')}\n"
-        f"    persona: {item.get('persona', '')}\n"
-        f"    marketing_angle: {item.get('marketing_angle', '')}"
-    )
+    lines = [
+        f"[{index}] title: {item.get('title', '')}",
+        f"    description: {item.get('description', '')}",
+        f"    persona: {item.get('persona', '')}",
+        f"    marketing_angle: {item.get('marketing_angle', '')}",
+    ]
+    # Story Ideas Creative DNA upgrade (2026-09-18 task) — additive fields
+    # only present once story_situation_service.py's new pool-generation
+    # prompt is in use; older/mocked candidate dicts without them are
+    # unaffected (nothing is appended).
+    if item.get("creative_mechanism"):
+        lines.append(f"    creative_mechanism: {item.get('creative_mechanism', '')}")
+    if item.get("creative_engine"):
+        lines.append(f"    creative_engine: {item.get('creative_engine', '')}")
+    if item.get("behavioral_tension"):
+        lines.append(f"    behavioral_tension: {item.get('behavioral_tension', '')}")
+    return "\n".join(lines)
 
 
 def _user_message(contract: ProductCreativeContract, candidates: list[dict], territory_block: str = "") -> str:
@@ -175,6 +230,8 @@ def _parse_judgment(raw: dict) -> SemanticJudgment | None:
         reason=str(raw.get("reason") or ""),
         territory_alignment=territory,
         cluster_id=str(raw.get("cluster_id") or f"_ungrouped_{index}"),
+        implied_claim=bool(raw.get("implied_claim")),
+        emotional_coercion=bool(raw.get("emotional_coercion")),
         **kwargs,
     )
 

@@ -119,7 +119,7 @@ def evaluate_candidates(
             ]
 
     judgment_by_index = {j.candidate_index: j for j in judgments}
-    clear_pass_judgments = [j for j in judgments if j.decision == "clear_pass"]
+    clear_pass_judgments = [j for j in judgments if j.passed]
     keep_indices = dedupe_by_cluster(clear_pass_judgments) if (has_role_risk and judge_available) else set(det_survivor_indices)
 
     for i, c in enumerate(candidates):

@@ -196,6 +196,20 @@ class StorySituation(BaseModel):
     # Creative Angle (execution style) — the HOW, distinct from marketing_angle
     # (the WHY/strategy). Labels drawn from creative_angles.CREATIVE_ANGLES.
     recommended_angles: list[str] = Field(default_factory=list)
+    # Story-Ideas Creative DNA upgrade (2026-09-18 task) — additive fields,
+    # all default-empty so any existing consumer of this model (older
+    # persisted projects, tests) is unaffected. Populated by
+    # story_situation_service.py's pool-generation + filtering pipeline.
+    human_situation: str = ""  # the specific person/moment, distinct from the broader `description`
+    behavioral_tension: str = ""  # the concrete, observable tension — never a category-level generality
+    creative_mechanism: str = ""  # a label from creative_mechanism_catalog.CREATIVE_MECHANISMS
+    creative_engine: str = ""  # one sentence: WHAT behavior + WHAT object/ritual + WHAT creative turn
+    product_role: str = ""  # the specific job the product does inside this idea
+    # True only when this candidate cleared every hard gate (product truth,
+    # claim safety, category correctness, non-genericness, distinctiveness)
+    # AND scored strongly — an AND of earned conditions, never a numeric
+    # score threshold alone. See story_situation_service._is_strong_concept.
+    strong_concept: bool = False
 
 
 class StorySituationsInput(BaseModel):
@@ -203,7 +217,12 @@ class StorySituationsInput(BaseModel):
 
     structured_product: StructuredProduct
     product_category: str = Field(..., min_length=1)
-    count: int = 10
+    # Story Ideas UI hard cap (2026-09-18 task, Part 12): one generation
+    # never shows more than 6 cards. Default changed from 10 to 6 to match;
+    # generate_situations() also hard-caps its return at 6 regardless of
+    # what's requested here, so a caller passing a larger value still never
+    # gets more than 6 back.
+    count: int = 6
     exclude_titles: list[str] = Field(default_factory=list)
     script_language: ScriptLanguage = ScriptLanguage.hinglish
     # Set when the user selected an AyushWellness Product Library product —
@@ -214,6 +233,11 @@ class StorySituationsInput(BaseModel):
 
 class StorySituationsResult(BaseModel):
     situations: list[StorySituation] = Field(default_factory=list)
+    # True when fewer than the requested (capped-at-6) concepts survived the
+    # quality/safety gates even after bounded retries (Part 13) — the
+    # frontend should show only the valid concepts and MAY surface this as a
+    # "fewer strong concepts this time" note, never pad with weak filler.
+    generation_shortfall: bool = False
 
 
 class ScriptGenerationInput(BaseModel):

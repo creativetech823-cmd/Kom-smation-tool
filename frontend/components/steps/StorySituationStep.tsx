@@ -330,6 +330,12 @@ function SituationCard({
         <Badge tone={viralityTone(situation.virality_score)}>⚡ {situation.virality_score.toFixed(1)}/10</Badge>
       </div>
 
+      {situation.strong_concept && (
+        <div className="mb-1.5">
+          <Badge tone="success">🏆 STRONG CONCEPT</Badge>
+        </div>
+      )}
+
       <h3 className="text-[15px] font-semibold leading-snug text-[var(--foreground)]">{situation.title}</h3>
       <p className="mt-1 line-clamp-3 text-[13px] leading-snug text-[var(--muted)]">{situation.description}</p>
 

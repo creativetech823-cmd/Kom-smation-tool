@@ -124,7 +124,11 @@ def test_drifted_herbal_masala_cards_are_filtered_out():
     assert "Friend Notices the Change" in titles
 
 
-def test_request_count_is_padded_when_product_has_role_risk():
+def test_request_count_is_pool_sized_when_product_has_role_risk():
+    """2026-09-18 Creative DNA task, Part 6 — the model is always asked for
+    a larger internal POOL (12-20), not just count+buffer, regardless of
+    role risk (see test below for the non-risk case getting the same
+    pool-sizing treatment now)."""
     response = json.dumps({"situations": CLEAN_CARDS})
     captured = {}
 
@@ -134,7 +138,7 @@ def test_request_count_is_padded_when_product_has_role_risk():
 
     with patch.object(svc, "generate_text", side_effect=fake):
         svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=4))
-    assert f"Generate exactly {4 + svc._DRIFT_FILTER_BUFFER} story situations" in captured["user_message"]
+    assert f"Generate exactly {svc._pool_size(4)} story situations" in captured["user_message"]
 
 
 def test_returns_fewer_or_zero_cards_rather_than_falling_back_to_unfiltered_when_everything_drifted():
@@ -290,7 +294,10 @@ def test_fitness_context_alone_without_product_role_is_not_flagged():
     assert detect_category_drift_signal(text, contract) == ""
 
 
-def test_immune_care_unaffected_no_padding_no_filtering_call():
+def test_immune_care_gets_pool_sized_request_and_deterministic_filter_still_skipped():
+    """2026-09-18 task: pool-sizing is now universal (no product is exempt),
+    but the DETERMINISTIC category-drift check stays role_risk-gated — it's
+    genuinely inapplicable to a product with no known risky role."""
     response = json.dumps({"situations": [
         {
             "title": "Kitchen Chaos", "description": "A mother in her kitchen juggling immunity routines while cooking breakfast for her kids.",
@@ -304,18 +311,22 @@ def test_immune_care_unaffected_no_padding_no_filtering_call():
         captured["user_message"] = kwargs["contents"][0]
         return response
 
-    with patch.object(svc, "generate_text", side_effect=fake):
+    with patch.object(svc, "generate_text", side_effect=fake), \
+         patch.object(svc, "detect_category_drift_signal") as mock_det:
         result = svc.generate_situations(_payload(IMMUNE_CARE, "nutraceuticals", count=1))
-    # No buffer padding for a product with no role_risk_keys.
-    assert "Generate exactly 1 story situations" in captured["user_message"]
-    # A kitchen/cooking-adjacent card is fine for THIS product — it's never even checked.
+    assert f"Generate exactly {svc._pool_size(1)} story situations" in captured["user_message"]
+    mock_det.assert_not_called()
+    # A kitchen/cooking-adjacent card is fine for THIS product — the
+    # deterministic category check never runs for it either way.
     assert len(result.situations) == 1
     assert result.situations[0].title == "Kitchen Chaos"
 
 
-def test_immune_care_never_calls_the_semantic_judge():
-    """A product with no role_risk_keys must never pay for the semantic
-    judge call — same cost-control gate as the deterministic check."""
+def test_immune_care_now_DOES_call_the_semantic_judge_for_genericness_and_dedup():
+    """2026-09-18 Creative DNA task, Part 6-8: genericness/distinctiveness
+    screening is a UNIVERSAL creative-quality concern, not just a category-
+    drift concern — the semantic judge now runs for every product's pool,
+    superseding the earlier role_risk-only gate on this specific call."""
     response = json.dumps({"situations": [
         {
             "title": "Breakfast Routine", "description": "A mother gives her kids their daily immunity tablet with breakfast.",
@@ -324,9 +335,11 @@ def test_immune_care_never_calls_the_semantic_judge():
         },
     ]})
     with patch.object(svc, "generate_text", return_value=response), \
-         patch.object(svc, "judge_story_situations") as mock_judge:
+         patch.object(svc, "judge_story_situations", return_value=None) as mock_judge:
         result = svc.generate_situations(_payload(IMMUNE_CARE, "nutraceuticals", count=1))
-    mock_judge.assert_not_called()
+    mock_judge.assert_called_once()
+    # Judge unavailable (None) degrades to the deterministic-only result —
+    # still 1 candidate, never dropped just because the judge didn't run.
     assert len(result.situations) == 1
 
 
@@ -431,9 +444,13 @@ def test_judge_failure_never_reintroduces_a_deterministically_rejected_candidate
     assert "The Automatic Reach" in titles
 
 
-def test_generic_but_product_correct_candidate_is_kept_not_rejected():
-    """Genericness is a SCORE, not a rejection reason — the judge must not
-    become another form of over-filtering conventional-but-correct ideas."""
+def test_severely_generic_candidate_is_now_rejected():
+    """2026-09-18 Creative DNA task, Part 7 — explicit policy change from
+    the earlier "genericness is a score, not a gate" design: the task's
+    GENERICNESS TEST explicitly requires rejecting a candidate that could
+    sell almost any product unchanged. genericness_risk >=
+    GENERIC_REJECTION_THRESHOLD (0.75) is now a hard reject via
+    SemanticJudgment.passed/is_generic, regardless of product_role_alignment."""
     generic_card = {
         "title": "Switching to a Better Option", "description": "A person uses Aayush Herbal Masala instead of gutka.",
         "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
@@ -448,8 +465,30 @@ def test_generic_but_product_correct_candidate_is_kept_not_rejected():
     with patch.object(svc, "generate_text", return_value=response), \
          patch("app.services.story_situation_service.judge_story_situations", return_value=judgments):
         result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=1))
+    assert result.situations == []
+
+
+def test_moderately_generic_candidate_below_threshold_is_still_kept():
+    """The genericness gate is a THRESHOLD, not zero-tolerance — a
+    conventional-but-not-extreme idea (below GENERIC_REJECTION_THRESHOLD)
+    must still be allowed through, preserving Part 20's "don't over-filter
+    into boring" requirement."""
+    ok_card = {
+        "title": "A Familiar Switch", "description": "A person uses Aayush Herbal Masala instead of gutka.",
+        "emotion": "e", "persona": "p", "marketing_angle": "m", "category": "c", "difficulty": "easy",
+        "estimated_length": "30s", "virality_score": 5.0, "recommended_angles": [],
+    }
+    sj = sj_module()
+    judgments = [sj._parse_judgment({
+        "candidate_index": 0, "semantic_category_drift": False, "product_role_alignment": 0.85,
+        "creative_potential": 0.6, "genericness_risk": 0.5, "cluster_id": "a",
+    })]
+    response = json.dumps({"situations": [ok_card]})
+    with patch.object(svc, "generate_text", return_value=response), \
+         patch("app.services.story_situation_service.judge_story_situations", return_value=judgments):
+        result = svc.generate_situations(_payload(HERBAL_MASALA, "herbal_health", count=1))
     assert len(result.situations) == 1
-    assert result.situations[0].title == "Switching to a Better Option"
+    assert result.situations[0].title == "A Familiar Switch"
 
 
 def test_strong_product_correct_creative_candidate_is_kept():
@@ -495,14 +534,17 @@ def test_contract_is_built_fresh_and_reaches_both_generation_and_judge():
     assert captured_judge["contract"].role_risk_keys  # the same contract-building path reached the judge
 
 
-def test_choose_your_story_api_response_contract_unchanged():
-    """StorySituation must not gain new fields from Phase 3 — internal
-    scoring stays internal, per the explicit 'do not change the UI
-    unnecessarily' instruction."""
+def test_choose_your_story_api_response_contract_has_the_new_creative_dna_fields():
+    """2026-09-18 Creative DNA task, Part 14 — explicitly REQUIRES new card
+    fields (human_situation, behavioral_tension, creative_mechanism,
+    creative_engine, product_role, strong_concept) on top of the
+    Phase-3-era contract, superseding the earlier 'no new fields' test."""
     from app.models.product import StorySituation
 
     expected_fields = {
         "id", "title", "description", "emotion", "persona", "marketing_angle",
         "category", "difficulty", "estimated_length", "virality_score", "recommended_angles",
+        "human_situation", "behavioral_tension", "creative_mechanism", "creative_engine",
+        "product_role", "strong_concept",
     }
     assert set(StorySituation.model_fields.keys()) == expected_fields

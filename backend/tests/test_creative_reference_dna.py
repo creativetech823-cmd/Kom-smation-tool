@@ -5,11 +5,18 @@ content, when the brief's category differs from the reference material's."""
 from app.services import creative_reference_dna as dna
 
 
-def test_every_usable_record_has_a_valid_architecture_key():
+def test_every_usable_record_has_a_valid_architecture_key_or_is_mechanism_only():
     from app.services.creative_architecture import ARCHITECTURES
 
+    # 2026-09-18 Creative DNA task added mechanism-only reference records
+    # (retrieved by creative_mechanism via mechanism_notes(), not by
+    # architecture via relevant_notes()) — architecture="" is legitimate for
+    # those specifically, never for any other record.
     for record in dna.REFERENCE_RECORDS:
         if record.is_anti_pattern:
+            continue
+        if record.architecture == "":
+            assert record.creative_mechanism, f"{record.video_id} has no architecture and no mechanism either"
             continue
         assert record.architecture in ARCHITECTURES, record.video_id
 

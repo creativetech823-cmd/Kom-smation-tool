@@ -66,7 +66,7 @@ from app.services.script_alternatives_service import generate_alternatives
 from app.services.script_command_service import run_script_command
 from app.services.script_service import generate_script, regenerate_script_section
 from app.services.script_suggestions_service import suggest_script_improvements
-from app.services.story_situation_service import generate_situations
+from app.services.story_situation_service import generate_situations_for_request
 from app.services.tts_service import synthesize_voiceover
 from app.services.visual_concept_service import (
     generate_static_visual,
@@ -232,9 +232,13 @@ def add_reference_material_url(payload: FetchUrlInput) -> ReferenceMaterial:
 
 @router.post("/story-situations", response_model=StorySituationsResult)
 def story_situations(payload: StorySituationsInput) -> StorySituationsResult:
-    """Stage 3.5 — structured product -> diverse story-situation options for the user to pick from."""
+    """Stage 3.5 — structured product -> diverse story-situation options for
+    the user to pick from. Routes through generate_situations_for_request
+    (Part 13's bounded-retry shortfall wrapper around the unmodified
+    generate_situations()) so a thin first batch gets one more bounded shot
+    before the user ever sees generation_shortfall=true."""
     try:
-        return generate_situations(payload)
+        return generate_situations_for_request(payload)
     except Exception as e:
         logger.exception("Unhandled error in generate_situations")
         raise HTTPException(502, f"Couldn't generate story ideas: {e}")
