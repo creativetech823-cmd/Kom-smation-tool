@@ -90,25 +90,26 @@ def _run_generate_script_fully_mocked(caplog=None):
             p.stop()
 
 
-# --- 8: [SCRIPT_GENERATION] timing logs are present at INFO level ----------
+# --- 8: [GENERATE_SCRIPT] timing logs are present at INFO level ------------
+# (renamed from [SCRIPT_GENERATION] in the 2026-09-18 timeout-fix task)
 
 
 def test_script_generation_stage_timing_logs_are_emitted(caplog):
     with caplog.at_level(logging.INFO, logger="script_service"):
         _run_generate_script_fully_mocked()
     messages = [r.message for r in caplog.records]
-    assert any(m.startswith("[SCRIPT_GENERATION] start") for m in messages)
-    assert any(m.startswith("[SCRIPT_GENERATION] creative planning complete") for m in messages)
-    assert any(m.startswith("[SCRIPT_GENERATION] final script start") for m in messages)
-    assert any(m.startswith("[SCRIPT_GENERATION] validation complete") for m in messages)
-    assert any(m.startswith("[SCRIPT_GENERATION] complete") for m in messages)
+    assert any(m.startswith("[GENERATE_SCRIPT] start") for m in messages)
+    assert any(m.startswith("[GENERATE_SCRIPT] creative planning complete") for m in messages)
+    assert any(m.startswith("[GENERATE_SCRIPT] final script start") for m in messages)
+    assert any(m.startswith("[GENERATE_SCRIPT] validation complete") for m in messages)
+    assert any(m.startswith("[GENERATE_SCRIPT] complete") for m in messages)
 
 
 def test_script_generation_logs_never_include_prompt_or_script_content(caplog):
     with caplog.at_level(logging.INFO, logger="script_service"):
         _run_generate_script_fully_mocked()
     for r in caplog.records:
-        if r.name != "script_service" or "[SCRIPT_GENERATION]" not in r.message:
+        if r.name != "script_service" or "[GENERATE_SCRIPT]" not in r.message:
             continue
         assert "A specific hook line" not in r.message
         assert "A body line that develops the story" not in r.message

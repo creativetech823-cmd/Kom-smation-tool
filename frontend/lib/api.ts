@@ -81,20 +81,32 @@ async function get<TResponse>(path: string): Promise<TResponse> {
 // still genuinely in progress on the backend.
 const POST_TIMEOUT_MS = 180_000;
 
-// Urgent demo fix (2026-09-18, same-day follow-up): POST /pipeline/
-// generate-script (and regenerate-script-section's full/length rewrite
-// path, which runs the identical long pipeline) walks a long sequential
-// chain of LLM calls — creative insight/territory/architecture/premise/
-// hook/outline planning, the main final-script write, then claim-safety/
-// quality/architecture-director gates — with no per-endpoint budget of its
-// own, so it can legitimately take noticeably longer than Story Ideas'
-// pool generation. The shared 180s POST_TIMEOUT_MS was aborting a request
-// that was still genuinely in progress on the backend (confirmed: no
-// OpenRouter/backend error, just this endpoint's real end-to-end latency).
-// Scoped to this endpoint only via an explicit override — every other
-// caller of `post()` (including Story Ideas) is completely unaffected and
-// keeps the 180s default.
-const SCRIPT_GENERATION_TIMEOUT_MS = 300_000;
+// Generate-script timeout fix (2026-09-18 task, second follow-up): POST
+// /pipeline/generate-script (and regenerate-script-section's full/length
+// rewrite path, which runs the identical long pipeline) walks a long
+// sequential chain of LLM calls — creative insight/territory/architecture/
+// premise/hook/outline planning, the main final-script write, then claim-
+// safety/quality/architecture-director gates, any of which can trigger ONE
+// rewrite pass (another full LLM call) — with NO per-endpoint budget of its
+// own on the backend (confirmed: script_service.py has no aggregate
+// deadline object at all, unlike Story Ideas' purpose-built one). A prior
+// fix raised this from 180s to 300s, but real generations — especially ones
+// that trigger a gate rewrite — can still legitimately exceed 300s; the
+// browser was aborting a request that was still genuinely in progress on
+// the backend (confirmed: no OpenRouter/backend error, just real end-to-end
+// latency across many sequential calls plus a possible rewrite pass).
+//
+// This is deliberately NOT another short "expected completion" deadline —
+// the user is fine with generation taking several minutes. It's a dead-
+// connection safety net only, set far above any realistic normal duration
+// (a handful of minutes even with a rewrite pass) so a genuinely hung
+// connection still eventually surfaces an error instead of an infinite
+// spinner (the original "stuck loading" bug class this file's first fix
+// addressed), without truncating a legitimately slow, still-progressing
+// generation. Scoped to this endpoint only — every other caller of `post()`
+// (including Story Ideas) is completely unaffected and keeps the 180s
+// default.
+const SCRIPT_GENERATION_TIMEOUT_MS = 20 * 60_000; // 20 minutes — safety net, not an expected duration
 
 async function post<TResponse>(path: string, body: unknown, timeoutMs: number = POST_TIMEOUT_MS): Promise<TResponse> {
   const controller = new AbortController();

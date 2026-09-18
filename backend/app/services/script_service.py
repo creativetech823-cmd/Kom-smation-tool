@@ -1150,10 +1150,14 @@ def _rewrite_for_quality(
     # quality/architecture gate actually flagged something, never on every
     # generation — so this uses the final_script tier (Pro), same as the
     # original write.
-    return _generate_with_recovery(
+    _rewrite_start = time.monotonic()
+    logger.info("[GENERATE_SCRIPT] rewrite start model=%s", settings.final_script_model)
+    result = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, content_type,
         model=settings.final_script_model, label="gate_rewrite",
     )
+    logger.info("[GENERATE_SCRIPT] rewrite complete elapsed=%.1fs", time.monotonic() - _rewrite_start)
+    return result
 
 
 def _rewrite_context_for_issues(pre: "CreativePreStageResult | None", issues: list[str]) -> str:
@@ -1780,17 +1784,20 @@ def _generate_full_script_tracked(
     avoid_repeating_hook: str = "",
     avoid_repeating_mechanism: str = "",
 ) -> GeneratedScript:
-    # [SCRIPT_GENERATION] stage timing (2026-09-18 urgent demo task) —
-    # observability only, matching the Story Ideas [STORY_IDEAS] convention;
-    # never affects timeout/retry behavior. Logs stage name, elapsed
-    # seconds, and (where safe) model name only — never prompts, product
-    # descriptions, or script content.
+    # [GENERATE_SCRIPT] stage timing (2026-09-18 task — timeout fix
+    # follow-up, renamed from [SCRIPT_GENERATION]) — observability only,
+    # matching the Story Ideas [STORY_IDEAS] convention; never affects
+    # timeout/retry behavior. Logs stage name, elapsed seconds, and (where
+    # safe) model name only — never prompts, product descriptions, or
+    # script content. A retry's own attempt number is already logged by
+    # call_openrouter_with_retry itself ("[label] attempt=N/M failed...",
+    # openrouter_utils.py) — not duplicated here.
     _script_gen_start = time.monotonic()
-    logger.info("[SCRIPT_GENERATION] start")
+    logger.info("[GENERATE_SCRIPT] start")
     pre = _run_creative_pre_stages(payload, target_duration)
     payload = pre.payload
     logger.info(
-        "[SCRIPT_GENERATION] creative planning complete elapsed=%.1fs",
+        "[GENERATE_SCRIPT] creative planning complete elapsed=%.1fs",
         time.monotonic() - _script_gen_start,
     )
     user_message = _context_block(payload, target_duration, target_word_count)
@@ -1823,27 +1830,35 @@ def _generate_full_script_tracked(
     # already produced (insight/territory/architecture/premise/hook/outline)
     # rather than a generic "write an ad" prompt.
     logger.info(
-        "[SCRIPT_GENERATION] final script start model=%s elapsed=%.1fs",
+        "[GENERATE_SCRIPT] final script start model=%s elapsed=%.1fs",
         settings.final_script_model, time.monotonic() - _script_gen_start,
     )
     data = _generate_with_recovery(
         system, user_message, _MAX_TOKENS, target_duration, target_word_count, payload.content_type,
         model=settings.final_script_model, label="final_script_write",
     )
+    logger.info(
+        "[GENERATE_SCRIPT] final script complete elapsed=%.1fs", time.monotonic() - _script_gen_start,
+    )
     # Claim-safety/coercion HARD gate — runs FIRST, before the quality and
     # architecture gates get their own one rewrite each, so neither can
     # spend its shot on something else while an unsupported claim or
     # coercive framing survives untouched.
+    logger.info("[GENERATE_SCRIPT] claim safety gate start elapsed=%.1fs", time.monotonic() - _script_gen_start)
     data, claim_safety_result = _apply_claim_safety_gate(
         data, payload, target_duration, target_word_count, payload.content_type
     )
+    logger.info("[GENERATE_SCRIPT] claim safety gate complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
+    logger.info("[GENERATE_SCRIPT] quality gate start elapsed=%.1fs", time.monotonic() - _script_gen_start)
     data = _apply_quality_gate(
         data, payload, target_duration, target_word_count, payload.content_type, run_semantic_check=True,
         pre=pre,
     )
+    logger.info("[GENERATE_SCRIPT] quality gate complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
+    logger.info("[GENERATE_SCRIPT] architecture gate start elapsed=%.1fs", time.monotonic() - _script_gen_start)
     data, evaluation = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
     logger.info(
-        "[SCRIPT_GENERATION] validation complete elapsed=%.1fs", time.monotonic() - _script_gen_start,
+        "[GENERATE_SCRIPT] validation complete elapsed=%.1fs", time.monotonic() - _script_gen_start,
     )
     architecture_key = pre.architecture.key if pre.architecture else ""
     # Creative Breakdown / Quality Assessment — deterministic renderers,
@@ -1884,7 +1899,7 @@ def _generate_full_script_tracked(
             human_tension=pre.territory.human_tension if pre.territory else "",
             creative_question=pre.territory.creative_question if pre.territory else "",
         )
-    logger.info("[SCRIPT_GENERATION] complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
+    logger.info("[GENERATE_SCRIPT] complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
     return result
 
 
