@@ -13,7 +13,13 @@ services:
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_TEXT_MODEL
-        value: google/gemini-2.5-flash
+        value: openai/gpt-5.6-luna
+      - key: OPENROUTER_CREATIVE_MODEL
+        value: openai/gpt-5.6-luna
+      - key: OPENROUTER_FINAL_SCRIPT_MODEL
+        value: openai/gpt-5.6-luna
+      - key: OPENROUTER_VALIDATION_MODEL
+        value: google/gemini-2.5-flash-lite
       - key: OPENROUTER_IMAGE_MODEL
         value: google/gemini-2.5-flash-image
       - key: IMAGE_GENERATION_ENABLED
