@@ -387,6 +387,7 @@ def generate_text(
     temperature: float | None = None,
     label: str = "",
     reasoning_effort: str | None = "__default__",
+    timeout: float | None = None,
 ) -> str:
     """A single OpenRouter chat-completion call — system prompt + content in,
     plain text or raw JSON text out. `contents` may mix plain strings with
@@ -404,7 +405,19 @@ def generate_text(
     "unrelated changes" across every service module); passing reasoning_effort
     explicitly (including None, to omit the field entirely) still overrides
     the default per-call. Never "maximum reasoning on every call" by
-    default — settings.openrouter_reasoning_effort defaults to "medium"."""
+    default — settings.openrouter_reasoning_effort defaults to "medium".
+
+    timeout (Story Ideas budget-overshoot fix, 2026-09-18 task): per-call
+    override of the shared client's 120s default (httpx supports this on a
+    per-request basis without touching the client itself). None (the
+    default, every existing call site) means "use the client's 120s" —
+    completely unaffected. Only story_situation_service.py's pool-generation
+    call and semantic_story_judge_service.py's judge call pass an explicit,
+    shorter value, since together they're the two sequential LLM calls
+    inside one Story Ideas "attempt" that must collectively fit inside the
+    ~90s aggregate budget — every other pipeline stage's timeout is
+    deliberately untouched, per the explicit "don't globally reduce it"
+    instruction."""
     body: dict = {
         "model": model,
         "messages": _build_messages(system_instruction, contents),
@@ -422,7 +435,10 @@ def generate_text(
     # BEFORE the request so it's visible even if the call fails; never logs
     # the key, the prompt, or any request/response body content.
     logger.info("[LLM] provider=openrouter model=%s stage=%s", model, label or "unlabeled")
-    response = get_openrouter_client().post("/chat/completions", json=body)
+    request_kwargs = {"json": body}
+    if timeout is not None:
+        request_kwargs["timeout"] = timeout
+    response = get_openrouter_client().post("/chat/completions", **request_kwargs)
     response.raise_for_status()
     try:
         response_json = response.json()
@@ -521,7 +537,21 @@ def call_openrouter_with_retry(fn: Callable[[], T], *, label: str = "openrouter"
                 code = e.response.status_code if isinstance(e, httpx.HTTPStatusError) else None
                 message = str(e).lower()
                 client_closed = "client has been closed" in message
-                transient = code in (429, 500, 502, 503) or "timeout" in message or client_closed
+                # Bug found and fixed while verifying Story Ideas timeout
+                # behavior (2026-09-18 task): httpx's OWN timeout exceptions
+                # (ReadTimeout/ConnectTimeout/WriteTimeout/PoolTimeout) say
+                # "timed out", not "timeout" — the string literal below never
+                # matched them, so a genuine per-call timeout was silently
+                # classified as non-transient and got ZERO retries, contrary
+                # to this function's documented intent ("Retries transient
+                # failures (quota/server/timeout/...)"). Checking the actual
+                # exception class (httpx.TimeoutException, the real base
+                # class for all four) is correct regardless of message
+                # wording — the "timeout" substring check is kept only as a
+                # defensive fallback for any other exception type that
+                # happens to describe itself that way.
+                is_httpx_timeout = isinstance(e, httpx.TimeoutException)
+                transient = code in (429, 500, 502, 503) or is_httpx_timeout or "timeout" in message or client_closed
             circuit_model = getattr(e, "diagnostics", {}).get("model") if isinstance(e, OpenRouterError) else None
             breaker_tripped = False
             if transient and circuit_model:

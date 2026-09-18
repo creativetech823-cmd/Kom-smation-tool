@@ -8,7 +8,7 @@ import { ApiError, getProject } from "@/lib/api";
 
 export default function Home() {
   const router = useRouter();
-  const { activeProjectId } = useActiveProject();
+  const { activeProjectId, setActiveProject } = useActiveProject();
   // "checking" briefly gates the very first render so a stale active-project
   // pointer never flashes a fresh pipeline before the redirect fires.
   const [phase, setPhase] = useState<"checking" | "fresh">("checking");
@@ -37,15 +37,21 @@ export default function Home() {
         if (cancelled) return;
         // The remembered project is gone or unreachable — fall back to a
         // fresh session rather than getting stuck on a loading screen.
-        if (!(e instanceof ApiError && e.status === 404)) {
-          // Non-404 (network/server) failures still fall through to fresh,
-          // but are worth distinguishing if this ever needs richer handling.
+        if (e instanceof ApiError && e.status === 404) {
+          // The project this pointer refers to no longer exists (deleted,
+          // or from a previous DB) — clear it so it isn't re-requested (and
+          // 404s again) on every future visit to this page.
+          setActiveProject(null);
         }
         setPhase("fresh");
       });
     return () => {
       cancelled = true;
     };
+    // setActiveProject is a new function identity on every ProjectProvider
+    // render (not memoized) — including it here would re-fire this effect
+    // (and re-request the same project) on unrelated parent re-renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeProjectId, router]);
 
   if (phase === "checking") {

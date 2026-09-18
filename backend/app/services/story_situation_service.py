@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 
@@ -35,6 +36,19 @@ _POOL_MULTIPLIER = 3
 
 def _pool_size(requested_count: int) -> int:
     return min(_POOL_MAX, max(_POOL_MIN, requested_count * _POOL_MULTIPLIER))
+
+
+# Budget-overshoot fix (2026-09-18 task) — the shared OpenRouter client
+# default is 120s per HTTP attempt with up to 4 retries (~494s worst case
+# for one call alone), which can already blow past the ~90s aggregate Story
+# Ideas budget within the FIRST quality-floor attempt, before that loop's
+# between-attempts budget check ever gets a chance to stop anything. These
+# two constants bound ONLY the pool-generation call below (and, in
+# semantic_story_judge_service.py, the judge call it triggers) — the two
+# sequential LLM calls inside one Story Ideas "attempt" — without touching
+# the shared 120s default any other pipeline stage still uses.
+_STORY_IDEAS_CALL_TIMEOUT_SECONDS = 40.0
+_STORY_IDEAS_MAX_ATTEMPTS = 2
 
 
 # Above this genericness_risk (as a fraction of the mechanism cap check
@@ -436,16 +450,30 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
             max_output_tokens=8192,
             json_mode=True,
             label="story_situations",
+            # Budget-overshoot fix (2026-09-18 task): a per-call timeout
+            # shorter than the shared 120s client default — this call and
+            # the semantic judge's are the two sequential LLM calls inside
+            # one Story Ideas "attempt", and both must fit inside the ~90s
+            # aggregate budget the quality-floor loop only checks BETWEEN
+            # attempts (never mid-call). Story-Ideas-specific only — every
+            # other pipeline stage's 120s default is untouched.
+            timeout=_STORY_IDEAS_CALL_TIMEOUT_SECONDS,
         ),
         label="generate_situations",
+        max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
     )
 
     try:
         data = json.loads(text)
     except json.JSONDecodeError as e:
+        # Model-neutral (2026-09-18 task) — this used to hardcode "Gemini"
+        # regardless of which model actually produced the bad response,
+        # which made a production log line misleading evidence about which
+        # model was really running. settings.creative_model is the exact
+        # model= value the call above just used.
         raise ValueError(
-            "Gemini returned malformed JSON while generating story ideas — the response may have "
-            "been truncated. Try again, or ask for fewer situations."
+            f"{settings.creative_model} returned malformed JSON while generating story ideas — the "
+            "response may have been truncated. Try again, or ask for fewer situations."
         ) from e
 
     raw_items = data.get("situations", [])
@@ -555,6 +583,16 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
 MAX_QUALITY_FLOOR_ATTEMPTS = 3
 MIN_ACCEPTABLE_SITUATIONS = 1
 
+# Reliability fix (2026-09-18 task) — an AGGREGATE wall-clock budget for the
+# whole quality-floor retry loop, on top of (never instead of) the existing
+# per-call OpenRouter retry/timeout logic in openrouter_utils.py. Without
+# this, up to MAX_QUALITY_FLOOR_ATTEMPTS full generate_situations() calls
+# (each itself internally retried) could compound to many minutes with no
+# overall cap — the confirmed mechanism behind the "Story Ideas stuck
+# loading" report. Matches the frontend's POST_TIMEOUT_MS backstop
+# (lib/api.ts) — this is the server-side half of the same fix.
+DEFAULT_STORY_IDEAS_BUDGET_SECONDS = 90.0
+
 
 @dataclass
 class QualityFloorResult:
@@ -562,28 +600,65 @@ class QualityFloorResult:
     quality_floor_met: bool = False
     attempts_used: int = 0
     dominant_weakness: str = ""
+    # True when the loop stopped because the wall-clock budget ran out
+    # before max_attempts were exhausted (distinct from "tried everything
+    # and still came up short") — surfaced for observability, not currently
+    # part of the public API response.
+    budget_exhausted: bool = False
 
 
 def generate_situations_with_quality_floor(
     payload: StorySituationsInput,
     min_situations: int = MIN_ACCEPTABLE_SITUATIONS,
     max_attempts: int = MAX_QUALITY_FLOOR_ATTEMPTS,
+    max_total_seconds: float | None = None,
 ) -> QualityFloorResult:
     """Calls the existing, unmodified generate_situations() up to
     max_attempts times. Each retry excludes every title already returned
     (rejected or not) so the model doesn't just resubmit the same batch.
-    Never raises — a genuine below-floor result after all attempts comes
-    back as quality_floor_met=False with whatever (possibly empty) situations
-    survived the LAST attempt, never a fabricated filler card."""
+    Never raises — a genuine below-floor result after all attempts (or after
+    the time budget runs out) comes back as quality_floor_met=False with the
+    BEST (most candidates) result seen across every attempt so far, never a
+    fabricated filler card, and never silently discarding a stronger earlier
+    attempt just because a later one happened to produce fewer candidates.
+
+    max_total_seconds (2026-09-18 reliability fix), when given, is checked
+    BEFORE starting each new attempt (never mid-attempt — an attempt already
+    in flight always runs to its own completion/timeout, since interrupting
+    a synchronous call partway through would leave the deterministic/claim-
+    safety/semantic-judge gates in an inconsistent state). Once the budget is
+    exhausted, no further attempts start and whatever the best result so far
+    is gets returned immediately — the same fail-safe convention as every
+    other stage in this pipeline (fewer/zero cards is safer than blocking
+    indefinitely)."""
+    start = time.monotonic()
     exclude = list(payload.exclude_titles)
     last_result = StorySituationsResult(situations=[])
+    best_result = StorySituationsResult(situations=[])
+    attempts_used = 0
+    budget_exhausted = False
     for attempt in range(1, max_attempts + 1):
+        if max_total_seconds is not None and (time.monotonic() - start) >= max_total_seconds:
+            logger.warning(
+                "Story-ideas quality-floor budget of %.0fs exhausted before attempt %d/%d — "
+                "stopping retries, returning the best of %d already-generated candidate(s)",
+                max_total_seconds, attempt, max_attempts, len(best_result.situations),
+            )
+            budget_exhausted = True
+            break
+        attempts_used = attempt
         current_payload = payload.model_copy(update={"exclude_titles": exclude})
         try:
             last_result = generate_situations(current_payload)
         except Exception as e:
             logger.warning("Quality-floor attempt %d/%d raised, treating as empty: %s", attempt, max_attempts, e)
             last_result = StorySituationsResult(situations=[])
+        # Every candidate in last_result.situations already survived every
+        # deterministic/claim-safety/category/semantic-judge gate inside
+        # generate_situations() — "best" here means "most already-validated
+        # candidates", never a relaxation of what counts as valid.
+        if len(last_result.situations) > len(best_result.situations):
+            best_result = last_result
         if len(last_result.situations) >= min_situations:
             return QualityFloorResult(situations=last_result.situations, quality_floor_met=True, attempts_used=attempt)
         logger.info(
@@ -592,10 +667,12 @@ def generate_situations_with_quality_floor(
         )
         exclude = exclude + [s.title for s in last_result.situations]
     return QualityFloorResult(
-        situations=last_result.situations,
+        situations=best_result.situations,
         quality_floor_met=False,
-        attempts_used=max_attempts,
+        attempts_used=attempts_used,
+        budget_exhausted=budget_exhausted,
         dominant_weakness=(
+            "the story-ideas time budget ran out before enough candidates survived" if budget_exhausted else
             "every candidate across all attempts failed the product-truth/category-drift or "
             "semantic-dedup gate — the product/audience/category combination may need a richer brief, "
             "or this product's contract role_risk detection may be too strict for the given brief"
@@ -605,15 +682,29 @@ def generate_situations_with_quality_floor(
 
 def generate_situations_for_request(payload: StorySituationsInput) -> StorySituationsResult:
     """The router-facing entry point (2026-09-18 task, Part 13 — shortfall
-    behavior). Sets the quality floor to the FULL requested/capped count
+    behavior; extended by the same-dated reliability fix with an aggregate
+    time budget). Sets the quality floor to the FULL requested/capped count
     (not just >=1), so generate_situations_with_quality_floor's existing
     bounded-retry loop keeps trying (never regenerating the exact same
     batch — see its exclude-titles logic) until either the full count
-    survives or MAX_QUALITY_FLOOR_ATTEMPTS is exhausted. quality_floor_met
-    then translates directly into generation_shortfall: False means the
-    full requested set was reached, True means fewer survived even after
-    bounded retries — shown as-is to the user, never padded with a
-    fabricated card to reach the count."""
+    survives, MAX_QUALITY_FLOOR_ATTEMPTS is exhausted, or
+    DEFAULT_STORY_IDEAS_BUDGET_SECONDS elapses. quality_floor_met then
+    translates directly into generation_shortfall: False means the full
+    requested set was reached, True means fewer survived — shown as-is to
+    the user, never padded with a fabricated card to reach the count.
+
+    Raises ValueError (never silently returns a fake "success" with zero
+    cards) when NOT EVEN ONE candidate survived every gate — the router
+    converts this to an explicit HTTP error, per the task's explicit "return
+    a clear error rather than pretending generation succeeded"."""
     requested_count = min(payload.count, MAX_STORY_IDEAS_PER_GENERATION)
-    result = generate_situations_with_quality_floor(payload, min_situations=requested_count)
+    result = generate_situations_with_quality_floor(
+        payload, min_situations=requested_count, max_total_seconds=DEFAULT_STORY_IDEAS_BUDGET_SECONDS,
+    )
+    if not result.situations:
+        raise ValueError(
+            "No story ideas survived the product-truth, claim-safety, and creative-quality checks "
+            + ("within the time budget" if result.budget_exhausted else "after retrying")
+            + " — please try again, or adjust the product brief."
+        )
     return StorySituationsResult(situations=result.situations, generation_shortfall=not result.quality_floor_met)

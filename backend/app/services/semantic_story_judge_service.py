@@ -268,6 +268,15 @@ def judge_story_situations(
                 max_output_tokens=4096,
                 json_mode=True,
                 label=label,
+                # Budget-overshoot fix (2026-09-18 task) — this judge is
+                # exclusively used by Story Ideas generation (confirmed: its
+                # only callers are story_situation_service.py and the
+                # offline creative_quality_benchmark.py tool), so shortening
+                # its per-call timeout is Story-Ideas-specific, not a global
+                # change. It's the second of two sequential LLM calls inside
+                # one Story Ideas "attempt" — see story_situation_service.py's
+                # _STORY_IDEAS_CALL_TIMEOUT_SECONDS for the full rationale.
+                timeout=40.0,
             ),
             label=label,
             max_attempts=2,

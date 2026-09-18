@@ -65,12 +65,43 @@ async function get<TResponse>(path: string): Promise<TResponse> {
   return res.json() as Promise<TResponse>;
 }
 
+// Story Ideas ("stuck loading" reliability fix): the backend call this powers
+// (POST /pipeline/story-situations) can legitimately take a while, but
+// plain fetch() has NO timeout of its own — if the backend ever genuinely
+// hangs, the request never settles and the caller's `finally` never runs,
+// so a loading spinner driven by this call stays true forever with no error
+// ever shown. 90s matches the backend's own aggregate story-ideas budget
+// (see generate_situations_with_quality_floor's max_total_seconds) — this
+// is a client-side backstop, not a replacement for that server-side bound.
+const POST_TIMEOUT_MS = 90_000;
+
 async function post<TResponse>(path: string, body: unknown): Promise<TResponse> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    // Deliberately no retry here — a silent frontend retry on top of the
+    // backend's own bounded retry/quality-floor logic would just double the
+    // worst-case wait with no user visibility. Surface a clear error and
+    // let the user explicitly retry (the click handler's own `finally`
+    // clears the loading state regardless of which branch is taken).
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new ApiError(
+        `Request timed out after ${POST_TIMEOUT_MS / 1000}s. The server may be under heavy load — please try again.`,
+        408
+      );
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const detail = await res.json().catch(() => ({ detail: res.statusText }));
