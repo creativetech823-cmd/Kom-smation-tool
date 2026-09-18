@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -205,18 +206,6 @@ generic story? (4) Is it driven by an event/behavior/object/reveal, not an emoti
 If a list of already-shown titles is provided, none of your new situations may repeat those titles or
 be near-duplicates of their premise — treat them as creatively off-limits.
 
-For every situation, also pick "recommended_angles": 5-8 CREATIVE ANGLES (execution styles — HOW the
-story is filmed/told, not the marketing_angle, which is WHY it sells) that genuinely fit THIS
-situation's persona, conflict, and production complexity. Choose only from this vocabulary, copying
-labels exactly as written — do not invent new ones or reword them:
-
-{angle_catalog}
-
-Pick angles that are actually distinct fits for this specific situation, not a generic default set —
-e.g. a father-son story genuinely suits "Father-Son", "Emotional Conversation", or "Meta Glasses POV"
-(a father's first-person view), while a factory-workers-quit-together story suits "Social Experiment /
-Challenge" or "Documentary" far more than "Doctor Testimonial".
-
 Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
 {{
   "situations": [
@@ -237,12 +226,184 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
       "category": string,
       "difficulty": string,
       "estimated_length": string,
-      "virality_score": number,
-      "recommended_angles": [string]
+      "virality_score": number
     }}
   ]
 }}
 """
+
+# Reliability fix (2026-09-18 task) — "recommended_angles" (a 5-8 item pick
+# from a long catalog, per candidate) used to be generated for the WHOLE
+# 12-20 candidate pool in the same call as everything else. It's the single
+# largest purely-cosmetic field (used only by the UI's angle chips — never
+# read by any filtering/selection/claim-safety/judge logic anywhere in this
+# pipeline) and not needed to make the pool bigger/more verbose than it has
+# to be for a model that's shown to truncate on large structured responses.
+# Moved to a SEPARATE, much smaller enrichment call that only ever runs
+# against the already-selected final <=6 survivors — same creative concept
+# (angles are still generated, from the same catalog, with the same
+# guidance), just deferred to operate on 6 items instead of 18. See
+# _enrich_recommended_angles() below.
+_ANGLE_ENRICHMENT_SYSTEM_PROMPT = """For each of the given short-form ad story situations, pick
+"recommended_angles": 5-8 CREATIVE ANGLES (execution styles — HOW the story is filmed/told) that
+genuinely fit THAT situation's persona, conflict, and production complexity. Choose only from this
+vocabulary, copying labels exactly as written — do not invent new ones or reword them:
+
+{angle_catalog}
+
+Pick angles that are actually distinct fits for each specific situation, not a generic default set —
+e.g. a father-son story genuinely suits "Father-Son", "Emotional Conversation", or "Meta Glasses POV"
+(a father's first-person view), while a factory-workers-quit-together story suits "Social Experiment /
+Challenge" or "Documentary" far more than "Doctor Testimonial".
+
+Return ONLY this JSON, no prose, no markdown fences:
+{{"angles": [{{"index": int, "recommended_angles": [string]}}]}}"""
+
+
+def _angle_enrichment_user_message(situations_data: list[dict]) -> str:
+    lines = [
+        f"[{i}] title: {item.get('title', '')}\n"
+        f"    description: {item.get('description', '')}\n"
+        f"    persona: {item.get('persona', '')}\n"
+        f"    marketing_angle: {item.get('marketing_angle', '')}"
+        for i, item in enumerate(situations_data)
+    ]
+    return "\n".join(lines)
+
+
+def _enrich_recommended_angles(situations_data: list[dict]) -> list[dict]:
+    """Runs ONLY on the already-selected final survivors (<=
+    MAX_STORY_IDEAS_PER_GENERATION, never the full pool). Never raises — a
+    failure here just leaves recommended_angles unset on every item, which
+    valid_angle_labels([]) already degrades safely to its documented
+    fallback subset (never a missing/broken UI field, never blocks the
+    response)."""
+    if not situations_data:
+        return situations_data
+    try:
+        text = call_openrouter_with_retry(
+            lambda: generate_text(
+                system_instruction=_ANGLE_ENRICHMENT_SYSTEM_PROMPT.format(angle_catalog=catalog_prompt_block()),
+                contents=[_angle_enrichment_user_message(situations_data)],
+                model=settings.creative_model,
+                max_output_tokens=1500,
+                json_mode=True,
+                label="story_situations_angle_enrichment",
+                timeout=_STORY_IDEAS_CALL_TIMEOUT_SECONDS,
+            ),
+            label="story_situations_angle_enrichment",
+            max_attempts=_STORY_IDEAS_MAX_ATTEMPTS,
+        )
+        data = _parse_situations_json(text)
+        by_index = {int(e["index"]): e.get("recommended_angles", []) for e in data.get("angles", []) if "index" in e}
+    except Exception as e:
+        logger.warning("Recommended-angles enrichment failed, leaving angles unset (safe fallback applies): %s", e)
+        return situations_data
+    return [{**item, "recommended_angles": by_index.get(i, [])} for i, item in enumerate(situations_data)]
+
+
+def _strip_markdown_fence(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text)
+    return text.strip()
+
+
+def _salvage_array_objects(text: str, array_key: str) -> list[dict]:
+    """Best-effort recovery for a TRUNCATED response (2026-09-18 task,
+    "truncated JSON / incomplete final object"): when the response as a
+    WHOLE doesn't parse because the model ran out of output budget partway
+    through the array, most individual objects earlier in that array are
+    still complete, valid JSON on their own — only the tail is cut off.
+    Rather than discarding the entire batch over one incomplete trailing
+    object, this scans for `array_key`'s `[...]`, finds each top-level
+    `{...}` object by bracket-depth (not naive regex splitting — a value
+    could itself contain braces/brackets in principle), and parses each
+    independently, silently skipping any that don't parse (the incomplete
+    tail, almost always). Returns [] (never raises) if the array itself
+    can't even be located — the caller's existing "malformed JSON" error
+    still fires in that case, exactly as before this fix."""
+    marker = f'"{array_key}"'
+    key_pos = text.find(marker)
+    if key_pos == -1:
+        return []
+    array_start = text.find("[", key_pos)
+    if array_start == -1:
+        return []
+    results: list[dict] = []
+    i = array_start + 1
+    n = len(text)
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] != "{":
+            break
+        depth = 0
+        in_string = False
+        escape = False
+        start = i
+        end = None
+        while i < n:
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+            i += 1
+        if end is None:
+            break  # ran off the end mid-object — this is the truncated tail, stop here
+        candidate_text = text[start:end]
+        try:
+            obj = json.loads(candidate_text)
+            if isinstance(obj, dict):
+                results.append(obj)
+        except json.JSONDecodeError:
+            pass  # skip a malformed individual object, keep scanning the rest
+        i = end
+    return results
+
+
+def _parse_situations_json(text: str, array_key: str = "situations") -> dict:
+    """Robust parse for a story-ideas-shaped LLM JSON response (2026-09-18
+    task): strips a markdown fence the model can still emit despite
+    json_mode, strips trailing commas, and — only as a last resort, when
+    the response still doesn't parse as a WHOLE — salvages whatever
+    complete objects survive inside `array_key`'s array rather than
+    discarding a truncated response entirely. A genuinely unrecoverable
+    response (nothing parses, array not even found) still raises
+    json.JSONDecodeError, unchanged from before this fix."""
+    cleaned = _strip_markdown_fence(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+    no_trailing_commas = re.sub(r",\s*([}\]])", r"\1", cleaned)
+    try:
+        return json.loads(no_trailing_commas)
+    except json.JSONDecodeError as e:
+        salvaged = _salvage_array_objects(cleaned, array_key)
+        if salvaged:
+            logger.warning(
+                "Story-ideas response didn't parse as a whole (likely truncated) — salvaged %d complete "
+                "object(s) from the '%s' array instead of discarding the entire batch.",
+                len(salvaged), array_key,
+            )
+            return {array_key: salvaged}
+        raise e
 
 
 def _system_prompt(language: ScriptLanguage) -> str:
@@ -447,7 +608,15 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
             system_instruction=_system_prompt(payload.script_language),
             contents=[_build_user_message(payload, contract_block, pool_count)],
             model=settings.creative_model,
-            max_output_tokens=8192,
+            # Truncation fix (2026-09-18 task): bumped from 8192. A
+            # reasoning-capable model can spend a large, variable share of
+            # max_tokens on hidden reasoning before any visible output
+            # starts (empirically confirmed for this exact failure class on
+            # a different call site earlier this session) — 8192 was
+            # sometimes insufficient headroom for an 18-candidate response
+            # even before accounting for that. This is a ceiling, not a
+            # guaranteed spend; real cost still tracks actual usage.
+            max_output_tokens=16000,
             json_mode=True,
             label="story_situations",
             # Budget-overshoot fix (2026-09-18 task): a per-call timeout
@@ -464,8 +633,19 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     )
 
     try:
-        data = json.loads(text)
+        data = _parse_situations_json(text)
     except json.JSONDecodeError as e:
+        # Diagnostics fix (2026-09-18 task): previously logged nothing at
+        # all beyond the bare error — this at least shows response length
+        # and its head/tail (never the full text — could contain product
+        # data — but shape alone tells you a lot: ends mid-string/mid-object
+        # is a strong truncation signal, a trailing markdown fence is a
+        # formatting signal, etc.), so a future occurrence is diagnosable
+        # from logs alone without needing a live repro.
+        logger.warning(
+            "Story-ideas JSON parse failed (model=%s): length=%d chars, head=%r, tail=%r, error=%s",
+            settings.creative_model, len(text), text[:120], text[-120:], e,
+        )
         # Model-neutral (2026-09-18 task) — this used to hardcode "Gemini"
         # regardless of which model actually produced the bad response,
         # which made a production log line misleading evidence about which
@@ -559,6 +739,11 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         final_indices = _select_final_six(raw_items, survivor_indices, judgment_by_index, requested_count)
         final_items = [raw_items[i] for i in final_indices]
         judgment_by_index = {new_i: judgment_by_index[old_i] for new_i, old_i in enumerate(final_indices) if old_i in judgment_by_index}
+
+    # Angle enrichment (2026-09-18 task, Option A) — runs on the already-
+    # selected <=6 survivors only, never the 12-20 pool, so this small
+    # second call never contributes to pool-generation truncation risk.
+    final_items = _enrich_recommended_angles(final_items)
 
     situations = []
     for idx, item in enumerate(final_items):

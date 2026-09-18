@@ -133,7 +133,11 @@ def test_request_count_is_pool_sized_when_product_has_role_risk():
     captured = {}
 
     def fake(**kwargs):
-        captured["user_message"] = kwargs["contents"][0]
+        # Only capture the pool-generation call — a separate, smaller
+        # recommended-angles enrichment call (2026-09-18 reliability fix)
+        # also goes through generate_text after the pool call.
+        if kwargs.get("label") == "story_situations":
+            captured["user_message"] = kwargs["contents"][0]
         return response
 
     with patch.object(svc, "generate_text", side_effect=fake):
@@ -308,7 +312,11 @@ def test_immune_care_gets_pool_sized_request_and_deterministic_filter_still_skip
     captured = {}
 
     def fake(**kwargs):
-        captured["user_message"] = kwargs["contents"][0]
+        # Only capture the pool-generation call — the separate, smaller
+        # recommended-angles enrichment call (2026-09-18 reliability fix)
+        # also goes through generate_text after the pool call.
+        if kwargs.get("label") == "story_situations":
+            captured["user_message"] = kwargs["contents"][0]
         return response
 
     with patch.object(svc, "generate_text", side_effect=fake), \

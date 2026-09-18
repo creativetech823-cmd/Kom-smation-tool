@@ -139,7 +139,12 @@ def test_generate_situations_requests_the_pool_not_just_six():
     captured = {}
 
     def fake(**kwargs):
-        captured["msg"] = kwargs["contents"][0]
+        # Reliability fix (2026-09-18 task) added a SECOND, smaller
+        # generate_text call (recommended-angles enrichment, label=
+        # "story_situations_angle_enrichment") that runs after pool
+        # generation — only capture the pool-generation call itself.
+        if kwargs.get("label") == "story_situations":
+            captured["msg"] = kwargs["contents"][0]
         return response
 
     with patch.object(svc, "generate_text", side_effect=fake), \
@@ -372,7 +377,12 @@ def test_generate_situations_for_request_never_exceeds_max_attempts_calls():
     call_count = {"n": 0}
 
     def fake(**kwargs):
-        call_count["n"] += 1
+        # Only count pool-generation calls — the recommended-angles
+        # enrichment call (added 2026-09-18) also fires once per attempt
+        # here (each attempt's 1 "Only One" candidate is non-empty) but is
+        # a separate concern from the quality-floor attempt bound.
+        if kwargs.get("label") == "story_situations":
+            call_count["n"] += 1
         return json.dumps({"situations": [_candidate("Only One")]})
 
     with patch.object(svc, "generate_text", side_effect=fake), \
