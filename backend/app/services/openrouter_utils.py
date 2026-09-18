@@ -94,6 +94,11 @@ _APPROX_PRICE_PER_1M_USD: dict[str, tuple[float, float]] = {
     "google/gemini-2.5-pro": (1.25, 10.00),
     "google/gemini-2.5-flash-lite": (0.10, 0.40),
     "google/gemini-2.5-flash-image": (0.30, 2.50),
+    # GPT-5.6 Luna cost-experiment (2026-09-18 task) — pricing per
+    # https://openrouter.ai/openai/gpt-5.6-luna-20260709, given directly by
+    # the task, not fetched live. Only used when OpenRouter itself doesn't
+    # report usage.cost on the response (see _record_usage below).
+    "openai/gpt-5.6-luna": (0.20, 1.20),
 }
 
 # --- Credit-protection circuit breaker ---------------------------------------
@@ -381,12 +386,25 @@ def generate_text(
     json_mode: bool = False,
     temperature: float | None = None,
     label: str = "",
+    reasoning_effort: str | None = "__default__",
 ) -> str:
     """A single OpenRouter chat-completion call — system prompt + content in,
     plain text or raw JSON text out. `contents` may mix plain strings with
     `image_part(...)` dicts for vision calls. `label` (e.g. "creative_insight",
     "final_script_write") identifies the pipeline stage purely for the usage/
-    cost observability log and diagnostics — it's never sent to OpenRouter."""
+    cost observability log and diagnostics — it's never sent to OpenRouter.
+
+    reasoning_effort (GPT-5.6 Luna cost experiment, 2026-09-18 task, Part 13):
+    OpenRouter's unified `reasoning.effort` field ("high"/"medium"/"low"),
+    forwarded as-is to whichever reasoning-capable model is configured — a
+    no-op for a model that doesn't support it. The sentinel default
+    "__default__" (not None) means "use settings.openrouter_reasoning_effort"
+    so every one of this pipeline's ~35 call sites gets a sensible default
+    automatically without each one needing to pass it explicitly (avoiding
+    "unrelated changes" across every service module); passing reasoning_effort
+    explicitly (including None, to omit the field entirely) still overrides
+    the default per-call. Never "maximum reasoning on every call" by
+    default — settings.openrouter_reasoning_effort defaults to "medium"."""
     body: dict = {
         "model": model,
         "messages": _build_messages(system_instruction, contents),
@@ -396,7 +414,14 @@ def generate_text(
         body["response_format"] = {"type": "json_object"}
     if temperature is not None:
         body["temperature"] = temperature
+    effort = settings.openrouter_reasoning_effort if reasoning_effort == "__default__" else reasoning_effort
+    if effort:
+        body["reasoning"] = {"effort": effort}
 
+    # Dev visibility (2026-09-18 task, Part 15) — one line per call, logged
+    # BEFORE the request so it's visible even if the call fails; never logs
+    # the key, the prompt, or any request/response body content.
+    logger.info("[LLM] provider=openrouter model=%s stage=%s", model, label or "unlabeled")
     response = get_openrouter_client().post("/chat/completions", json=body)
     response.raise_for_status()
     try:

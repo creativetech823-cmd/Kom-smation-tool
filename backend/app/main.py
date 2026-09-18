@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -8,6 +10,8 @@ from app.config import settings
 from app.db import Base, SessionLocal, engine, run_lightweight_migrations
 from app.routers import library, pipeline, product_library
 from app.services.seed_data import seed_if_empty
+
+logger = logging.getLogger("app.main")
 
 app = FastAPI(title="AI Content Factory Engine")
 
@@ -63,8 +67,27 @@ def on_startup() -> None:
         seed_if_empty(db)
     finally:
         db.close()
+    # Model-routing visibility (2026-09-18 GPT-5.6 Luna experiment, Part 15)
+    # — never logs the API key, just which model/provider/reasoning-effort
+    # every text stage will actually resolve to on this running instance.
+    logger.info(
+        "Provider: OpenRouter | Text Model: %s | Creative: %s | Final Script: %s | Validation: %s | "
+        "Reasoning effort: %s | Image generation: %s",
+        settings.openrouter_text_model, settings.creative_model, settings.final_script_model,
+        settings.validation_model, settings.openrouter_reasoning_effort or "(none)",
+        "enabled" if settings.image_generation_enabled else "disabled",
+    )
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "provider": "openrouter",
+        "text_model": settings.openrouter_text_model,
+        "creative_model": settings.creative_model,
+        "final_script_model": settings.final_script_model,
+        "validation_model": settings.validation_model,
+        "reasoning_effort": settings.openrouter_reasoning_effort,
+        "image_generation_enabled": settings.image_generation_enabled,
+    }

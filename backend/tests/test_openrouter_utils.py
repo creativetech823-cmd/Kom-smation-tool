@@ -129,3 +129,92 @@ def test_generate_text_never_sends_label_to_openrouter_request_body():
     sent_body = fake_client.post.call_args[1]["json"]
     assert "label" not in sent_body
     assert "my_stage" not in str(sent_body)
+
+
+# --- reasoning-effort (GPT-5.6 Luna cost experiment, 2026-09-18 task) -------
+
+
+def _fake_client_capturing_body():
+    fake_response = MagicMock()
+    fake_response.json.return_value = {"choices": [{"message": {"content": "hello"}}]}
+    fake_response.raise_for_status.return_value = None
+    fake_client = MagicMock()
+    fake_client.post.return_value = fake_response
+    return fake_client
+
+
+def test_generate_text_sends_default_reasoning_effort_from_settings():
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client), \
+         patch.object(oru.settings, "openrouter_reasoning_effort", "medium"):
+        oru.generate_text(system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100)
+    sent_body = fake_client.post.call_args[1]["json"]
+    assert sent_body["reasoning"] == {"effort": "medium"}
+
+
+def test_generate_text_per_call_reasoning_effort_overrides_default():
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client), \
+         patch.object(oru.settings, "openrouter_reasoning_effort", "medium"):
+        oru.generate_text(
+            system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100,
+            reasoning_effort="low",
+        )
+    sent_body = fake_client.post.call_args[1]["json"]
+    assert sent_body["reasoning"] == {"effort": "low"}
+
+
+def test_generate_text_reasoning_effort_none_omits_the_field_entirely():
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client), \
+         patch.object(oru.settings, "openrouter_reasoning_effort", "medium"):
+        oru.generate_text(
+            system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100,
+            reasoning_effort=None,
+        )
+    sent_body = fake_client.post.call_args[1]["json"]
+    assert "reasoning" not in sent_body
+
+
+def test_generate_text_empty_settings_reasoning_effort_omits_the_field():
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client), \
+         patch.object(oru.settings, "openrouter_reasoning_effort", ""):
+        oru.generate_text(system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100)
+    sent_body = fake_client.post.call_args[1]["json"]
+    assert "reasoning" not in sent_body
+
+
+def test_generate_text_never_uses_high_effort_by_default():
+    """Explicit Part 13 requirement: do not automatically use maximum
+    reasoning on every call."""
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client):
+        oru.generate_text(system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100)
+    sent_body = fake_client.post.call_args[1]["json"]
+    assert sent_body.get("reasoning", {}).get("effort") != "high"
+
+
+def test_gpt56_luna_pricing_table_entry_matches_task_spec():
+    assert oru._APPROX_PRICE_PER_1M_USD["openai/gpt-5.6-luna"] == (0.20, 1.20)
+
+
+def test_estimate_cost_for_luna_matches_exact_formula():
+    # 1M input tokens @ $0.20 + 500K output tokens @ $1.20 = 0.20 + 0.60
+    cost = oru._estimate_cost_usd("openai/gpt-5.6-luna", 1_000_000, 500_000)
+    assert cost == 0.80
+
+
+def test_llm_visibility_log_line_includes_provider_model_stage(caplog):
+    import logging
+    fake_client = _fake_client_capturing_body()
+    with patch.object(oru, "get_openrouter_client", return_value=fake_client):
+        with caplog.at_level(logging.INFO, logger="openrouter_utils"):
+            oru.generate_text(
+                system_instruction="s", contents=["c"], model="openai/gpt-5.6-luna", max_output_tokens=100,
+                label="final_script",
+            )
+    assert "[LLM]" in caplog.text
+    assert "provider=openrouter" in caplog.text
+    assert "model=openai/gpt-5.6-luna" in caplog.text
+    assert "stage=final_script" in caplog.text

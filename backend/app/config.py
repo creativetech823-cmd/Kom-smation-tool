@@ -40,6 +40,13 @@ class Settings(BaseSettings):
     openrouter_creative_model: str = ""
     openrouter_final_script_model: str = ""
     openrouter_validation_model: str = ""
+    # GPT-5.6 Luna cost-experiment (2026-09-18 task, Part 13) — OpenRouter's
+    # unified reasoning.effort field, forwarded on every text call (see
+    # openrouter_utils.generate_text). "medium" by default per the task's
+    # explicit "do not automatically use maximum reasoning" instruction; set
+    # to "" in .env to omit the reasoning field entirely for a model that
+    # doesn't support it.
+    openrouter_reasoning_effort: str = "medium"
     references_dir: str = "./references"
     # Kill switch for actual image-generation provider calls (script/scene
     # text generation — including ai_image_prompt/visual_direction — is
