@@ -43,14 +43,19 @@ _NO_SECTION_NOTE = 'Leave "section" as an empty string on every block — this f
 
 _VIDEO_STRUCTURE_PROMPTS: dict[str, str] = {
     "podcast": (
-        "STRUCTURE — write this as a natural two-person podcast conversation, not an ad: alternating "
+        "STRUCTURE — write this as a natural two-person podcast conversation, not an ad, using the "
+        'field convention HOST: / GUEST: / INTERRUPTION: / REACTION: / CAMERA-VISUAL:. Alternating '
         'blocks between a Host and a Guest (the guest can be an expert, the founder, or a satisfied '
         'customer, whichever fits the story situation). Tag every block\'s "scene_label" with exactly '
-        '"Host" or "Guest" (never both in one block). Real conversational rhythm — questions, '
-        "interruptions, half-finished thoughts picked back up, genuine reactions — not two monologues "
-        "taking turns. The Host draws the story out with real curiosity; the Guest answers like a real "
-        'person, not a spokesperson reading talking points. Leave "camera_angle" empty unless a '
-        "specific shot genuinely matters (podcasts are mostly static two-shot/single-shot). "
+        '"Host" or "Guest" (never both in one block), and write "text" as `Host: "..."` or '
+        '`Guest: "..."` accordingly — real conversational rhythm, questions, half-finished thoughts '
+        'picked back up, not two monologues taking turns; the Host draws the story out with real '
+        'curiosity, the Guest answers like a real person, not a spokesperson reading talking points. '
+        'When one talks over or cuts off the other, note it in "action" (e.g. "Host cuts in before '
+        'Guest finishes."). Use "reaction" for a genuine reaction beat (a laugh, a pause, a surprised '
+        '"wait, really?") where one happens. "visual_direction" covers the camera/visual setup for '
+        'that block (mostly static two-shot/single-shot — only note it when something genuinely '
+        'changes); leave "camera_angle" empty unless a specific shot genuinely matters. '
         + _NO_SECTION_NOTE
     ),
     "whiteboard": (
@@ -62,16 +67,29 @@ _VIDEO_STRUCTURE_PROMPTS: dict[str, str] = {
         + _NO_SECTION_NOTE
     ),
     "animation": (
-        'STRUCTURE — an animated explainer/story: number each beat "Scene 1", "Scene 2", ... in '
-        '"scene_label". For every scene, "visual_direction" is the Visual (what\'s animated on screen — '
-        'characters, motion, setting, concrete enough for an animator/image generator to build), "text" '
-        'is the Voiceover, and "on_screen_text" is any on-screen caption/label for that scene (empty if '
-        "none needed). " + _NO_SECTION_NOTE
+        'STRUCTURE — an animated explainer/story, using the field convention SCENE: / VISUAL: / '
+        'CHARACTER ACTION: / DIALOGUE-VO: / ANIMATION BEAT: / TRANSITION:. Number each beat "Scene 1", '
+        '"Scene 2", ... in "scene_label" (the SCENE marker). "visual_direction" is the VISUAL (what\'s '
+        'animated on screen — characters, setting, concrete enough for an animator/image generator to '
+        'build); "action" is the CHARACTER ACTION (the specific animated motion/behavior — a gesture, a '
+        'transformation, an object moving); "text" is the DIALOGUE/VO (a character line, or plain '
+        'voiceover narration if no character is speaking); "transition_note" is the TRANSITION into the '
+        'next scene (a cut, a morph, a wipe — empty if it\'s a plain cut); "on_screen_text" is any '
+        'on-screen caption/label for that scene (empty if none needed). Treat any distinct beat of '
+        'motion within a scene as its own ANIMATION BEAT via "action", not folded silently into '
+        '"visual_direction". ' + _NO_SECTION_NOTE
     ),
     "ugc_talking_head": (
-        "STRUCTURE — a single person talking directly to camera, phone-shot UGC style: mostly one "
-        'continuous voice (don\'t invent a second speaker), broken into short "scene_label" beats '
-        '("Scene 1", "Scene 2", ...) only where the framing/setting genuinely changes. "camera_angle" '
+        "STRUCTURE — a single person talking directly to camera, phone-shot UGC style, using the field "
+        'convention SHOT: / PERSON TO CAMERA: / ACTION: / REACTION: / CUTAWAY:. Mostly one continuous '
+        'voice (don\'t invent a second speaker), broken into short "scene_label" beats ("Scene 1", '
+        '"Scene 2", ...) only where the framing/setting genuinely changes. "visual_direction" is the '
+        'SHOT (the framing/setting for this beat); "text" is what they say direct-to-camera (PERSON TO '
+        'CAMERA — no `Character:` prefix needed, it\'s always the same person); "action" is what they '
+        'physically do while talking (e.g. picks up the product, checks their phone); "reaction" is '
+        'used only for a genuine own-reaction beat (a laugh, a pause, catching themselves); use it for '
+        'a CUTAWAY beat (a quick insert shot — the product close-up, a text overlay, a b-roll moment) '
+        'by describing it in "visual_direction" for that block and leaving "text" empty. "camera_angle" '
         'should reflect handheld, close, selfie-style framing (e.g. "handheld selfie, arm\'s length"), '
         "never a polished multi-camera studio setup. " + _NO_SECTION_NOTE
     ),
@@ -82,24 +100,43 @@ _VIDEO_STRUCTURE_PROMPTS: dict[str, str] = {
         "the idea just explained. " + _NO_SECTION_NOTE
     ),
     "cinematic": (
-        'STRUCTURE — a cinematic, film-like piece: number each beat "Scene 1", "Scene 2", ... in '
-        '"scene_label", each with a strong, specific "camera_angle" and richly visual '
-        '"visual_direction" (lighting, blocking, framing) — this format lives or dies on the visuals, '
-        'so make every scene\'s direction genuinely shootable and distinct, not interchangeable. '
-        'Voiceover ("text") can be sparse — let the visuals carry weight. ' + _NO_SECTION_NOTE
+        'STRUCTURE — a cinematic, film-like piece: the beat order for every scene is VISUAL -> ACTION '
+        '-> REACTION -> DIALOGUE -> (pause) -> CUT -> next beat, never VO explanation -> VO explanation '
+        '-> product explanation -> marketing statement -> CTA. Number each beat "Scene 1", "Scene 2", '
+        '... in "scene_label" (naming the location/situation, e.g. "Scene 1 — Office Break Room"), '
+        'each with a strong, specific "camera_angle" and richly visual "visual_direction" (lighting, '
+        'blocking, framing) — this format lives or dies on the visuals, so make every scene\'s '
+        'direction genuinely shootable and distinct, not interchangeable. "action" is the physical '
+        'behavior driving the beat; "reaction" is another character\'s response where one exists; '
+        '"text" (DIALOGUE) should be sparse and used only where a real person would actually speak — '
+        'sparse VO is allowed only when it genuinely improves the film, never as a default narration '
+        'track explaining what\'s already visible. Let the visuals carry the weight. ' + _NO_SECTION_NOTE
     ),
     "product_showcase": (
-        'STRUCTURE — a product-focused showcase: number each beat "Scene 1", "Scene 2", ... in '
-        '"scene_label", each spotlighting one concrete feature/angle/use-case of the product (not the '
-        "customer's life story) — a real product-demo video's actual shot list. \"visual_direction\" "
-        "should describe exactly what's shown of the product in that scene. " + _NO_SECTION_NOTE
+        'STRUCTURE — a product-focused showcase, using the field convention SHOT: / PRODUCT VISUAL: / '
+        'ACTION: / VOICEOVER: / PRODUCT DETAIL: / TRANSITION:. Number each beat "Scene 1", "Scene 2", '
+        '... in "scene_label" (the SHOT), each spotlighting one concrete feature/angle/use-case of the '
+        'product (not the customer\'s life story) — a real product-demo video\'s actual shot list. '
+        '"visual_direction" is the PRODUCT VISUAL (exactly what\'s shown of the product in that shot); '
+        '"action" is a hand/product ACTION if one is happening (e.g. "hand opens the pack, tips it '
+        'into the palm"); "text" is the VOICEOVER; "on_screen_text" carries the PRODUCT DETAIL (a spec/'
+        'ingredient/feature callout as on-screen text, empty if this shot has none); "transition_note" '
+        "is the cut/move into the next shot. " + _NO_SECTION_NOTE
     ),
     "educational_video": (
         "STRUCTURE — this must genuinely teach something useful and stand on its own even if the "
-        'viewer never buys anything, not become a generic advertisement wearing an educational hat: '
-        'number each beat "Scene 1", "Scene 2", ... in "scene_label", building real, specific, correct '
-        "information in a logical order, with the product woven in naturally only where it genuinely "
-        "fits (never forced into every scene). " + _NO_SECTION_NOTE
+        'viewer never buys anything, not become a generic advertisement wearing an educational hat, '
+        'using the field convention HOOK: / VISUAL: / SPEAKER: / EXPLANATION: / DEMONSTRATION: / '
+        'PAYOFF: / CTA:. The opening "hook" block is the HOOK. For each body beat, tag "scene_label" '
+        'with whichever of "Visual", "Speaker", "Explanation", or "Demonstration" best names what that '
+        'beat actually is, in a logical teaching order (context -> concept -> how it works -> why it '
+        'matters); "visual_direction" is always the VISUAL for that beat; "text" carries either the '
+        'SPEAKER\'s line or the EXPLANATION content depending on which the beat is; "action" carries a '
+        'concrete DEMONSTRATION step when one is happening (a hand showing how something works), '
+        'grounded in real, specific, correct information, not filler. The final body beat (or the '
+        '"cta" block, whichever fits) is the PAYOFF — what the viewer should walk away understanding. '
+        'Weave the product in naturally only where it genuinely fits, never forced into every beat. '
+        + _NO_SECTION_NOTE
     ),
     "social_media_reel": (
         'STRUCTURE — a fast, native-feeling short-form reel: number each beat "Scene 1", "Scene 2", ... '
@@ -159,8 +196,8 @@ this is a STATIC graphic, not a video, so there is no spoken voiceover, camera w
   This is the single most important field for static content — it must be specific and shootable, not
   vague. Empty string on blocks that don't carry a distinct visual.
 - "section": leave as an empty string on every block.
-- Leave "visual_tags", "camera_angle", "duration_seconds", "b_roll", "sfx", and "ai_video_prompt" at
-  their defaults (empty/unused) — none of these apply to static content.
+- Leave "visual_tags", "camera_angle", "duration_seconds", "b_roll", "sfx", "ai_video_prompt",
+  "action", and "reaction" at their defaults (empty/unused) — none of these apply to static content.
 
 Also produce a top-level "bgm_suggestion": always an empty string for static content."""
 

@@ -41,53 +41,66 @@ _MAX_TOKENS = 16000
 
 _SECTION_PROSE: dict[str, str] = {
     "hook": (
-        'Hook ("hook" field, section "hook") — a very strong attention-grabbing open: a question, '
-        "a shocking fact, a fear, a POV moment, a snippet of conversation, curiosity, or a "
-        "contradiction. It must be SPECIFIC to this exact situation/persona, never a generic "
-        'template opener — avoid worn-out openers like "Are you tired of...", "Introducing...", '
-        '"Did you know...", "In today\'s world..." unless you can make the specific wording genuinely '
-        "surprising. A real viewer should not be able to guess what ad this hook is for."
+        'HOOK ("hook" field, section "hook") — open on a SCENE, not a statement: a specific moment '
+        "already in motion (a line of dialogue, a physical action, a reaction, a POV beat) that a "
+        "camera could start rolling on. It must be SPECIFIC to this exact situation/persona, never a "
+        'generic template opener — avoid worn-out openers like "Are you tired of...", "Introducing...", '
+        '"Did you know...", "In today\'s world..." and never a line that EXPLAINS the ad\'s theme or '
+        "insight (that's a tagline, not a hook). A real viewer should not be able to guess what ad "
+        "this hook is for, and should see/hear something happening, not be told what the ad is about."
     ),
     "problem": (
-        'Problem (section "problem") — the user\'s pain, in their own words/frame. Do not mention '
-        "the product yet."
+        'PROBLEM (section "problem") — SHOW the tension through a concrete behavior, moment, or '
+        "exchange the character is actually in — not a sentence explaining that they have a problem. "
+        "Do not mention the product yet."
     ),
     "science": (
-        'Science / Psychology / Logic (section "science") — explain WHY the problem happens, '
-        "briefly and credibly, in a way appropriate to the product's category (health, fitness, "
-        "finance, beauty, lifestyle, tech, education, etc)."
+        'SCIENCE / PSYCHOLOGY / LOGIC (section "science") — where a brief explanation genuinely earns '
+        "its place, keep it to one plain, credible line grounded in the product's category (health, "
+        "fitness, finance, beauty, lifestyle, tech, education, etc) — never a string of abstract "
+        "reasoning; if the point can instead be shown through a character's behavior or reaction "
+        "rather than stated, show it."
     ),
     "story": (
-        'Story / Emotional Build-up (section "story") — continue naturally into the human story. '
-        "If the creative angle is storytelling, expand the story; if it's a doctor/expert angle, "
-        "expand their explanation; if it's testimonial, tell the journey; if it's a conversation, "
-        "write it as dialogue; if it's a POV format (e.g. Meta Glasses), keep first-person POV "
-        "throughout this and every later beat."
+        'STORY / ESCALATION (section "story") — continue the SCENE from the problem beat: what the '
+        "character DOES, what changes, what someone else notices or says — a real event, not a "
+        "restated feeling. If the creative angle is storytelling, escalate the situation; if it's a "
+        "doctor/expert angle, show the actual consultation moment, not a summary of it; if it's "
+        "testimonial, show the specific remembered moment, not a general account; if it's a "
+        "conversation, write real back-and-forth dialogue between named characters; if it's a POV "
+        "format (e.g. Meta Glasses), keep first-person POV throughout this and every later beat."
     ),
     "product_intro": (
-        'Product Introduction (section "product_intro") — introduce the product naturally, never '
-        "like an ad read."
+        'PRODUCT INTEGRATION (section "product_intro") — the product enters through a physical action '
+        "(a character reaches for it, uses it, someone else notices it) inside the scene already "
+        "happening — never a cutaway to introduce the product as new information. If the story's "
+        "creative mechanism (an object, a ritual, a device) is the natural way the product would "
+        "enter, use it here."
     ),
     "ingredients": (
-        'Ingredients / Features (section "ingredients") — only the ONE (at most two) ingredient/feature '
-        "this specific creative idea actually needs, and why it matters to the story just told, written "
-        "conversationally. Do not enumerate every given ingredient — a label read aloud, not a story."
+        'INGREDIENTS / FEATURES (section "ingredients") — only the ONE (at most two) ingredient/'
+        "feature this specific creative idea actually needs, folded into the scene's action or "
+        "dialogue (a character mentions it, notices it on the pack, a beat shows it), never a list "
+        "read aloud. Do not enumerate every given ingredient."
     ),
     "benefits": (
-        'Benefits (section "benefits") — the clearest, most compelling benefit(s): immediate, '
-        "emotional, or lifestyle, whichever lands hardest given the space available."
+        'BENEFITS (section "benefits") — show the benefit through what changes in the character\'s '
+        "behavior, expression, or situation, not a stated claim about what the product does. Pick "
+        "whichever benefit lands hardest given the space available."
     ),
     "objection_handling": (
-        'Objection Handling (section "objection_handling") — answer the single biggest doubt a '
-        'real viewer would have ("is it safe?", "does it actually work?", "how is this different?") '
-        "naturally, in-voice, not as a Q&A list."
+        'OBJECTION HANDLING (section "objection_handling") — answer the single biggest doubt a real '
+        'viewer would have ("is it safe?", "does it actually work?", "how is this different?") through '
+        "a natural line of dialogue or a small demonstrated moment, in-voice — never as a stated Q&A."
     ),
     "cta": (
-        'CTA ("cta" field, section "cta") — a close that feels earned by everything before it, not a '
-        'reflexive "buy now"/"try it today"/"order now". Pick whichever style actually fits this '
-        'story\'s tone and funnel stage: soft ("maybe this is the upgrade your routine was missing"), '
-        'direct ("try the kit and make your next weekend count"), curiosity ("see what\'s inside"), or '
-        'UGC-style ("if you\'re dealing with the same thing, it\'s worth checking out").'
+        'CTA ("cta" field, section "cta") — a close that feels earned by everything before it and, '
+        "where the story has a memorable device or dynamic (an object, a ritual, a relationship), "
+        "connects back to it rather than closing generically — not a reflexive \"buy now\"/\"try it "
+        'today\"/"order now". Pick whichever style actually fits this story\'s tone and funnel stage: '
+        'soft ("maybe this is the upgrade your routine was missing"), direct ("try the kit and make '
+        'your next weekend count"), curiosity ("see what\'s inside"), or UGC-style ("if you\'re '
+        'dealing with the same thing, it\'s worth checking out").'
     ),
 }
 
@@ -123,7 +136,11 @@ def _structure_block(bucket: str, has_outline: bool = False) -> str:
 
 _FIELDS_BLOCK = """For every single block (hook, each body block, and the CTA) produce ALL of these
 fields:
-- "text": the spoken/voiceover line, under the given character limit (for on-screen subtitle fit).
+- "text": the DIALOGUE — the actual spoken line, under the given character limit (for on-screen
+  subtitle fit). When a character is speaking, write it as `Character: "line"` (name or role, e.g.
+  `Boss: "Rule sabke liye hai."`) so it reads as real dialogue, not narration; when this beat is pure
+  voiceover with no character speaking, write the line plain with no name prefix. A beat with no
+  dialogue at all (pure visual/action) leaves this empty rather than inventing a line to fill it.
   Write in whatever language/voice is specified below — this is the one field that changes with it.
   Wrap 2-5 genuinely key words per full script (the product name at first mention, ingredient names
   with doses, standout numbers/stats) in **double asterisks** for bold emphasis — sparingly, not
@@ -144,14 +161,26 @@ fields:
   people and settings rather than generic/Western stock imagery — but don't force it where it doesn't
   fit the subject (a closeup of cardamom pods or a product bottle doesn't need "Indian" in front of
   it; "ayurvedic herbs natural ingredients" already reads as intended without it). 1-3 tags per block.
-- "scene_label": "Hook", "Scene 1", "Scene 2", ... or "CTA"
+- "scene_label": "HOOK" for the opening block, "SCENE 1 — [LOCATION / SITUATION]", "SCENE 2 —
+  [LOCATION / SITUATION]", ... for each body beat that's a distinct scene (name the actual location/
+  situation, e.g. "SCENE 1 — OFFICE BREAK ROOM", never a bare "Scene 1"), "PRODUCT INTEGRATION" for
+  the beat where the product physically enters the story, "PAYOFF" for the final story beat, or "CTA"
+  for the closing block. Every block gets exactly one of these — never leave it as a generic "Scene N"
+  with no location/situation named.
 - "section": one of hook, problem, science, story, product_intro, ingredients, benefits,
-  objection_handling, cta — whichever beat this block belongs to.
-- "visual_direction": a director's note on blocking/action/framing for this block — richer prose
-  than visual_tags, describing what happens on screen (e.g. "Father sits at the kitchen table,
-  phone face down, staring at it for a long beat before picking it up"), but kept to one tight
-  sentence (under ~25 words) — depth of detail, not length. Keep visual_tags and visual_direction
-  distinct: visual_tags are literal stock-search phrases, visual_direction is cinematic direction.
+  objection_handling, cta — whichever beat this block belongs to (internal bookkeeping only; this
+  never appears on screen and is separate from scene_label above).
+- "visual_direction": the VISUAL — what the camera literally sees in this beat (setting, framing,
+  who/what is in frame), richer prose than visual_tags (e.g. "Father sits at the kitchen table, phone
+  face down"), one tight sentence (under ~25 words). Keep visual_tags and visual_direction distinct:
+  visual_tags are literal stock-search phrases, visual_direction is cinematic direction.
+- "action": the ACTION — what a character PHYSICALLY DOES in this beat, a concrete behavior a camera
+  could film (e.g. "His hand moves toward his usual pocket. He stops halfway."), never an abstract
+  internal state ("he realizes he should change"). Empty string only if this exact beat is pure
+  dialogue/reaction with genuinely no distinct physical action worth noting.
+- "reaction": the REACTION — what another character does, notices, or how they respond, if this beat
+  has one (e.g. "The worker notices and raises an eyebrow."). Empty string when there's no second
+  character or nothing to react to in this beat — do not invent a reaction that isn't needed.
 - "camera_angle": a concrete shot type (e.g. "close-up", "over-the-shoulder", "wide establishing
   shot")
 - "emotion": the emotional beat of this specific block
@@ -230,10 +259,51 @@ def _core_principles_block() -> str:
 - The CTA must feel earned by what came before it, matching the tone/format/funnel stage — not a
   reflexive "buy now"/"try it today"/"order now" by default. A soft, direct, curiosity-driven, or
   UGC-style close are all valid; pick whichever this exact story actually earns.
-Before returning, silently self-check (never show this checking, never output it): would a
-professional ad-agency creative director approve this, or does it read like generic AI marketing
-copy? Is there ONE clear central idea, not several unrelated selling points mixed together? If
-anything fails, rewrite it before returning — also check against the language rule below."""
+- SHOW, DON'T EXPLAIN (hard rule): if something can be communicated through action, expression,
+  reaction, a prop, the environment, movement, dialogue, or silence, show it that way instead of
+  stating it as a line of narration. A line like "Aadat sirf packet nahi; woh reach, break aur
+  familiar taste ka poora ritual hai" is an EXPLANATION, not a story — the same idea shown through
+  behavior (the break bell rings, his hand moves toward the usual pocket, he stops, looks at it,
+  puts it back, reaches for the other pocket instead) is what this script must do. The viewer should
+  understand the insight from what happens, never from being told it in a sentence.
+- CREATIVE MECHANISM MUST DRIVE THE STORY, not just be mentioned in the title: if the chosen
+  mechanism were removed, the story should materially change. A two-pocket idea must become the
+  actual physical device the character's hand keeps reaching toward/away from — not a line
+  describing that there are two pockets.
+- NO CONCEPT-EXPLANATION DIALOGUE: a character is a person, not a creative strategist reciting the
+  ad's own insight. Avoid lines like "Haath purana soche, choice nayi ho" or "ye sirf ek habit nahi,
+  ek ritual hai" — dialogue exists for a character to react, tease, question, interrupt, hesitate,
+  notice something, make a mistake, or reveal who they are, never to explain the ad's message
+  directly. Before keeping any major dialogue line, ask: would a real person actually say this exact
+  sentence in this exact moment? If it sounds like a slogan, a philosophical statement, or a
+  motivational quote, rewrite it as something a specific person would actually blurt out.
+- PRODUCT INTEGRATION stays physical and natural: a character reaches for it, uses it, someone else
+  notices it — never a paragraph of product information inserted because the data exists. Do not
+  convert given ingredients into a recited list ("Ingredient 1... Ingredient 2...") inside the story.
+- IF the concept has a memorable device, relationship, or dynamic (named in the story situation's
+  title — a recurring object, a two-choice contrast, a specific relationship dynamic), the PAYOFF
+  must connect back to that specific device/dynamic — never a generic closing beat that could belong
+  to any unrelated ad for this brand.
+Before returning, silently self-check (never show this checking, never output it) against this exact
+list — rewrite anything that fails before returning:
+1. Does the creative mechanism actually drive the scenes, not just appear in the title?
+2. Could a director shoot every important beat exactly as written, without inventing what happens?
+3. Does the dialogue sound like real people talking, not a creative strategist explaining the idea?
+4. Is the product integrated through physical action, not a paragraph of product information?
+5. Is there a genuine turn/payoff, and does it connect back to the story's memorable device?
+6. Is the selected FORMAT's actual writing convention visibly reflected, not just mentioned?
+7. Does the script rely on behavior and action rather than explanation and narration?
+8. Is the title/creative device memorable and actually delivered, not just named?
+9. Could this exact script work unchanged for 20 unrelated brands? If yes, make it more specific.
+10. Does it avoid inventing any product/health claim not explicitly given below?
+Also silently check the actual dialogue for a warning pattern: lines built from stems like "aadat...",
+"ye sirf...", "iska matlab...", "yahi...", "ab samajh...", "choice badal...", "habit ko support...",
+"familiar...", "refreshing...", "ritual...", "direction..." are not automatically forbidden, but if
+the script is DOMINATED by lines like these, it has drifted into explanation — rewrite the story as
+action + reaction + dialogue + visual instead. Would a professional ad-agency creative director
+approve this, or does it read like generic AI marketing copy? Is there ONE clear central idea, not
+several unrelated selling points mixed together? If anything fails, rewrite it before returning —
+also check against the language rule below."""
 
 # The prompt's mechanism list is rendered FROM script_quality.CREATIVE_MECHANISMS
 # (the same list normalize_creative_mechanism() validates against post-hoc) so
@@ -315,7 +385,7 @@ quote inside a string value. Do not truncate — if you are running out of room,
 blocks rather than cutting the response off mid-JSON."""
 
 _SCRIPT_JSON_SHAPE = """{
-  "hook": {"text": string, "on_screen_text": string, "visual_tags": [string], "scene_label": string, "section": string, "visual_direction": string, "camera_angle": string, "emotion": string, "duration_seconds": number, "b_roll": [string], "sfx": string, "ai_image_prompt": string, "ai_video_prompt": string},
+  "hook": {"text": string, "on_screen_text": string, "visual_tags": [string], "scene_label": string, "section": string, "visual_direction": string, "action": string, "reaction": string, "camera_angle": string, "emotion": string, "duration_seconds": number, "b_roll": [string], "sfx": string, "ai_image_prompt": string, "ai_video_prompt": string},
   "body": [ ...same shape as hook... ],
   "cta": { ...same shape as hook... },
   "bgm_suggestion": string,

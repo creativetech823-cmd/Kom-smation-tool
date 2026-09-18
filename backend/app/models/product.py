@@ -312,6 +312,13 @@ class ScriptLine(BaseModel):
     scene_label: Optional[str] = None
     section: Optional[ScriptSection] = None
     visual_direction: Optional[str] = None
+    # Filmable-format fix (2026-09-18 task) — the physical behavior a
+    # character DOES in this beat (distinct from visual_direction's camera/
+    # blocking note) and another character's response/notice, if any.
+    # Additive/optional: empty on any script written before this field
+    # existed, or on a beat where nothing separate needs saying.
+    action: Optional[str] = None
+    reaction: Optional[str] = None
     camera_angle: Optional[str] = None
     emotion: Optional[str] = None
     lighting: Optional[str] = None

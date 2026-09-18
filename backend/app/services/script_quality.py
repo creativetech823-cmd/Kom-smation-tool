@@ -91,6 +91,87 @@ _BANNED_PATTERNS: list[re.Pattern] = [
     re.compile(r"\btake your .{1,40} to the next level\b", re.IGNORECASE),
 ]
 
+# Filmable-format fix (2026-09-18 task) — "AI-copy quality" signal stems: a
+# script that leans on Hinglish abstraction/explanation phrasing instead of
+# showing behavior. Deliberately NOT added to BANNED_PHRASES: a single
+# occurrence of any of these is fine (some are ordinary words — "familiar",
+# "ritual" — that show up in perfectly natural lines), this is a DENSITY
+# signal, not a hard filter. Only a script genuinely DOMINATED by them (see
+# _detect_explanatory_language_overuse) is flagged.
+_EXPLANATORY_LANGUAGE_SIGNALS: list[str] = [
+    "aadat",
+    "ye sirf",
+    "yeh sirf",
+    "iska matlab",
+    "yahi",
+    "ab samajh",
+    "choice badal",
+    "habit ko support",
+    "familiar",
+    "refreshing",
+    "ritual",
+    "direction",
+]
+
+
+def _detect_explanatory_language_overuse(texts: list[str]) -> bool:
+    """True when the script is DOMINATED by explanatory/abstract phrasing
+    rather than shown behavior — at least 2 lines match AND at least 40% of
+    all non-empty lines match. Both thresholds exist so a short script
+    (few lines) still needs genuine repetition, not one unlucky line, and a
+    long script needs a real proportion, not just an absolute count."""
+    non_empty = [t for t in texts if t.strip()]
+    if not non_empty:
+        return False
+    matched = sum(1 for t in non_empty if any(sig in t.lower() for sig in _EXPLANATORY_LANGUAGE_SIGNALS))
+    return matched >= 2 and (matched / len(non_empty)) >= 0.4
+
+
+# Filmable hard-gate fix (2026-09-18 task, follow-up to the filmable-format
+# prompt/schema task) — a script can pass every other check (no banned
+# phrases, real scene labels, real dialogue) while still being fundamentally
+# an explanation dressed as scenes, because those checks judge TEXT content,
+# never whether the body actually carries physical/visual behavior anywhere.
+# This check is deliberately structural, not a second abstract-language
+# denylist: it trusts the SAME action/reaction/visual_direction fields the
+# generation prompt now fills with concrete physical behavior — their
+# PRESENCE across the body is the evidence, using the structured fields as
+# the PRIMARY signal (exactly as specified) rather than keyword-matching
+# "physical behavior" across Hindi/Hinglish/English text, which a fixed verb
+# list could never reliably do across languages.
+#
+# This also implicitly covers "creative mechanism named only in dialogue/
+# explanation, never dramatized" without a second detector: a mechanism
+# that's actually dramatized necessarily shows up as action/reaction/
+# visual_direction content somewhere in the body — a mechanism that's only
+# explained in a line of dialogue does not. Reuses the existing creative-
+# mechanism metadata's downstream effect rather than inventing a separate
+# mechanism-specific architecture.
+_FILMABILITY_MIN_CONCRETE_RATIO = 0.4
+_FILMABILITY_MIN_SUBSTANTIVE_LINES = 2
+
+
+def _video_body_is_filmable(body: list) -> bool:
+    """True (filmable, no issue) when the body has enough structural
+    evidence of physical/visual storytelling. Fails OPEN — returns True —
+    for a body too short to judge meaningfully (fewer than 2 substantive
+    lines); this is about DOMINANCE of explanation across the body as a
+    whole, never a per-line requirement, so a script that's mostly action/
+    visual with a couple of plain dialogue-only lines is expected to pass,
+    and so is a script with sparse dialogue but strong visual/action
+    coverage — evaluating the body as a whole is the point, not counting
+    every field on every line."""
+    lines = [b for b in body if isinstance(b, dict)]
+    substantive = [b for b in lines if (b.get("text") or "").strip() or (b.get("visual_direction") or "").strip()]
+    if len(substantive) < _FILMABILITY_MIN_SUBSTANTIVE_LINES:
+        return True
+    concrete = sum(
+        1 for b in substantive
+        if (b.get("action") or "").strip() or (b.get("reaction") or "").strip() or (b.get("visual_direction") or "").strip()
+    )
+    return (concrete / len(substantive)) >= _FILMABILITY_MIN_CONCRETE_RATIO
+
+
 # The 17 canonical creative-mechanism labels — single source of truth. The
 # generation prompt's CREATIVE MECHANISM step is rendered FROM this list
 # (script_service._creative_mechanisms_prose()), and every self-reported
@@ -383,6 +464,9 @@ def deterministic_issues(data: dict, payload) -> list[str]:
     if "unsupported_claim" in issues and claim_grounded_in_product_data(payload):
         issues = [i for i in issues if i != "unsupported_claim"]
 
+    if _detect_explanatory_language_overuse(texts):
+        issues.append("explanatory_language_overuse")
+
     # Video-only structural checks — several static formats (thumbnail,
     # quote_graphic) legitimately ship an empty body or empty cta.
     if content_type != "static":
@@ -392,8 +476,11 @@ def deterministic_issues(data: dict, payload) -> list[str]:
             issues.append("missing_hook")
         if not cta_text.strip():
             issues.append("missing_cta")
-        if not data.get("body"):
+        body = data.get("body") or []
+        if not body:
             issues.append("empty_body")
+        elif not _video_body_is_filmable(body):
+            issues.append("not_filmable_video")
 
     non_empty = [t.strip() for t in texts if t.strip()]
     if len(non_empty) != len(set(non_empty)) and len(non_empty) > 1:
@@ -533,6 +620,11 @@ problem, and only from this exact list of codes:
   then product, then benefit" with no specific situation, device, or reversal driving it.
 - "slogan_as_hook": the hook reads like a title or tagline for the ad (e.g. a short capitalized
   phrase) rather than a real line, moment, or piece of dialogue a viewer would actually hear/see.
+- "explains_instead_of_shows": a line of dialogue or narration STATES the ad's underlying insight or
+  metaphor directly (e.g. "the habit isn't just the packet, it's the whole ritual of reach, break,
+  and familiar taste") rather than a real person reacting, teasing, questioning, hesitating, noticing
+  something, or revealing character — it reads like a creative strategist explaining the concept, not
+  a character speaking. Do NOT flag ordinary, simple, natural dialogue just for being plain.
 
 Return ONLY this JSON, no prose, no markdown fences:
 {"pass": boolean, "issues": [string]}
@@ -672,6 +764,28 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "the story's underlying premise is a restated category-level truth rather than a specific, "
         "narrow, recognizable human situation — rebuild the story around a more specific behavior, "
         "moment, or contradiction this exact audience would recognize"
+    ),
+    "explanatory_language_overuse": (
+        "the script is dominated by abstract/explanatory phrasing (lines that state an insight or "
+        "theme directly, e.g. \"the habit isn't just X, it's Y\") instead of shown behavior — rebuild "
+        "the affected beats as action + reaction + dialogue + visual: replace each explanatory line "
+        "with a concrete physical action, a character's reaction, or a piece of natural dialogue that "
+        "lets the viewer infer the same idea instead of being told it"
+    ),
+    "explains_instead_of_shows": (
+        "one or more dialogue lines state the ad's underlying insight or metaphor directly, like a "
+        "creative strategist explaining the concept rather than a real person talking — rewrite that "
+        "dialogue so the character reacts, teases, questions, hesitates, notices something, or reveals "
+        "who they are through natural speech, never a line that announces the ad's own message"
+    ),
+    # Filmable hard-gate fix (2026-09-18 task) — exact rewrite instruction
+    # wording as specified: dramatize the SAME approved concept better,
+    # never discard it or swap the creative mechanism just to dodge the
+    # issue.
+    "not_filmable_video": (
+        "Rewrite the actual story into filmable scenes. Replace explanations with observable action, "
+        "reaction, dialogue, visual behavior and concrete beats. Preserve the approved concept, hook "
+        "and product truth. Do not change the creative mechanism merely to avoid the issue."
     ),
     # Beat-outline / architecture-enforcement issue codes (post-script pass,
     # see architecture_validation_service.py) — reuse this same instruction
