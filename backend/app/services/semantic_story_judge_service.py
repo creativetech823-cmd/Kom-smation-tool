@@ -135,10 +135,16 @@ angle. For each candidate, score (0.0-1.0 each):
   as a different kind of product)? This is the single most important score — weight it accordingly.
 - creative_potential: does this have real ad potential (a recognizable tension, an unexpected turn, a
   visual opportunity, a specific setting, a memorable premise) or is it flat/generic even if correct?
+  When hook_type/hook_execution are given, also weigh HOOK QUALITY here: does the described execution
+  actually create curiosity and visibly execute the stated hook_type, or does it just announce the
+  product/explain the benefit immediately/read as generic motivational copy with no visual/action/
+  dialogue event? A weak hook lowers creative_potential even when the rest of the idea is sound.
 - memorability: would a viewer remember the core idea after seeing it once?
 - visual_potential: can this become a strong visual/video concept, concretely shootable?
 - genericness_risk: how interchangeable is this with a generic ad for almost any product in this
-  broad category (1.0 = completely generic, 0.0 = distinctly product-specific)?
+  broad category (1.0 = completely generic, 0.0 = distinctly product-specific). A hook_execution that
+  could open an ad for any unrelated product, or that doesn't connect to this candidate's own
+  creative_mechanism, raises genericness_risk even if the rest of the premise is specific.
 - claim_safety: 1.0 = makes no unsupported medical/health/performance/timeline claim; lower if it does.
 - territory_alignment: ONLY if a CREATIVE TERRITORY is given below — does this candidate actually
   EXECUTE that territory's human tension, or does it just vaguely gesture at it? Omit (null) if no
@@ -198,6 +204,10 @@ def _candidate_block(index: int, item: dict) -> str:
         lines.append(f"    creative_engine: {item.get('creative_engine', '')}")
     if item.get("behavioral_tension"):
         lines.append(f"    behavioral_tension: {item.get('behavioral_tension', '')}")
+    if item.get("hook_type"):
+        lines.append(f"    hook_type: {item.get('hook_type', '')}")
+    if item.get("hook_execution"):
+        lines.append(f"    hook_execution: {item.get('hook_execution', '')}")
     return "\n".join(lines)
 
 

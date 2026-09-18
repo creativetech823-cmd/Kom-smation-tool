@@ -48,6 +48,47 @@ def test_unsupported_ingredient_efficacy_mulethi():
     assert result.claim_type == "explicit_ingredient"
 
 
+def test_reported_cricket_match_naya_swag_ashwagandha_aaram_claim_regression():
+    """Live-reported regression: 'Ashwagandha... stress mein aaram deta hai'
+    (Ashwagandha gives relief from stress) reached a user unrejected. Root
+    cause verified in isolation: neither the deterministic layer (no
+    'aaram'-phrase entry in _EFFICACY_VERB_PATTERN) nor a live semantic call
+    (its CHECK 1 prompt was scoped to implied/metaphorical claims only, not
+    explicit-but-non-English-verb claims) caught it. Both layers were fixed;
+    this must now fail via the deterministic layer alone (no LLM call
+    needed — the mocked semantic layer below is never reached)."""
+    text = "Cricket match dekhte dekhte, Ashwagandha stress mein aaram deta hai."
+    with _mock_semantic():  # asserts the deterministic layer alone is sufficient — this mock must not matter
+        result = css.check_claim_safety_and_coercion(
+            text, product_name="Aayush Herbal Masala", ingredients=["Mulethi", "Amla", "Ashwagandha"],
+        )
+    assert result.passed is False
+    assert result.explicit_claim is True
+    assert result.unsupported is True
+    assert result.claim_type == "explicit_ingredient"
+    assert result.checked_semantically is False  # deterministic layer alone caught it, no escalation needed
+    assert "aaram" in result.evidence.lower()
+
+
+def test_aaram_bare_word_with_no_giving_verb_is_not_flagged():
+    """'aaram' alone (e.g. someone simply resting/being comfortable) is not
+    a claim — only the VERB PHRASE 'aaram deta/deti/milta' (gives/brings
+    relief) is. Guards against over-broadening the fix into a bare-word
+    match that would false-positive on ordinary sentences."""
+    text = "Woh aaram se apni kursi par baitha, phone dekh raha tha."
+    with _mock_semantic():
+        result = css.check_claim_safety_and_coercion(text, product_name="Aayush Herbal Masala", ingredients=["Ashwagandha"])
+    assert result.passed is True
+
+
+def test_rahat_deta_hai_variant_also_caught_deterministically():
+    """Same efficacy-verb-phrase gap, common synonym ('rahat' = relief)."""
+    evidence = css.detect_explicit_ingredient_efficacy_claim(
+        "Mulethi gale ko rahat deta hai.", ["Mulethi"]
+    )
+    assert evidence
+
+
 # --- 2. Unsupported product efficacy -----------------------------------------
 
 

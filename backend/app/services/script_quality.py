@@ -824,6 +824,12 @@ _ISSUE_INSTRUCTIONS: dict[str, str] = {
         "on a character, situation, unexpected behavior, curiosity gap, or visual event — rewrite the "
         "hook to open on something specific happening, not a category-level statement"
     ),
+    "hook_tactic_not_executed": (
+        "an approved hook TACTIC was given (e.g. Question, Reaction in Action, Teaser Hook) but the "
+        "written hook doesn't actually execute it — rebuild the first 1-3 seconds so the approved "
+        "visual/action/dialogue event genuinely happens on screen/in the line, in the exact tactic's "
+        "style, not flattened into a generic spoken sentence"
+    ),
     "payoff_repeats_setup": (
         "the ending just restates the opening metaphor/feeling in different words instead of paying it "
         "off — rebuild the ending as a genuine escalation, reveal/reversal, or resolution that actually "

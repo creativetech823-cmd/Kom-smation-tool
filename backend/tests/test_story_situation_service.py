@@ -545,6 +545,6 @@ def test_choose_your_story_api_response_contract_has_the_new_creative_dna_fields
         "id", "title", "description", "emotion", "persona", "marketing_angle",
         "category", "difficulty", "estimated_length", "virality_score", "recommended_angles",
         "human_situation", "behavioral_tension", "creative_mechanism", "creative_engine",
-        "product_role", "strong_concept",
+        "product_role", "strong_concept", "hook_type", "hook_mechanism", "hook_execution",
     }
     assert set(StorySituation.model_fields.keys()) == expected_fields

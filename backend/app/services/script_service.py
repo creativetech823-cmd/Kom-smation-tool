@@ -673,6 +673,40 @@ def _custom_language_block(custom_language: str) -> str:
     )
 
 
+def _approved_concept_block(s) -> str:
+    """The Story Idea's own creative_mechanism/creative_engine/hook fields,
+    rendered DIRECTLY into the writer-facing brief. Fix for a traced bug: the
+    writer previously only ever saw title/description/emotion/persona/
+    marketing_angle/category here — creative_mechanism, creative_engine,
+    product_role, human_situation, behavioral_tension, and the Hooks Menu
+    hook_type/hook_mechanism/hook_execution fields reached the writer only
+    INDIRECTLY (via premise generation re-deriving them from
+    pre.situation_block, a separate, lossy path that only runs for a FRESH
+    generation and never for regenerate_script_section at all) — so the
+    writer was reconstructing the concept from a thinner summary than what
+    was actually approved. Every line here is conditional on the field
+    actually being set, so an older situation predating these fields renders
+    exactly as before (empty string, no change)."""
+    lines = []
+    if getattr(s, "creative_mechanism", ""):
+        lines.append(f"Approved creative mechanism: {s.creative_mechanism}")
+    if getattr(s, "creative_engine", ""):
+        lines.append(f"Approved creative engine (the specific behavior + object/ritual + turn — execute THIS, do not substitute a different one): {s.creative_engine}")
+    if getattr(s, "human_situation", ""):
+        lines.append(f"Human situation: {s.human_situation}")
+    if getattr(s, "behavioral_tension", ""):
+        lines.append(f"Behavioral tension: {s.behavioral_tension}")
+    if getattr(s, "product_role", ""):
+        lines.append(f"Product's role in this idea: {s.product_role}")
+    if getattr(s, "hook_type", ""):
+        lines.append(f"Approved hook tactic: {s.hook_type}")
+        if getattr(s, "hook_mechanism", ""):
+            lines.append(f"Why this tactic fits: {s.hook_mechanism}")
+        if getattr(s, "hook_execution", ""):
+            lines.append(f"Approved hook execution (the actual opening scene/action/dialogue — adapt to this exact product/language, do not flatten into a generic spoken line): {s.hook_execution}")
+    return ("\n" + "\n".join(lines) + "\n") if lines else ""
+
+
 def _context_block(payload, target_duration: str, target_word_count: int | None = None) -> str:
     """Situation/product/rules/angle/language/length context shared by both a
     fresh generation and a targeted regeneration."""
@@ -716,6 +750,7 @@ def _context_block(payload, target_duration: str, target_word_count: int | None 
         f"Persona: {s.persona}\n"
         f"Marketing angle: {s.marketing_angle}\n"
         f"Category: {s.category}\n"
+        f"{_approved_concept_block(s)}"
         f"Content type: {payload.content_type.value}\n"
         f"Format: {format_label}{format_desc_note}\n"
         f"{_hook_block(getattr(payload, 'selected_hook_text', ''))}"
@@ -1264,18 +1299,34 @@ def _story_situation_block(situation) -> str:
     """Renders the user's chosen Story Situation card as prompt text —
     shared by premise generation (Phase 3C grounding fix) and the post-
     script Creative Director gate (title/story integrity check). Empty when
-    no situation is given (defensive; every real caller has one)."""
+    no situation is given (defensive; every real caller has one).
+
+    Hooks Menu task addition: when the situation carries a hook_type (the
+    Story Idea already committed to a specific hook TACTIC, separate from
+    the creative mechanism), that's rendered too — this single block already
+    reaches both premise generation and the Creative Director gate, so no
+    extra plumbing was needed to make either one hook-tactic-aware."""
     if situation is None:
         return ""
     title = getattr(situation, "title", "") or ""
     if not title:
         return ""
+    hook_type = getattr(situation, "hook_type", "") or ""
+    hook_lines = (
+        f"\nApproved hook tactic: {hook_type}\n"
+        f"Why this tactic fits: {getattr(situation, 'hook_mechanism', '') or ''}\n"
+        f"Approved hook execution (the opening scene/action/dialogue to actually write, adapted to "
+        f"this exact product/language — not replaced with a generic spoken line): "
+        f"{getattr(situation, 'hook_execution', '') or ''}"
+        if hook_type else ""
+    )
     return (
         f"Title: {title}\n"
         f"Description: {getattr(situation, 'description', '') or ''}\n"
         f"Persona: {getattr(situation, 'persona', '') or ''}\n"
         f"Emotion: {getattr(situation, 'emotion', '') or ''}\n"
         f"Marketing angle: {getattr(situation, 'marketing_angle', '') or ''}"
+        f"{hook_lines}"
     )
 
 
@@ -1475,6 +1526,13 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
                 language=language_label,
                 premise_block=premise.prompt_block() if premise else "",
                 contract_block=contract_block,
+                # Hooks Menu task — the chosen Story Idea may have already
+                # committed to a specific hook TACTIC; execute it rather
+                # than freely re-deriving a new one. Empty on any situation
+                # predating this field (existing behavior unchanged).
+                hook_type=getattr(payload.selected_situation, "hook_type", "") or "",
+                hook_mechanism=getattr(payload.selected_situation, "hook_mechanism", "") or "",
+                hook_execution=getattr(payload.selected_situation, "hook_execution", "") or "",
             )
             if hook is not None:
                 payload = payload.model_copy(update={"selected_hook_text": hook.text})
@@ -1822,6 +1880,18 @@ def regenerate_script_section(payload: ScriptSectionRegenerateInput) -> Generate
     # untouched" contract (e.g. flagging a pre-existing issue in a body
     # block that an Improve-Hook/CTA-only edit was never meant to touch).
     if payload.scope in (ScriptRegenerateScope.full, ScriptRegenerateScope.length):
+        # Claim-safety/coercion HARD gate — was previously only wired into
+        # the fresh-generation path (_generate_full_script_tracked), so any
+        # broad regenerate (Shorten/Extend/"Entire Script" combined with an
+        # instruction — i.e. anything except a "pure" full regenerate, which
+        # routes through _generate_full_script instead) could reintroduce or
+        # rewrite in an unsupported claim with NO check at all. Runs first,
+        # same ordering as the fresh-generation path, so the quality gate's
+        # own rewrite can't spend its shot on something else while an
+        # unsupported claim survives untouched.
+        data, _claim_safety_result = _apply_claim_safety_gate(
+            data, payload, length_target, payload.target_word_count, payload.content_type
+        )
         data = _apply_quality_gate(
             data, payload, length_target, payload.target_word_count, payload.content_type, run_semantic_check=True
         )

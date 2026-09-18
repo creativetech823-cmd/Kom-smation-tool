@@ -210,6 +210,13 @@ class StorySituation(BaseModel):
     # AND scored strongly — an AND of earned conditions, never a numeric
     # score threshold alone. See story_situation_service._is_strong_concept.
     strong_concept: bool = False
+    # Hooks Menu integration (2026-09-18 task) — a hook has TWO separate
+    # layers, stored separately, never conflated with creative_mechanism/
+    # creative_engine above (those are WHAT the idea is; these are HOW
+    # attention is captured in the first 1-3 seconds):
+    hook_type: str = ""  # a label from hook_tactic_catalog.HOOK_TACTICS (the TACTIC)
+    hook_mechanism: str = ""  # why this tactic fits THIS product/audience/mechanism/situation/format
+    hook_execution: str = ""  # the concrete opening scene/action/dialogue a viewer would actually see/hear
 
 
 class StorySituationsInput(BaseModel):

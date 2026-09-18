@@ -9,6 +9,9 @@ from app.services import claim_safety_service
 from app.services.creative_angles import catalog_prompt_block, valid_angle_labels
 from app.services.creative_mechanism_catalog import catalog_prompt_block as mechanism_catalog_prompt_block
 from app.services.creative_mechanism_catalog import valid_mechanism_label
+from app.services.hook_generation_service import _is_generic as _is_generic_hook_phrase
+from app.services.hook_tactic_catalog import catalog_prompt_block as hook_tactic_catalog_prompt_block
+from app.services.hook_tactic_catalog import valid_hook_tactic_label
 from app.services.openrouter_utils import call_openrouter_with_retry, generate_text
 from app.services.product_context_service import build_product_creative_contract
 from app.services.product_context_validator import detect_category_drift_signal
@@ -133,6 +136,23 @@ return, aim for REFERENCE-INSPIRED VARIETY: several genuinely different mechanis
 every candidate as object-driven-reveal-plus-ritual-replacement), so the set doesn't read as the same
 advertisement with different characters wearing different mechanism labels.
 
+HOOKS MENU — a hook has TWO SEPARATE layers, never confuse them: the HOOK TACTIC (HOW attention is
+captured in the first 1-3 seconds — a technique) is a completely different thing from the CREATIVE
+MECHANISM above (WHAT the underlying idea is). "Question" is a hook tactic; "the grandfather's pocket
+reveal" is the creative mechanism/story — both get recorded, never merged into one field. For every
+candidate, internally select the ONE hook tactic that genuinely fits its product/audience/creative
+mechanism/situation/format/emotional trigger, from exactly this vocabulary:
+
+{hook_tactic_catalog}
+
+The selected tactic must be VISIBLE in the actual opening execution you describe, not just named. A
+hook fails the quality bar and must be revised if it: could belong to any product, simply announces
+the product, explains the benefit immediately with no curiosity created, reads as generic motivational
+copy, doesn't create a visual/action/dialogue event, or doesn't connect naturally to this candidate's
+own creative mechanism. Do NOT default to the same 2-3 hook tactics for every candidate — across the
+full batch, intentionally create hook-tactic diversity while keeping every one genuinely well-fitted,
+never forced just to hit a variety quota.
+
 {language_note}For each situation produce:
 - "title": a punchy 3-7 word title
 - "description": 1-3 sentences establishing the person, their situation, and the emotional stakes
@@ -146,6 +166,13 @@ advertisement with different characters wearing different mechanism labels.
   object in his hand has changed." Must be concrete enough that an independent reader could picture the
   actual moment, not a restated theme.
 - "product_role": the specific job the product does INSIDE this idea (not "it's mentioned")
+- "hook_type": exactly ONE label from the HOOKS MENU above, copied exactly — the TACTIC, never the idea
+- "hook_mechanism": one sentence on WHY this tactic fits this product/audience/creative mechanism/
+  situation/format/emotional trigger — the reasoning, not the execution itself
+- "hook_execution": the actual concrete opening a viewer would see/hear in the first 1-3 seconds,
+  visibly executing the chosen hook_type (e.g. for "Question": the actual line/moment the question is
+  asked in-scene, not just a question mark appended to a sentence; for "Reaction in Action": the actual
+  reaction described happening, before any cause is shown)
 - "emotion": the core emotion driving it (e.g. "fear", "pride", "relief", "hope")
 - "persona": the protagonist/target character (e.g. "first-time gym-goer", "worried father")
 - "marketing_angle": the strategic angle this story sells on (e.g. "myth vs reality", "transformation", "expert authority")
@@ -187,6 +214,9 @@ Return ONLY valid JSON, no prose, no markdown fences, matching this exact shape:
       "creative_mechanism": string,
       "creative_engine": string,
       "product_role": string,
+      "hook_type": string,
+      "hook_mechanism": string,
+      "hook_execution": string,
       "emotion": string,
       "persona": string,
       "marketing_angle": string,
@@ -205,6 +235,7 @@ def _system_prompt(language: ScriptLanguage) -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(
         angle_catalog=catalog_prompt_block(),
         mechanism_catalog=mechanism_catalog_prompt_block(),
+        hook_tactic_catalog=hook_tactic_catalog_prompt_block(),
         language_note=_language_note(language),
     )
 
@@ -264,41 +295,83 @@ def _claim_safety_prefilter_evidence(item: dict, product_name: str, ingredients:
     return claim_safety_service.detect_explicit_product_efficacy_claim(text, product_name)
 
 
+def _hook_quality_prefilter_reason(item: dict) -> str:
+    """Free, deterministic HOOK QUALITY CHECK screen (Hooks Menu task) —
+    reuses hook_generation_service's own generic-opener denylist rather than
+    duplicating it, so the story-idea-level filter and the script-writing-
+    time hook filter never disagree on what counts as generic. Deliberately
+    does NOT reject a candidate purely for having no hook_execution at all
+    (fail-open on absence, same convention as every optional-field default
+    elsewhere in this pipeline) — only a candidate that DOES have one and it
+    explicitly matches a known generic-opener pattern is rejected here. The
+    deeper "does this genuinely create curiosity / connect to the creative
+    mechanism" judgment is folded into the semantic judge's existing
+    genericness_risk/creative_potential scoring (see
+    semantic_story_judge_service._candidate_block, which now includes the
+    hook fields), not a second LLM call."""
+    execution = str(item.get("hook_execution") or "").strip()
+    if execution and _is_generic_hook_phrase(execution):
+        return "hook_execution matched a generic-opener pattern"
+    return ""
+
+
+_MAX_PER_HOOK_TYPE_IN_FINAL = 3
+
+
 def _select_final_six(
     items: list[dict], candidate_indices: list[int], judgment_by_index: dict[int, SemanticJudgment], limit: int,
 ) -> list[int]:
-    """Mechanism-variety-aware selection (Part 4/8) over `candidate_indices`
+    """Mechanism- AND hook-tactic-variety-aware selection (Part 4/8, extended
+    by the Hooks Menu task for hook-tactic diversity) over `candidate_indices`
     ONLY (the actual gate survivors — a non-survivor must never occupy a
-    mechanism-cap slot and crowd out a survivor sharing its mechanism).
+    variety-cap slot and crowd out a survivor sharing its mechanism/tactic).
     Ranks by creative_potential (highest first), then greedily fills the
     final list while capping how many candidates share the same
-    creative_mechanism at _MAX_PER_MECHANISM_IN_FINAL, so the result is
-    "reference-inspired variety", not "reference-mechanism repetition".
-    Falls through to fill any remaining slots ignoring the cap if too few
-    distinct mechanisms exist among the survivors — never returns fewer
-    than min(limit, len(candidate_indices)) purely because of the variety
-    preference. Returns original list indices."""
+    creative_mechanism OR the same hook_type at their respective caps, so the
+    result is "reference-inspired variety" on BOTH axes — never the same
+    advertisement with different characters, and never the same 2-3 hook
+    tactics reused for every concept. Falls through to fill any remaining
+    slots ignoring both caps if too few distinct mechanisms/tactics exist
+    among the survivors — never returns fewer than min(limit,
+    len(candidate_indices)) purely because of the variety preference.
+    Returns original list indices."""
     ranked = sorted(
         candidate_indices,
         key=lambda i: judgment_by_index[i].creative_potential if i in judgment_by_index else 0.0,
         reverse=True,
     )
     mechanism_counts: dict[str, int] = {}
+    hook_type_counts: dict[str, int] = {}
     selected: list[int] = []
-    for i in ranked:
-        if len(selected) >= limit:
-            break
-        mechanism = str(items[i].get("creative_mechanism") or "")
-        if mechanism_counts.get(mechanism, 0) >= _MAX_PER_MECHANISM_IN_FINAL:
-            continue
-        selected.append(i)
-        mechanism_counts[mechanism] = mechanism_counts.get(mechanism, 0) + 1
-    if len(selected) < limit:
+
+    def _fill(*, enforce_mechanism_cap: bool, enforce_hook_type_cap: bool) -> None:
         for i in ranked:
             if len(selected) >= limit:
-                break
-            if i not in selected:
-                selected.append(i)
+                return
+            if i in selected:
+                continue
+            mechanism = str(items[i].get("creative_mechanism") or "")
+            hook_type = str(items[i].get("hook_type") or "")
+            if enforce_mechanism_cap and mechanism_counts.get(mechanism, 0) >= _MAX_PER_MECHANISM_IN_FINAL:
+                continue
+            if enforce_hook_type_cap and hook_type_counts.get(hook_type, 0) >= _MAX_PER_HOOK_TYPE_IN_FINAL:
+                continue
+            selected.append(i)
+            mechanism_counts[mechanism] = mechanism_counts.get(mechanism, 0) + 1
+            hook_type_counts[hook_type] = hook_type_counts.get(hook_type, 0) + 1
+
+    # Layered relaxation: both caps first, then relax hook-type diversity
+    # (mechanism diversity matters more — it's the underlying idea, not just
+    # the opening technique), then relax mechanism diversity too, so a pool
+    # where every candidate happens to share one axis (e.g. all empty
+    # hook_type) still gets genuine mechanism variety rather than both caps
+    # collapsing together and letting the highest-scoring mechanism reclaim
+    # every remaining slot.
+    _fill(enforce_mechanism_cap=True, enforce_hook_type_cap=True)
+    if len(selected) < limit:
+        _fill(enforce_mechanism_cap=True, enforce_hook_type_cap=False)
+    if len(selected) < limit:
+        _fill(enforce_mechanism_cap=False, enforce_hook_type_cap=False)
     return selected
 
 
@@ -390,6 +463,14 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
         logger.info("Filtered %d candidate(s) with an explicit unsupported claim for %s", claim_dropped, p.product_name)
     raw_items = claim_safe_items
 
+    # Hooks Menu HOOK QUALITY CHECK — cheap deterministic screen (empty or
+    # known-generic hook_execution), applied for every product.
+    hook_ok_items = [item for item in raw_items if not _hook_quality_prefilter_reason(item)]
+    hook_dropped = len(raw_items) - len(hook_ok_items)
+    if hook_dropped:
+        logger.info("Filtered %d candidate(s) with a low-quality hook execution for %s", hook_dropped, p.product_name)
+    raw_items = hook_ok_items
+
     if has_role_risk:
         # Product-truth safety net (Phase 2B §5-6): removes any candidate
         # whose title/description/persona/marketing_angle shows the product
@@ -455,6 +536,7 @@ def generate_situations(payload: StorySituationsInput) -> StorySituationsResult:
     for idx, item in enumerate(final_items):
         item = {**item, "recommended_angles": valid_angle_labels(item.get("recommended_angles", []))}
         item["creative_mechanism"] = valid_mechanism_label(item.get("creative_mechanism", ""))
+        item["hook_type"] = valid_hook_tactic_label(item.get("hook_type", ""))
         strong = _is_strong_concept(judgment_by_index.get(idx))
         situations.append(StorySituation(id=uuid.uuid4().hex[:12], strong_concept=strong, **item))
     return StorySituationsResult(situations=situations)

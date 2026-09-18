@@ -75,8 +75,11 @@ Reject generic openers such as: "Every mother wants...", "We all know health is 
 to...", "Because your health matters...". A hook using any of these patterns must be marked
 passes=false.
 
-Generate exactly 3 genuinely different hook candidates (different mechanisms/angles from each
-other, not 3 rewordings of the same idea), each grounded in the given human insight below. For
+If an APPROVED HOOK TACTIC is given below, every candidate must execute THAT tactic (its opening
+blueprint is given too) — vary the exact wording/staging across your 3 candidates, never the tactic
+itself, and do not flatten an approved visual/action/dialogue event into a generic spoken sentence.
+When no tactic is given, generate exactly 3 genuinely different hook candidates (different mechanisms/
+angles from each other, not 3 rewordings of the same idea), each grounded in the given human insight below. For
 EACH candidate, self-evaluate: what exact question would a real viewer want answered? If you
 cannot name a specific, concrete question, that candidate fails.
 
@@ -107,6 +110,24 @@ Return ONLY this JSON, no prose, no markdown fences:
 }"""
 
 
+def _selected_hook_tactic_block(hook_type: str, hook_mechanism: str, hook_execution: str) -> str:
+    """Hooks Menu task — when the chosen Story Idea already committed to a
+    specific hook TACTIC (distinct from the creative mechanism), the writer
+    must EXECUTE that tactic, not freely re-derive a new one. Empty when no
+    tactic was selected (e.g. narrow regenerate paths, or a situation
+    predating this field) — every existing caller/behavior is unchanged."""
+    if not hook_type:
+        return ""
+    return (
+        f"\nAPPROVED HOOK TACTIC (mandatory — execute THIS tactic, do not invent a different one): "
+        f"{hook_type}\n"
+        f"Why this tactic was chosen for this product/audience/mechanism/situation: {hook_mechanism or 'not recorded'}\n"
+        f"Approved opening blueprint (adapt to the exact product/language given above, keep the same "
+        f"visual/action/dialogue EVENT — do not flatten it into a generic spoken sentence): "
+        f"{hook_execution or 'not recorded'}\n"
+    )
+
+
 def _user_message(
     product_name: str,
     category: str,
@@ -117,6 +138,9 @@ def _user_message(
     language: str,
     premise_block: str = "",
     contract_block: str = "",
+    hook_type: str = "",
+    hook_mechanism: str = "",
+    hook_execution: str = "",
 ) -> str:
     return (
         f"{contract_block}\n"
@@ -127,6 +151,7 @@ def _user_message(
         f"{premise_block}\n"
         f"Chosen architecture's hook pattern to follow: {architecture_hook_pattern}\n"
         f"This architecture {'DOES' if product_reveal_early else 'does NOT'} call for early product visibility in the hook.\n"
+        f"{_selected_hook_tactic_block(hook_type, hook_mechanism, hook_execution)}"
         f"Write the hook text in: {language}\n"
     )
 
@@ -142,11 +167,15 @@ def generate_and_select_hook(
     language: str,
     premise_block: str = "",
     contract_block: str = "",
+    hook_type: str = "",
+    hook_mechanism: str = "",
+    hook_execution: str = "",
 ) -> HookCandidate | None:
     try:
         user_msg = _user_message(
             product_name, category, target_audience, insight_block, architecture_hook_pattern,
             product_reveal_early, language, premise_block, contract_block,
+            hook_type, hook_mechanism, hook_execution,
         )
         text = call_openrouter_with_retry(
             lambda: generate_text(

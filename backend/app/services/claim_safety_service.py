@@ -65,7 +65,14 @@ _EFFICACY_VERB_PATTERN = re.compile(
     r"badha\w*|"              # "energy badhaye" — increases
     r"ghata\w*|"              # decreases
     r"control\s+kar\w*|"
-    r"manage\s+kar\w*"
+    r"manage\s+kar\w*|"
+    # "Ashwagandha stress mein aaram deta hai" — a live-verified detector
+    # gap: this reported "aaram deta/deti/milta" (gives/brings relief or
+    # comfort) verb phrase is a genuine efficacy claim (the ingredient
+    # relieving something) but used none of the verbs above. "aaram" alone
+    # is NOT matched (e.g. "aaram se baithiye" is not a claim) — only the
+    # verb PHRASE "aaram" + a giving/getting verb is.
+    r"aaram\s+(de\w*|mil\w*)|rahat\s+(de\w*|mil\w*)"
     r")\b",
     re.IGNORECASE,
 )
@@ -158,16 +165,25 @@ _SEMANTIC_SYSTEM_PROMPT = """You check TWO separate things about a short-form ad
 name, its given ingredients, and its APPROVED claims (if any). Both checks are HARD gates — a script
 failing either must be rejected, no matter how well-written it is otherwise.
 
-CHECK 1 — IMPLIED / METAPHORICAL EFFICACY CLAIM. A script can claim the product improved someone's
-health/life ENTIRELY through story, with no efficacy verb anywhere in the text: a wilting plant, the
-product appears, the plant blooms, implying the product caused the change; a character is shown
-suffering, uses the product, and is shown transformed/cured/healed with the improvement attributed to
-the product. This is still an efficacy/outcome claim — flag it as implied_claim=true. Do NOT flag a
-metaphor that does NOT imply an unsupported outcome (e.g. a metaphor for the PRODUCT'S IDENTITY, taste,
-or ritual, with no health/efficacy outcome attached, is fine — a specific narrative change in someone's
-health, wellbeing, or life circumstance that the story attributes to the product is what fails this).
-Only APPROVED claims given below may be implied or stated, explicit or not — anything beyond that,
-including a claim implied only through the story, is unsupported.
+CHECK 1 — UNSUPPORTED EFFICACY CLAIM, IMPLIED, METAPHORICAL, OR EXPLICIT-BUT-UNUSUAL WORDING. This
+covers THREE shapes, all equally unsupported unless an approved claim below actually covers them:
+(a) IMPLIED/METAPHORICAL — a script can claim the product improved someone's health/life ENTIRELY
+through story, with no efficacy verb anywhere in the text: a wilting plant, the product appears, the
+plant blooms, implying the product caused the change; a character is shown suffering, uses the product,
+and is shown transformed/cured/healed with the improvement attributed to the product.
+(b) EXPLICIT BUT UNUSUALLY WORDED — do not assume a claim only counts if it uses an obvious English
+efficacy word ("reduces", "cures", "improves"). A direct Hindi/Hinglish statement that an ingredient
+"gives relief/comfort" (e.g. "aaram deta hai", "rahat deta hai"), "calms", "settles", "balances", or
+otherwise plainly asserts an effect on the body/mind is JUST AS MUCH an explicit efficacy claim as if it
+used an English verb — judge the MEANING, not whether it matches a specific word you expect.
+(c) A specific outcome/benefit stated about a NAMED ingredient or the product itself, in ANY phrasing.
+Flag any of these as implied_claim=true (explicit-but-unusual wording is still implied_claim=true in
+this schema — there is no separate field for it). Do NOT flag a metaphor that does NOT imply an
+unsupported outcome (e.g. a metaphor for the PRODUCT'S IDENTITY, taste, or ritual, with no health/
+efficacy outcome attached, is fine — a specific narrative or stated change in someone's health,
+wellbeing, or life circumstance that the story attributes to the product/ingredient is what fails this).
+Only APPROVED claims given below may be implied or stated, explicit or not, in ANY wording — anything
+beyond that is unsupported.
 
 CHECK 2 — EMOTIONAL COERCION. Distinguish a legitimate family/relationship story (allowed) from
 manipulative framing (must fail): parent guilt, a child portrayed as the cause of a parent's suffering,

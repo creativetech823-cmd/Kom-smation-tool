@@ -145,6 +145,11 @@ export type StorySituation = {
   creative_engine?: string;
   product_role?: string;
   strong_concept?: boolean;
+  // Hooks Menu integration — the hook TACTIC (how attention is captured),
+  // kept separate from creative_mechanism/creative_engine (what the idea is).
+  hook_type?: string;
+  hook_mechanism?: string;
+  hook_execution?: string;
 };
 
 export type ScriptSection =

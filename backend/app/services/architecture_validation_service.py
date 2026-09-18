@@ -279,6 +279,13 @@ valid conventions and must not be forced into a cinematic plot it was never mean
 - HOOK SERVES THE STORY: does the hook establish a character, situation, unexpected behavior, curiosity
   gap, or visual event — or does it just restate/explain the product category or the ad's own theme in
   the abstract (a line that could open literally any script about this general topic)?
+- HOOK TACTIC EXECUTED (only when the CHOSEN STORY SITUATION below gives an Approved hook tactic — the
+  Hooks Menu task): the hook is a TACTIC (e.g. "Question", "Reaction in Action", "The Absurd
+  Alternative") layered OVER a creative mechanism, never the same thing as it. Does the first 1-3
+  seconds actually execute that specific tactic (e.g. "Question" genuinely opens on a question inside a
+  scene, not just a sentence with a question mark; "Reaction in Action" genuinely opens on a reaction
+  happening, before any cause is shown) — or was the approved visual/action/dialogue event flattened
+  into a generic spoken sentence that ignores the tactic entirely?
 - PAYOFF ACTUALLY PAYS OFF: does the ending create a genuine escalation -> reveal/reversal ->
   resolution (or an equivalent format-appropriate landing), or does it just restate the opening
   metaphor/feeling in different words, with nothing new having actually happened?
@@ -342,6 +349,8 @@ Return ONLY issue codes from this exact list, nothing invented:
 - "hook_abstract_not_situational": the hook restates/explains the product category or theme in the
   abstract instead of establishing a character, situation, unexpected behavior, curiosity gap, or
   visual event
+- "hook_tactic_not_executed": an Approved hook tactic was given below but the actual written hook does
+  not execute it — only use this code when an Approved hook tactic was actually given
 - "payoff_repeats_setup": the ending just restates the opening metaphor/feeling in different words
   instead of creating a genuine escalation, reveal/reversal, or resolution
 - "memorability_relies_on_tagline": if you mentally removed the closing tagline/slogan line, would
@@ -502,6 +511,8 @@ def evaluate_script_execution(
             issues = [i for i in issues if i != "same_idea_different_clothes"]
         if not situation_block:
             issues = [i for i in issues if i != "title_story_mismatch"]
+        if "Approved hook tactic:" not in situation_block:
+            issues = [i for i in issues if i != "hook_tactic_not_executed"]
         raw_scores = result.get("scores") or {}
         scores = {k: int(v) for k, v in raw_scores.items() if isinstance(v, (int, float))}
         return ScriptExecutionEvaluation(
