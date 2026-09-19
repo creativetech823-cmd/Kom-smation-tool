@@ -674,6 +674,23 @@ brands like this actually sound. Structurally (regardless of script):
   aloud, not a story.
 - Land the CTA/closing on a short, rhythmic brand line — often 2-3 short parallel phrases — rather
   than a generic "buy now."
+
+READ-ALOUD TEST — before writing ANY line, ask: "Would a real Indian person naturally say this exact
+sentence out loud?" If the answer is no, do not write it, even if it's grammatically parseable and
+"technically" communicates the idea. Concrete examples of sentences that FAIL this test — reject this
+exact style of writing, not just these exact words:
+- "Aadat sirf packet nahi; woh reach, break aur familiar taste ka poora ritual hai." — a strategist
+  explaining a creative concept in a semicolon-joined sentence, not a person talking.
+- "Choice badli — switching habit ko support mila." — two mechanically joined English/Hindi noun
+  phrases mashed together with no natural sentence rhythm in either language.
+- "Familiar chew ko refreshing banata hai." — English words dropped into a Hindi sentence frame like a
+  translation, not how a real bilingual speaker actually code-switches (a real speaker switches at
+  natural phrase boundaries — "yeh mujhe fresh feel karata hai" — not mid-noun-phrase).
+None of a script's dialogue lines should ever sound like a marketing document, a strategy deck, or an
+AI summarizing what the ad is about — every line is something a specific person would actually say in
+that exact moment: a question, a reaction, a short interruption, an offhand comment — never an
+explanation of the underlying idea. If a line reads like it's teaching the viewer what the metaphor
+means, delete it and show the moment instead of narrating it.
 """
 
 _NO_TRANSLATION_NOTE = (
@@ -1291,6 +1308,77 @@ def _apply_claim_safety_gate(
             "keeping the rewritten draft but marking it as NOT passed", recheck.claim_type or "coercion"
         )
     return rewritten, recheck
+
+
+def _apply_language_quality_gate(
+    data: dict,
+    payload,
+    target_duration: str,
+    target_word_count: int | None,
+    content_type: ContentType,
+    claim_safety_result,
+) -> "tuple[dict, claim_safety_service.ClaimSafetyResult]":
+    """The dedicated, UNCONDITIONAL final language/copy quality gate —
+    fixes the root cause where the existing grammar/naturalness codes
+    (script_quality.llm_quality_issues' "unnatural_language"/
+    "explains_instead_of_shows"/"generic_ai_ad") were silently SKIPPED
+    whenever any unrelated Layer-1 deterministic issue fired first inside
+    _apply_quality_gate — meaning a rewrite driven by, say, a banned phrase
+    or a filmability-density issue had zero verification of its own
+    grammar/naturalness. This gate always runs, on the FINAL settled text,
+    checking ONLY writing quality (see script_quality._LANGUAGE_QUALITY_
+    SYSTEM_PROMPT) — claims/structure/territory/product-fit stay owned by
+    the other gates.
+
+    At most one rewrite. The rewritten draft is then re-verified against
+    BOTH claim safety (a language-focused rewrite could reintroduce or
+    newly introduce an unsupported claim) and filmability (deterministic,
+    free) and language quality itself — all bounded re-checks, logged only,
+    never triggering a second rewrite — matching the exact required flow:
+    Language Quality -> FAIL -> Rewrite -> Claim Safety -> Filmability ->
+    Language Quality -> Final Output. Never raises."""
+    try:
+        issues, worst_line = script_quality.llm_language_quality_issues(data, payload)
+        if not issues:
+            return data, claim_safety_result
+        logger.info(
+            "Language/copy quality gate flagged %s (worst line: %r) — attempting one bounded rewrite",
+            issues, worst_line,
+        )
+        reason = script_quality.rewrite_reason(issues)
+        rewritten = _rewrite_for_quality(data, payload, target_duration, target_word_count, reason, content_type)
+
+        # Re-check CLAIM SAFETY on the rewritten draft — bounded verification,
+        # not a second claim-safety rewrite pass (that gate already had its
+        # own earlier chance in the sequence).
+        product_name, ingredients, approved_claims = _claim_safety_inputs(payload)
+        recheck_text = " ".join(script_quality._block_texts(rewritten))
+        recheck_claim_safety = claim_safety_service.check_claim_safety_and_coercion(
+            recheck_text, product_name=product_name, ingredients=ingredients, approved_claims=approved_claims,
+        )
+        if not recheck_claim_safety.passed:
+            logger.warning(
+                "Language-quality rewrite reintroduced a claim-safety issue (%s) — keeping the rewritten "
+                "draft but marking claim safety as NOT passed", recheck_claim_safety.claim_type or "coercion",
+            )
+
+        # Re-check FILMABILITY — deterministic, free, no further rewrite.
+        if content_type == ContentType.video and not script_quality._video_body_is_filmable(rewritten.get("body") or []):
+            logger.warning("Language-quality rewrite reduced filmability — keeping the rewritten draft, logged only")
+
+        # Re-check LANGUAGE QUALITY itself — bounded, logged, never loops.
+        recheck_issues, recheck_worst = script_quality.llm_language_quality_issues(rewritten, payload)
+        if recheck_issues:
+            logger.warning(
+                "Language/copy quality gate still flags %s after the one allowed rewrite (worst line: %r) — "
+                "bounded failure, keeping the rewritten draft", recheck_issues, recheck_worst,
+            )
+        else:
+            logger.info("Language/copy quality gate re-check passed after rewrite")
+        return rewritten, recheck_claim_safety
+    except Exception as e:
+        logger.warning("Language/copy quality gate failed, keeping prior draft: %s", e)
+        return data, claim_safety_result
 
 
 def _apply_quality_gate(
@@ -1927,6 +2015,10 @@ def _generate_full_script_tracked(
     logger.info("[GENERATE_SCRIPT] quality gate complete elapsed=%.1fs", time.monotonic() - _script_gen_start)
     logger.info("[GENERATE_SCRIPT] architecture gate start elapsed=%.1fs", time.monotonic() - _script_gen_start)
     data, evaluation = _apply_architecture_gate(data, pre, payload, target_duration, target_word_count, payload.content_type)
+    logger.info("[GENERATE_SCRIPT] language quality gate start elapsed=%.1fs", time.monotonic() - _script_gen_start)
+    data, claim_safety_result = _apply_language_quality_gate(
+        data, payload, target_duration, target_word_count, payload.content_type, claim_safety_result,
+    )
     logger.info(
         "[GENERATE_SCRIPT] validation complete elapsed=%.1fs", time.monotonic() - _script_gen_start,
     )

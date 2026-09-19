@@ -103,6 +103,30 @@ def test_unsupported_product_efficacy():
 # --- 3. Safe ingredient mention (no efficacy verb) — must NOT be flagged ----
 
 
+def test_healthier_word_is_not_mistaken_for_the_heal_verb_regression():
+    """Live-reported regression: 'Jahan uska naya, healthier choice —
+    Aayush Wellness Herbal Masala — tha.' was wrongly hard-failed. Root
+    cause: _EFFICACY_VERB_PATTERN's heal\\w* matched the ordinary word
+    'healthier' (and would also match 'health'/'healthy'), not just the
+    verb 'heal'/'heals'/'healing'/'healed'."""
+    text = "Jahan uska naya, healthier choice — Aayush Wellness Herbal Masala — tha."
+    with _mock_semantic():
+        result = css.check_claim_safety_and_coercion(text, product_name="Aayush Wellness Herbal Masala")
+    assert result.passed is True
+
+
+def test_health_and_healthy_words_alone_are_not_flagged():
+    for text in ["Yeh ek health product hai.", "Ek healthy lifestyle ka hissa."]:
+        with _mock_semantic():
+            result = css.check_claim_safety_and_coercion(text, product_name="Aayush Wellness")
+        assert result.passed is True, f"false positive on: {text}"
+
+
+def test_actual_heal_verb_still_caught():
+    evidence = css.detect_explicit_ingredient_efficacy_claim("Ashwagandha shareer ko heal karta hai.", ["Ashwagandha"])
+    assert evidence
+
+
 def test_safe_ingredient_mention_passes():
     text = "Ismein hai Ashwagandha aur Mulethi, ek naya taste experience ke saath."
     with _mock_semantic():
