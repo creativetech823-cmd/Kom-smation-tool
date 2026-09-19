@@ -79,6 +79,23 @@ def run_lightweight_migrations() -> None:
                 if column not in existing_product_columns:
                     conn.execute(text(statement))
 
+    # product_reference_scripts gained real-reference import metadata
+    # (source document / stable reference key / creative direction /
+    # mechanism) after the table already shipped — all nullable, so any
+    # pre-existing user-authored rows are unaffected.
+    if "product_reference_scripts" in table_names:
+        existing_ref_columns = {col["name"] for col in inspector.get_columns("product_reference_scripts")}
+        ref_statements = {
+            "source_document": "ALTER TABLE product_reference_scripts ADD COLUMN source_document VARCHAR(300)",
+            "reference_key": "ALTER TABLE product_reference_scripts ADD COLUMN reference_key VARCHAR(64)",
+            "creative_direction": "ALTER TABLE product_reference_scripts ADD COLUMN creative_direction VARCHAR(100)",
+            "creative_mechanism": "ALTER TABLE product_reference_scripts ADD COLUMN creative_mechanism VARCHAR(100)",
+        }
+        with engine.begin() as conn:
+            for column, statement in ref_statements.items():
+                if column not in existing_ref_columns:
+                    conn.execute(text(statement))
+
     if "product_assets" in table_names:
         asset_columns = inspector.get_columns("product_assets")
         existing_asset_columns = {col["name"] for col in asset_columns}

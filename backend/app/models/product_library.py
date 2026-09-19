@@ -324,15 +324,21 @@ class ProductReferenceScriptOut(BaseModel):
     is_approved: bool
     created_at: datetime
     updated_at: datetime
+    source_document: Optional[str] = None
+    reference_key: Optional[str] = None
+    creative_direction: Optional[str] = None
+    creative_mechanism: Optional[str] = None
 
 
 class ProductContext(BaseModel):
     """The compact, pipeline-facing representation of a Product Library
     product — what actually gets threaded into Script generation / Asset
-    Sourcing. Deliberately excludes raw reference-script text (too large to
-    push into every LLM call) and internal fields (slug/status/timestamps).
-    A handful of the most relevant approved reference scripts are included
-    by title/summary only; script_service decides how much of that to use."""
+    Sourcing. Excludes internal fields (slug/status/timestamps). Approved
+    reference scripts appear in `reference_script_excerpts` as the real,
+    full script text (each is only a few hundred words — the writer needs
+    real sentence construction/phrasing to learn language DNA from, which
+    metadata alone can't give it); script_service re-ranks them by the
+    chosen creative mechanism at generation time."""
 
     product_id: str
     name: str

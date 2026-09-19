@@ -50,7 +50,11 @@ def test_product_context_includes_approved_and_prohibited_claims():
 def test_reference_scripts_are_marked_style_only_not_verbatim():
     block = _product_library_block(_context())
     assert "OLD_SCRIPT_TEXT_EXCERPT" in block
-    assert "Do NOT copy sentences, claims, or the exact creative idea verbatim" in block
+    # Header reworded 2026-09-19 (real-reference import task) to the mandated
+    # instruction — stricter than before: also forbids copying characters/story
+    # wording, and adds that a reference's claims are not approved facts.
+    assert "Never copy sentences, phrases, characters, or story wording." in block
+    assert "NOT approved product facts" in block
 
 
 def test_missing_optional_fields_are_omitted_cleanly():

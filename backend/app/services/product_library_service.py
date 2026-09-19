@@ -5,6 +5,7 @@ one function per operation, a `*_to_out` serializer per resource.
 """
 
 import json
+import logging
 import re
 import unicodedata
 from datetime import datetime, timezone
@@ -15,6 +16,9 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.db_models import AyushProduct, Hook, ProductAsset, ProductCreativeAngle, ProductReferenceScript
+from app.services import reference_script_service
+
+logger = logging.getLogger("product_library_service")
 
 
 def _now() -> datetime:
@@ -567,6 +571,10 @@ def reference_script_to_out(script: ProductReferenceScript) -> dict:
         "is_approved": bool(script.is_approved),
         "created_at": script.created_at,
         "updated_at": script.updated_at,
+        "source_document": script.source_document,
+        "reference_key": script.reference_key,
+        "creative_direction": script.creative_direction,
+        "creative_mechanism": script.creative_mechanism,
     }
 
 
@@ -654,14 +662,28 @@ def build_product_context(db: Session, product_id: str, max_reference_excerpts: 
     if product is None:
         return None
     primary = _primary_asset(db, product_id)
+    # Real reference scripts (2026-09-19): a Herbal Masala product with no
+    # imported references yet (created after startup, or a fresh DB) gets
+    # them imported on first context build — idempotent and fail-open, so
+    # this can never break context building.
+    if reference_script_service.is_herbal_masala_name(product.name):
+        try:
+            reference_script_service.import_calender_references(db, products=[product])
+        except Exception as e:
+            db.rollback()
+            logger.warning("Reference-script import skipped for %s: %s", product.name, e)
     approved_scripts = (
         db.query(ProductReferenceScript)
         .filter(ProductReferenceScript.product_id == product_id, ProductReferenceScript.is_approved.is_(True))
-        .order_by(ProductReferenceScript.updated_at.desc())
+        .order_by(ProductReferenceScript.reference_key, ProductReferenceScript.created_at)
         .limit(max_reference_excerpts)
         .all()
     )
-    excerpts = [s.script_text[:400] for s in approved_scripts]
+    # FULL text, not a truncated stub: language DNA (sentence construction,
+    # Hinglish phrasing, punchlines) can't be learned from 400 characters.
+    # script_service re-ranks by the chosen creative mechanism at generation
+    # time; this is the mechanism-agnostic default for callers without one.
+    excerpts = [s.script_text for s in approved_scripts]
 
     angles = list_creative_angles(db, product_id)
     angle_lines = [f"{a.name}: {a.description}" if a.description else a.name for a in angles]

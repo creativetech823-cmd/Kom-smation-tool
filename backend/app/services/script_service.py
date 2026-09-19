@@ -30,6 +30,7 @@ from app.services import (
     hook_generation_service,
     product_context_service,
     product_context_validator,
+    reference_script_service,
 )
 from app.services import openrouter_utils
 from app.services.compliance_rules import rules_for_category
@@ -912,11 +913,11 @@ def _product_library_block(ctx) -> str:
     if ctx.visual_exclusions:
         lines.append(f"Visual exclusions (never depict): {ctx.visual_exclusions}")
     if ctx.reference_script_excerpts:
-        lines.append(
-            "Approved reference script excerpts — STYLE/PACING/TONE reference only. Learn the voice, "
-            "hook pattern, and structure. Do NOT copy sentences, claims, or the exact creative idea "
-            "verbatim — write an original script:"
-        )
+        # Shared header (reference_script_service.REFERENCE_PROMPT_HEADER):
+        # study writing DNA, never copy wording, and — because these are
+        # creative reference material, not approved facts — never reuse a
+        # reference's claims unless the approved claims above support them.
+        lines.append(reference_script_service.REFERENCE_PROMPT_HEADER)
         for excerpt in ctx.reference_script_excerpts:
             lines.append(f'  """{excerpt}"""')
     return "\n".join(lines)
@@ -1569,6 +1570,44 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             if mechanism_ref_notes:
                 ref_notes = f"{ref_notes}\n{mechanism_ref_notes}" if ref_notes else mechanism_ref_notes
 
+        # REAL reference SCRIPT TEXT (2026-09-19) — the notes above are
+        # abstract creative DNA; language DNA (sentence construction,
+        # Hinglish phrasing, punchlines) can only be learned from actual
+        # scripts. Retrieval is mechanism-ranked and never raises. With a
+        # Product Library context the excerpts travel through the existing
+        # ctx.reference_script_excerpts path (so they also survive rewrites
+        # and regenerates, which rebuild _context_block from the payload);
+        # a manually-entered product with no context gets a standalone
+        # block instead.
+        reference_ctx = getattr(payload, "product_context", None)
+        reference_hint = " ".join([
+            getattr(payload, "creative_angle", "") or "",
+            getattr(payload.selected_situation, "title", "") or "",
+            getattr(payload.selected_situation, "marketing_angle", "") or "",
+        ])
+        reference_hits = reference_script_service.retrieve_for_generation(
+            product_id=getattr(reference_ctx, "product_id", "") or "", product_name=product_name,
+            mechanism=selected_mechanism, hint_text=reference_hint,
+        )
+        reference_block = ""
+        if reference_hits:
+            if reference_ctx is not None:
+                payload = payload.model_copy(update={"product_context": reference_ctx.model_copy(update={
+                    "reference_script_excerpts": [
+                        reference_script_service.format_reference_excerpt(h) for h in reference_hits
+                    ],
+                })})
+            else:
+                reference_block = reference_script_service.format_reference_block(reference_hits)
+        # Diagnostics only — ids/flags/counts, never reference text.
+        logger.info(
+            "[REFERENCE_DNA] product=%s mechanism=%s references_found=%d reference_ids=%s "
+            "language_examples_loaded=%s creative_examples_loaded=%s",
+            product_name, selected_mechanism or "(none)", len(reference_hits),
+            [h.reference_key for h in reference_hits], str(bool(reference_hits)).lower(),
+            str(bool(ref_notes)).lower(),
+        )
+
         # CREATIVE PREMISE — dramatizes the approved territory (when one was
         # selected) into one specific situation; the missing link between the
         # insight/territory (a lens) and the beat outline (a structure).
@@ -1611,6 +1650,8 @@ def _run_creative_pre_stages(payload, target_duration: str) -> CreativePreStageR
             blocks.append(territory.prompt_block())
         if ref_notes:
             blocks.append(ref_notes)
+        if reference_block:
+            blocks.append(reference_block)
         if premise is not None:
             blocks.append(premise.prompt_block())
 

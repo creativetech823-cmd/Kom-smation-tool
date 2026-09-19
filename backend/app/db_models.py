@@ -333,6 +333,18 @@ class ProductReferenceScript(Base):
     notes = Column(Text, default="")
     is_approved = Column(Boolean, default=False, index=True)
 
+    # Real-reference import metadata (2026-09-19 task) — all nullable/blank
+    # for user-authored rows, populated only by
+    # reference_script_service.import_calender_references(). reference_key
+    # is the stable idempotency key AND the join key to
+    # creative_reference_dna.REFERENCE_RECORDS.video_id (the structured
+    # hook_device/human_insight/proof_device/payoff DNA lives there — one
+    # source of truth, deliberately not duplicated into columns here).
+    source_document = Column(String(300), nullable=True)
+    reference_key = Column(String(64), nullable=True, index=True)
+    creative_direction = Column(String(100), nullable=True)
+    creative_mechanism = Column(String(100), nullable=True)
+
     created_at = Column(DateTime, default=_now)
     updated_at = Column(DateTime, default=_now, onupdate=_now)
 

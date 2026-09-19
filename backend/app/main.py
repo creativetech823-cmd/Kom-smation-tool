@@ -9,6 +9,7 @@ from pathlib import Path
 from app.config import settings
 from app.db import Base, SessionLocal, engine, run_lightweight_migrations
 from app.routers import library, pipeline, product_library
+from app.services.reference_script_service import seed_reference_scripts_safely
 from app.services.seed_data import seed_if_empty
 
 # Render/uvicorn logging-visibility fix (2026-09-18 live production task) —
@@ -74,6 +75,23 @@ app.mount("/visuals", StaticFiles(directory=settings.visuals_output_dir), name="
 app.mount("/product-uploads", StaticFiles(directory=settings.product_uploads_dir), name="product_uploads")
 
 
+def log_implicit_model_fallbacks() -> None:
+    """No silent creative/final/validation fallback (2026-09-19): each role
+    falls back to OPENROUTER_TEXT_MODEL when its own variable is unset, so a
+    partially-configured .env can quietly put a role on the wrong model.
+    That is a legitimate config, but never a silent one."""
+    for role, explicit in (
+        ("OPENROUTER_CREATIVE_MODEL", settings.openrouter_creative_model),
+        ("OPENROUTER_FINAL_SCRIPT_MODEL", settings.openrouter_final_script_model),
+        ("OPENROUTER_VALIDATION_MODEL", settings.openrouter_validation_model),
+    ):
+        if not explicit:
+            logger.warning(
+                "%s is not set — that role is falling back to OPENROUTER_TEXT_MODEL (%s). "
+                "Set it explicitly to make the routing intentional.", role, settings.openrouter_text_model or "(unset)",
+            )
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     Base.metadata.create_all(bind=engine)
@@ -81,11 +99,16 @@ def on_startup() -> None:
     db = SessionLocal()
     try:
         seed_if_empty(db)
+        # Real AayushWellness reference scripts (idempotent, fail-open) — the
+        # DB is per-environment and gitignored, so every environment must
+        # import them itself; see reference_script_service.
+        seed_reference_scripts_safely(db)
     finally:
         db.close()
     # Model-routing visibility (2026-09-18 GPT-5.6 Luna experiment, Part 15)
     # — never logs the API key, just which model/provider/reasoning-effort
     # every text stage will actually resolve to on this running instance.
+    log_implicit_model_fallbacks()
     logger.info(
         "Provider: OpenRouter | Text Model: %s | Creative: %s | Final Script: %s | Validation: %s | "
         "Reasoning effort: %s | Image generation: %s",

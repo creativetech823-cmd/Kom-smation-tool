@@ -1,4 +1,13 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Absolute, not cwd-relative (2026-09-19 routing fix): with env_file=".env" the
+# file was only found when the process happened to start inside backend/. Started
+# from anywhere else (repo root, an IDE runner) every model setting silently came
+# back empty and the backend ran on whatever else was configured, so local runs
+# could resolve to a different model than the .env said.
+_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 
 
 class Settings(BaseSettings):
@@ -65,7 +74,7 @@ class Settings(BaseSettings):
     # in their own worker thread; this just bounds how many run at once.
     creative_benchmark_concurrency: int = 3
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=str(_ENV_FILE), extra="ignore")
 
     @property
     def creative_model(self) -> str:
